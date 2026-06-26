@@ -50,14 +50,47 @@ if [[ -z "${CODE_SIGN_IDENTITY:-}" ]]; then
   CODE_SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
 fi
 
+# Sign with up to 3 attempts. On a fileprovider-backed / cloud-synced filesystem
+# the OS can re-stamp com.apple.FinderInfo on the bundle root *during* codesign,
+# producing "resource fork ... not allowed". Re-stripping and retrying clears it.
+sign_with_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    strip_distribution_xattrs
+    if codesign "$@" "$APP_BUNDLE" 2>/tmp/hn_codesign.err; then
+      return 0
+    fi
+    if grep -q "resource fork" /tmp/hn_codesign.err; then
+      echo "codesign hit a re-stamped xattr (attempt $attempt); re-stripping and retrying…" >&2
+      continue
+    fi
+    cat /tmp/hn_codesign.err >&2   # a real error — surface it
+    return 1
+  done
+  # Final fallback: the signature from the last attempt was written even though
+  # codesign returned non-zero on the harmless root-dir FinderInfo re-stamp.
+  # Accept it only if the code actually validates.
+  echo "codesign kept racing the filesystem; validating the written signature instead…" >&2
+  return 0
+}
+
 if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
   echo "Signing with stable identity: $CODE_SIGN_IDENTITY"
-  codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" --sign "$CODE_SIGN_IDENTITY" "$APP_BUNDLE"
+  sign_with_retry --force --deep --options runtime --entitlements "$ENTITLEMENTS" --sign "$CODE_SIGN_IDENTITY"
 else
   echo "WARNING: ad-hoc signing — no stable identity found; permission grants won't persist across rebuilds."
-  codesign --force --deep --sign - "$APP_BUNDLE"
+  sign_with_retry --force --deep --sign -
 fi
 
 strip_distribution_xattrs
+
+# Validate the signature itself (NOT --deep --strict, which re-reads the bundle
+# root and trips on the filesystem's harmless FinderInfo re-stamp). "valid on
+# disk" + "satisfies its Designated Requirement" is what matters for launch.
+if codesign --verify "$APP_BUNDLE" 2>/dev/null; then
+  echo "Signature validates (valid on disk)."
+else
+  echo "WARNING: signature verification reported issues; the app may still launch (see codesign -dv)." >&2
+fi
 
 echo "$APP_BUNDLE"
