@@ -12,15 +12,28 @@ struct RootView: View {
         ZStack {
             WarmBackground()
 
-            HStack(spacing: 0) {
-                NotesListView()
-                    .overlay(Rectangle().fill(Color.hcCardBorder.opacity(0.5)).frame(width: 1), alignment: .trailing)
+            VStack(spacing: 0) {
+                // Persistent capture area — the active DRAFT lives here, above the
+                // whole window and independent of which note is selected.
+                CaptureBar(onOpenSettings: { showSettings = true },
+                           onOpenSync: { showSync.toggle() })
+                    .padding(.horizontal, 18)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
 
-                centerColumn
+                Divider().overlay(Color.hcCardBorder.opacity(0.5))
 
-                if showSync {
-                    DeviceSyncPanel(isPresented: $showSync)
-                        .transition(.move(edge: .trailing))
+                HStack(spacing: 0) {
+                    NotesListView()
+                        .overlay(Rectangle().fill(Color.hcCardBorder.opacity(0.5)).frame(width: 1), alignment: .trailing)
+
+                    NoteDetailView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if showSync {
+                        DeviceSyncPanel(isPresented: $showSync)
+                            .transition(.move(edge: .trailing))
+                    }
                 }
             }
 
@@ -41,44 +54,6 @@ struct RootView: View {
                 .environmentObject(model)
         }
         .frame(minWidth: 880, minHeight: 560)
-    }
-
-    private var centerColumn: some View {
-        VStack(spacing: 0) {
-            toolbar
-            CaptureBar()
-                .padding(.horizontal, 20)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
-            NoteDetailView()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: 10) {
-            Spacer()
-            Button(action: { showSync.toggle() }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                    Text("Device")
-                }
-            }
-            .buttonStyle(SecondaryButtonStyle())
-            .help("Sync recordings from the handheld device")
-
-            Button(action: { showSettings = true }) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.hcSecondaryText)
-                    .padding(7)
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 2)
     }
 }
 

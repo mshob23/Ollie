@@ -8,8 +8,33 @@ struct NotesSettings: Codable, Equatable, Sendable {
     var transcriptionEngineID: String = TranscriptionEngine.appleSpeech.rawValue
     var hasSeededDemo: Bool = false
 
+    /// Manual vs. Automatic mode selection (see `ModeSelection`).
+    var modeSelectionID: String = ModeSelection.manual.rawValue
+    /// The user's explicit Computer/Local choice, honored when `modeSelection`
+    /// is `.manual`.
+    var manualModeID: String = CaptureMode.computer.rawValue
+
     var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
+    }
+    var modeSelection: ModeSelection {
+        ModeSelection(rawValue: modeSelectionID) ?? .manual
+    }
+    var manualMode: CaptureMode {
+        CaptureMode(rawValue: manualModeID) ?? .computer
+    }
+
+    init() {}
+
+    /// Tolerant decode so an older settings.json (missing the new mode keys) still
+    /// loads, keeping the existing engine choice and seed flag.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let fresh = NotesSettings()
+        transcriptionEngineID = try c.decodeIfPresent(String.self, forKey: .transcriptionEngineID) ?? fresh.transcriptionEngineID
+        hasSeededDemo = try c.decodeIfPresent(Bool.self, forKey: .hasSeededDemo) ?? fresh.hasSeededDemo
+        modeSelectionID = try c.decodeIfPresent(String.self, forKey: .modeSelectionID) ?? fresh.modeSelectionID
+        manualModeID = try c.decodeIfPresent(String.self, forKey: .manualModeID) ?? fresh.manualModeID
     }
 
     static func load() -> NotesSettings {
@@ -53,6 +78,16 @@ final class AppModel: ObservableObject {
     // Capture state.
     @Published var recordingState: RecordingState = .idle
     @Published var micLevel: Float = 0
+
+    // The active in-progress draft (Computer / live mode). Accumulates appended
+    // speech + edits until the user explicitly concludes it into a saved note.
+    @Published var draft = Draft()
+
+    // Simulated handheld connectivity. With the mock service there's no radio, so
+    // this stands in for "device in range." In Automatic mode it decides the mode
+    // (connected → Computer, out of range → Local); the user toggles it to watch
+    // Auto flip. Persisted? No — it's runtime/session state.
+    @Published var simulatedDeviceConnected: Bool = true
 
     // Device sync state + log.
     @Published var syncState: DeviceSyncState = .idle
@@ -115,6 +150,42 @@ final class AppModel: ObservableObject {
         return false
     }
 
+    var isTranscribing: Bool {
+        if case .transcribing = recordingState { return true }
+        return false
+    }
+
+    // MARK: Mode
+
+    /// The capture mode in effect right now. In Manual it's the user's explicit
+    /// choice; in Automatic it follows simulated device connectivity (connected →
+    /// Computer live transcribe, out of range → Local store-and-sync).
+    var activeMode: CaptureMode {
+        switch settings.modeSelection {
+        case .manual:    return settings.manualMode
+        case .automatic: return simulatedDeviceConnected ? .computer : .local
+        }
+    }
+
+    /// True when the active mode was chosen automatically (for the UI badge).
+    var modeIsAutomatic: Bool { settings.modeSelection == .automatic }
+
+    /// Manual-mode toggle between Computer and Local.
+    func setManualMode(_ mode: CaptureMode) {
+        settings.manualModeID = mode.rawValue
+    }
+
+    /// Flip simulated connectivity (Automatic mode). Coming back *into* range is
+    /// the moment the handheld hands over anything it recorded offline, so we kick
+    /// off a device sync — finished notes drop straight into the list.
+    func setSimulatedConnected(_ connected: Bool) {
+        let wasConnected = simulatedDeviceConnected
+        simulatedDeviceConnected = connected
+        if connected && !wasConnected && settings.modeSelection == .automatic {
+            startDeviceSync()
+        }
+    }
+
     // MARK: Notes CRUD
 
     func updateTitle(_ title: String, for id: Note.ID) {
@@ -155,15 +226,24 @@ final class AppModel: ObservableObject {
         if select { selectedNoteID = note.id }
     }
 
-    // MARK: Computer mode (F16 push-to-talk + manual record button)
+    // MARK: Computer / live mode — record APPENDS to the active draft
+    //
+    // A recording no longer creates a note. Hold-to-talk transcribes and *appends*
+    // the speech to `draft`; the draft is only finalized on an explicit conclude.
 
     func toggleRecording() {
-        if isRecording { Task { await stopRecordingAndTranscribe() } }
+        if isRecording { Task { await stopRecordingAndAppend() } }
         else { Task { await startRecording() } }
     }
 
     func startRecording() async {
-        guard !isRecording else { return }
+        guard !isRecording, !isTranscribing else { return }
+        // Live capture only makes sense in Computer mode. In Local mode the device
+        // is doing the recording; ignore the Mac mic.
+        guard activeMode == .computer else {
+            banner = "Local mode is active — the handheld records offline. Switch to Computer mode to dictate here."
+            return
+        }
         do {
             captureURL = try await mic.start()
             recordingState = .recording
@@ -174,7 +254,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func stopRecordingAndTranscribe() async {
+    /// Stop the mic, transcribe, and APPEND the result to the active draft.
+    func stopRecordingAndAppend() async {
         guard isRecording else { return }
         stopMicLevelPolling()
         let url: URL
@@ -185,7 +266,21 @@ final class AppModel: ObservableObject {
             banner = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return
         }
-        await ingest(url: url, source: .computer, cleanupSource: true)
+        recordingState = .transcribing
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let clip = try await pipeline.transcribeClip(audioURL: url, noteID: draft.id)
+            draft.appendSpeech(clip.text)
+            // Keep the most recent recording with the draft so the concluded note
+            // has playable audio + an engine/duration to show.
+            draft.audioFileName = clip.storedAudioName
+            draft.durationSeconds = clip.durationSeconds
+            draft.engineUsed = clip.engineUsed
+            recordingState = .idle
+        } catch {
+            recordingState = .idle
+            banner = "Couldn't transcribe: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+        }
     }
 
     func cancelRecording() {
@@ -193,6 +288,31 @@ final class AppModel: ObservableObject {
         stopMicLevelPolling()
         mic.cancel()
         recordingState = .idle
+    }
+
+    // MARK: Draft editing (mirrors the device's RIGHT / BOTTOM buttons)
+
+    func draftSpace()    { draft.typeSpace() }
+    func draftNewline()  { draft.typeNewline() }
+    func draftBackspace(){ draft.backspace() }
+
+    /// Direct-edit binding target for the draft transcript (typing in the field).
+    func setDraftTranscript(_ text: String) { draft.transcript = text }
+
+    /// Explicitly conclude the active draft (device double-tap-middle = Enter, or
+    /// the Send button / ⌘↩). Finalizes it into the saved list and starts a fresh
+    /// empty draft. No-op on an empty draft.
+    func concludeDraft() {
+        guard !draft.isEmpty else { return }
+        let note = draft.makeNote()
+        insert(note, select: true)
+        draft = Draft()
+    }
+
+    /// Discard the active draft without saving (and drop its retained audio).
+    func clearDraft() {
+        if let audio = draft.audioFileName { NotesStore.deleteAudio(named: audio) }
+        draft = Draft()
     }
 
     // MARK: Device sync (mock by default)
@@ -233,22 +353,24 @@ final class AppModel: ObservableObject {
         if syncLog.count > 200 { syncLog.removeFirst(syncLog.count - 200) }
     }
 
-    // MARK: Shared ingest
+    // MARK: Device/Local ingest — recordings arrive ALREADY concluded
+    //
+    // Local-mode files were composed and concluded on the device, so they drop
+    // straight into the saved list as finished notes (no Mac-side drafting). This
+    // deliberately does NOT touch `recordingState`/`draft` — the Computer-mode
+    // capture area is independent of a background device sync.
 
     @discardableResult
     private func ingest(url: URL, source: NoteSource, cleanupSource: Bool) async -> Note? {
-        recordingState = .transcribing
         defer {
             if cleanupSource { try? FileManager.default.removeItem(at: url) }
         }
         do {
             let note = try await pipeline.ingest(audioURL: url, source: source)
-            insert(note, select: source == .computer) // jump to mic notes; leave selection during a device batch
-            if source != .computer, selectedNoteID == nil { selectedNoteID = note.id }
-            recordingState = .idle
+            insert(note, select: false) // don't yank selection during a device batch
+            if selectedNoteID == nil { selectedNoteID = note.id }
             return note
         } catch {
-            recordingState = .idle
             banner = "Couldn't save note: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
             return nil
         }
@@ -262,7 +384,7 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 if pressed { await self.startRecording() }
-                else { await self.stopRecordingAndTranscribe() }
+                else { await self.stopRecordingAndAppend() }
             }
         }
         _ = hotKey?.register()

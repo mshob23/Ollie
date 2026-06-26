@@ -1,42 +1,126 @@
 import SwiftUI
 
-/// The Computer-mode capture control: a record button (also driven by the global
-/// F16 hotkey), a live level meter while recording, and status text. Lives at the
-/// top of the center column so capturing a note is always one click away.
+/// The persistent capture area, pinned to the top of the window and independent of
+/// which note is selected. It hosts:
+///   • the mode control (Manual Computer⇄Local toggle, or the Automatic badge +
+///     simulated connectivity),
+///   • the live DRAFT — the in-progress note that accumulates appended speech and
+///     edits until the user explicitly concludes it,
+///   • the record button (also driven by global F16 push-to-talk), the device-
+///     mirror edit keys (Space / Newline / Backspace), and the Send / Conclude
+///     button (⌘↩).
+///
+/// In Local mode the draft area is replaced by a note that the handheld is
+/// recording offline — those recordings arrive already concluded over sync.
 struct CaptureBar: View {
     @EnvironmentObject var model: AppModel
+    var onOpenSettings: () -> Void = {}
+    var onOpenSync: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 16) {
-            recordButton
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Eyebrow(text: "Computer mode")
-                    Text("· hold F16 to talk")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.hcMutedText)
-                }
-                Text(statusText)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(statusColor)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            if model.isRecording {
-                LevelMeter(level: model.micLevel)
-                    .frame(width: 120, height: 26)
-                Button(action: { model.cancelRecording() }) {
-                    Text("Cancel")
-                }
-                .buttonStyle(SecondaryButtonStyle())
+        VStack(alignment: .leading, spacing: 12) {
+            headerRow
+            Divider().overlay(Color.hcCardBorder.opacity(0.4))
+            if model.activeMode == .computer {
+                computerCapture
+            } else {
+                localCapture
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(16)
         .hcPanel(fill: .hcPanelRaised)
+    }
+
+    // MARK: Header (mode control + window actions)
+
+    private var headerRow: some View {
+        HStack(spacing: 12) {
+            ModeControl()
+            Spacer()
+            Button(action: onOpenSync) {
+                HStack(spacing: 6) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                    Text("Device")
+                }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .help("Sync recordings from the handheld device")
+
+            Button(action: onOpenSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .padding(7)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+        }
+    }
+
+    // MARK: Computer / live capture
+
+    private var computerCapture: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 16) {
+                recordButton
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Eyebrow(text: "Draft")
+                        Text("· hold F16 to talk, keep going, then Send")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Color.hcMutedText)
+                        if model.draft.appendCount > 0 {
+                            Chip("\(model.draft.appendCount) clip\(model.draft.appendCount == 1 ? "" : "s")",
+                                 symbol: "mic.fill", tint: .hcAccent)
+                        }
+                    }
+                    DraftField()
+                }
+
+                if model.isRecording {
+                    LevelMeter(level: model.micLevel)
+                        .frame(width: 96, height: 26)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Text(statusText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+
+                Spacer()
+
+                // Device-mirror edit keys — these edit the SAME draft.
+                EditKey(symbol: "space", label: "Space", help: "Insert a space (device: RIGHT tap)") {
+                    model.draftSpace()
+                }
+                EditKey(symbol: "return", label: "Newline", help: "New line (device: RIGHT double-tap = Shift+Enter)") {
+                    model.draftNewline()
+                }
+                EditKey(symbol: "delete.left", label: "Backspace", help: "Delete last character (device: BOTTOM)") {
+                    model.draftBackspace()
+                }
+
+                if model.isRecording {
+                    Button(action: { model.cancelRecording() }) { Text("Cancel") }
+                        .buttonStyle(SecondaryButtonStyle())
+                }
+
+                Button(action: { model.concludeDraft() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "paperplane.fill")
+                        Text("Send")
+                        Text("⌘↩").font(.system(size: 11, weight: .semibold)).opacity(0.7)
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle(enabled: !model.draft.isEmpty))
+                .disabled(model.draft.isEmpty)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Conclude this draft into a saved note (device: double-tap MIDDLE = Enter)")
+            }
+        }
     }
 
     private var recordButton: some View {
@@ -46,9 +130,7 @@ struct CaptureBar: View {
                     .fill(model.isRecording ? Color.hcAccentPressed : Color.hcAccent)
                     .frame(width: 46, height: 46)
                 if isBusyTranscribing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(Color.hcOnAccent)
+                    ProgressView().controlSize(.small).tint(Color.hcOnAccent)
                 } else {
                     Image(systemName: model.isRecording ? "stop.fill" : "mic.fill")
                         .font(.system(size: 17, weight: .bold))
@@ -65,28 +147,198 @@ struct CaptureBar: View {
         }
         .buttonStyle(.plain)
         .disabled(isBusyTranscribing)
-        .help(model.isRecording ? "Stop and transcribe" : "Record a note")
+        .help(model.isRecording ? "Stop and append to the draft" : "Record and append to the draft")
     }
 
-    private var isBusyTranscribing: Bool {
-        if case .transcribing = model.recordingState { return true }
-        return false
+    // MARK: Local capture (device records offline)
+
+    private var localCapture: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                Circle().fill(Color.hcOk.opacity(0.18)).frame(width: 46, height: 46)
+                Image(systemName: "externaldrive.fill.badge.timemachine")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.hcOk)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Eyebrow(text: "Local mode", color: .hcOk)
+                Text("The handheld records to its SD card while out of range.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.hcPrimaryText)
+                Text("Recordings arrive already finished and drop straight into your notes on reconnect — no drafting here.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.hcMutedText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button(action: onOpenSync) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Text("Sync now")
+                }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    // MARK: Derived
+
+    private var isBusyTranscribing: Bool { model.isTranscribing }
 
     private var statusText: String {
         switch model.recordingState {
-        case .idle:          return "Ready to record"
-        case .recording:     return "Recording… release F16 or press stop"
-        case .transcribing:  return "Transcribing your note…"
-        case .error(let m):  return m
+        case .idle:
+            return model.draft.isEmpty ? "Ready — hold F16 to start a draft" : "Draft in progress — keep talking, or Send to save"
+        case .recording:    return "Recording… release F16 or press stop (appends to draft)"
+        case .transcribing: return "Transcribing… appending to your draft"
+        case .error(let m): return m
         }
     }
 
     private var statusColor: Color {
         switch model.recordingState {
-        case .error:     return .hcAccent
-        case .recording: return .hcAccent
-        default:         return .hcSecondaryText
+        case .error, .recording: return .hcAccent
+        default:                 return .hcSecondaryText
+        }
+    }
+}
+
+// MARK: - The draft transcript field (prominent, editable, accumulating)
+
+/// Shows the active draft's accumulating transcript. Editable inline (typing /
+/// editing acts on the same draft the device buttons edit). Double-click anywhere
+/// in the field is a quick conclude (mirrors device double-tap-middle).
+private struct DraftField: View {
+    @EnvironmentObject var model: AppModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if model.draft.transcript.isEmpty {
+                Text("Your draft will appear here as you talk. Space / Newline / Backspace edit it; Send (⌘↩) concludes it into a note.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.hcMutedText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: Binding(
+                get: { model.draft.transcript },
+                set: { model.setDraftTranscript($0) }))
+                .focused($focused)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.hcPrimaryText)
+                .lineSpacing(3)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 52, maxHeight: 120)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(focused ? Color.hcAccent.opacity(0.4) : Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+    }
+}
+
+// MARK: - A device-mirror edit key
+
+private struct EditKey: View {
+    let symbol: String
+    let label: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+                Text(label).font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(Color.hcPrimaryText)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(Color.hcPrimaryText.opacity(0.06)))
+            .overlay(Capsule().stroke(Color.hcPrimaryText.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+// MARK: - Mode control (Manual toggle / Automatic badge)
+
+/// Manual: a Computer ⇄ Local segmented switch the user drives. Automatic: a read-
+/// only badge showing the auto-chosen active mode plus an in-range/out-of-range
+/// toggle so Auto visibly flips.
+private struct ModeControl: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if model.modeIsAutomatic {
+            automatic
+        } else {
+            manual
+        }
+    }
+
+    private var manual: some View {
+        HStack(spacing: 8) {
+            Eyebrow(text: "Mode")
+            HStack(spacing: 0) {
+                segment(.computer)
+                segment(.local)
+            }
+            .padding(2)
+            .background(Capsule().fill(Color.hcPanel))
+            .overlay(Capsule().stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+        }
+    }
+
+    private func segment(_ mode: CaptureMode) -> some View {
+        let selected = model.activeMode == mode
+        return Button(action: { model.setManualMode(mode) }) {
+            HStack(spacing: 5) {
+                Image(systemName: mode.symbol).font(.system(size: 10.5, weight: .semibold))
+                Text(mode.label).font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(selected ? Color.hcOnAccent : Color.hcSecondaryText)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(selected ? Color.hcAccent : Color.clear))
+        }
+        .buttonStyle(.plain)
+        .help(mode.subtitle)
+    }
+
+    private var automatic: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "wand.and.stars").font(.system(size: 11, weight: .semibold))
+                Text("AUTO").font(.hcEyebrow()).tracking(1.4)
+                Text("·").foregroundStyle(Color.hcMutedText)
+                Image(systemName: model.activeMode.symbol).font(.system(size: 11, weight: .semibold))
+                Text(model.activeMode.label).font(.system(size: 12.5, weight: .semibold))
+            }
+            .foregroundStyle(Color.hcAccent)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.hcAccentSoft))
+            .help("Mode is chosen automatically from device connectivity")
+
+            // Simulated connectivity so Auto visibly flips.
+            Button(action: { model.setSimulatedConnected(!model.simulatedDeviceConnected) }) {
+                HStack(spacing: 6) {
+                    StatusDot(color: model.simulatedDeviceConnected ? .hcOk : .hcMutedText)
+                    Text(model.simulatedDeviceConnected ? "In range" : "Out of range")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.hcSecondaryText)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .overlay(Capsule().stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help("Toggle simulated device connectivity (Automatic mode follows this)")
         }
     }
 }

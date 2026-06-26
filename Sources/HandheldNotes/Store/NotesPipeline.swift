@@ -15,6 +15,38 @@ struct NotesPipeline: Sendable {
         self.transcription = TranscriptionService(engine: engine)
     }
 
+    /// The result of transcribing a recording without creating a note — used by
+    /// Computer/live mode, where speech is *appended to the active draft* instead
+    /// of finalized. The audio is imported into the store under `noteID` so the
+    /// eventual concluded note keeps a playable recording.
+    struct TranscribedClip: Sendable {
+        var text: String
+        var storedAudioName: String
+        var durationSeconds: Double?
+        var engineUsed: String?
+    }
+
+    /// Import + transcribe a recording and return the text (no `Note` produced).
+    /// `noteID` should be the draft's id so the stored audio file matches the note
+    /// that will eventually be concluded.
+    func transcribeClip(audioURL: URL, noteID: UUID) async throws -> TranscribedClip {
+        let duration = try? AudioInfo.duration(of: audioURL)
+        let storedName = try NotesStore.importAudio(from: audioURL, noteID: noteID)
+        let result: TranscriptionResult
+        do {
+            result = try await transcription.transcribe(url: audioURL)
+        } catch {
+            result = TranscriptionResult(
+                text: "[Transcription failed: \(error.localizedDescription)]",
+                engineUsed: "error")
+        }
+        return TranscribedClip(
+            text: result.text,
+            storedAudioName: storedName,
+            durationSeconds: duration,
+            engineUsed: result.engineUsed)
+    }
+
     /// Ingest an audio file and produce a saved note.
     /// - Parameter copyAudio: whether to copy the source audio into the store.
     ///   For mock device files (bundled, read-only) we copy; for mic captures we
