@@ -69,6 +69,20 @@ struct CaptureBar: View {
     }
     private var expanded: Bool { isDrafting || composing }
 
+    /// True when it's safe to collapse the composer back to the slim idle row:
+    /// the draft holds no real content and nothing is actively recording or
+    /// transcribing. We *never* collapse over real content — `isDrafting` keeps
+    /// the bar expanded in that case regardless of `composing`.
+    private var canCollapse: Bool {
+        model.draft.isEmpty && !model.isRecording && !model.isTranscribing
+    }
+
+    /// Collapse the (empty) composer back to compact. No-op when there's content
+    /// or a capture in flight, so a half-typed or recording draft is never lost.
+    private func collapseIfEmpty() {
+        if canCollapse { composing = false }
+    }
+
     private var computerCapture: some View {
         Group {
             if expanded {
@@ -81,6 +95,10 @@ struct CaptureBar: View {
         .onChange(of: model.draft.isEmpty) { _, isEmpty in
             if isEmpty { composing = false }   // collapse back to slim after Send / clear
         }
+        // Escape collapses an empty composer back to the slim idle row (so clicking
+        // the idle prompt and then typing nothing isn't a one-way trip). Gated on
+        // `canCollapse`, so Escape never discards real draft content.
+        .onExitCommand { collapseIfEmpty() }
     }
 
     /// Slim idle row: the record button + a one-line prompt. Click to start typing,
@@ -122,7 +140,11 @@ struct CaptureBar: View {
                                  symbol: "mic.fill", tint: .hcAccent)
                         }
                     }
-                    DraftField()
+                    // Auto-focus the field when the composer was opened by clicking
+                    // the idle prompt (composing, empty draft), so the cursor is
+                    // ready and clicking away collapses an untouched draft.
+                    DraftField(autoFocus: composing && model.draft.isEmpty,
+                               onLostFocusWhenEmpty: { collapseIfEmpty() })
                 }
 
                 if model.isRecording {
@@ -254,9 +276,18 @@ struct CaptureBar: View {
 // MARK: - The draft transcript field (prominent, editable, accumulating)
 
 /// Shows the active draft's accumulating transcript. Editable inline (typing /
-/// editing acts on the same draft the device buttons edit). Double-click anywhere
-/// in the field is a quick conclude (mirrors device double-tap-middle).
+/// editing acts on the same draft the device buttons edit).
+///
+/// - `autoFocus`: focus the editor as soon as it appears (used when the composer
+///   was opened by clicking the idle prompt, so the cursor is ready to type).
+/// - `onLostFocusWhenEmpty`: called when the editor loses focus while the draft is
+///   still empty — the parent uses it to collapse the composer back to the slim
+///   idle row. It is never called with real content, and the parent re-checks
+///   anyway, so half-typed drafts are never collapsed away.
 private struct DraftField: View {
+    var autoFocus: Bool = false
+    var onLostFocusWhenEmpty: () -> Void = {}
+
     @EnvironmentObject var model: AppModel
     @FocusState private var focused: Bool
 
@@ -284,6 +315,19 @@ private struct DraftField: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(focused ? Color.hcAccent.opacity(0.4) : Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+        .onAppear {
+            // Defer a tick so the editor is in the hierarchy before we focus it.
+            if autoFocus {
+                DispatchQueue.main.async { focused = true }
+            }
+        }
+        .onChange(of: focused) { wasFocused, isFocused in
+            // Field blurred while the draft is still empty → let the parent collapse
+            // the composer. (Only meaningful once it had focus to lose.)
+            if wasFocused && !isFocused && model.draft.isEmpty {
+                onLostFocusWhenEmpty()
+            }
+        }
     }
 }
 

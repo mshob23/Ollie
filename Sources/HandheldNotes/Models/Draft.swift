@@ -68,13 +68,18 @@ struct Draft: Identifiable, Equatable, Sendable {
         transcript.removeLast()
     }
 
-    /// Materialize the draft into a finished note for the saved list.
+    /// Materialize the draft into a finished note for the saved list. The body is
+    /// trimmed of surrounding whitespace/newlines so a concluded note never carries
+    /// stray leading/trailing space (and the derived title stays clean). Callers
+    /// must only invoke this on a non-empty draft (see `AppModel.concludeDraft`,
+    /// which treats an empty/whitespace draft as a no-op).
     func makeNote() -> Note {
         let now = Date()
+        let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         return Note(
             id: id,
-            title: Note.deriveTitle(from: transcript, date: now),
-            transcript: transcript,
+            title: Note.deriveTitle(from: body, date: now),
+            transcript: body,
             createdAt: createdAt,
             updatedAt: now,
             source: .computer,
