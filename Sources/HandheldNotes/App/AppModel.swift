@@ -301,9 +301,21 @@ final class AppModel: ObservableObject {
 
     /// Explicitly conclude the active draft (device double-tap-middle = Enter, or
     /// the Send button / ⌘↩). Finalizes it into the saved list and starts a fresh
-    /// empty draft. No-op on an empty draft.
+    /// empty draft.
+    ///
+    /// Concluding a truly empty / whitespace-only draft must be a **no-op** — it
+    /// must never produce a saved note (this is the guard that keeps stray
+    /// "new note"-style empty entries out of the list). `Draft.isEmpty` already
+    /// trims whitespace/newlines, so a draft holding only spaces, newlines, or the
+    /// products of the Space/Newline/Backspace edit keys counts as empty and is
+    /// dropped here. If such an empty draft is dropped, any audio it happened to
+    /// retain is cleaned up so it can't orphan a file.
     func concludeDraft() {
-        guard !draft.isEmpty else { return }
+        guard !draft.isEmpty else {
+            // Empty/whitespace conclude: reset to a clean draft, save nothing.
+            clearDraft()
+            return
+        }
         let note = draft.makeNote()
         insert(note, select: true)
         draft = Draft()
@@ -419,7 +431,12 @@ final class AppModel: ObservableObject {
 
     private func seedDemoNotesIfNeeded() {
         guard !settings.hasSeededDemo, notes.isEmpty else { return }
-        notes = DemoSeed.makeNotes()
+        // Build the deterministic demo set and de-dupe by the fixed seed ids so a
+        // fresh launch shows exactly these notes once — never a doubled-up list,
+        // even if this path is reached with stale leftovers in the store.
+        let demos = DemoSeed.makeNotes()
+        var seen = Set<Note.ID>()
+        notes = demos.filter { seen.insert($0.id).inserted }
         persist()
         settings.hasSeededDemo = true
         settings.save()

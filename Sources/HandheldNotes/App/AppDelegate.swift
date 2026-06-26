@@ -21,7 +21,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        // NB: do NOT set `isMovableByWindowBackground = true`. With
+        // `.fullSizeContentView` the content extends under the (hidden) title bar,
+        // and a background-movable window installs an invisible window-drag tracking
+        // region across that whole top strip — exactly where the capture bar's
+        // Send / Space / Newline / Backspace buttons sit. That region intercepts the
+        // mouseDown for window dragging, so clicks on those controls never reach the
+        // SwiftUI hit-test (this surfaced in testing as a phantom transparent window
+        // swallowing clicks over the capture area). Leaving it off lets the controls
+        // receive their clicks; the window is still draggable by the empty title-bar
+        // strip above the capture content.
         window.backgroundColor = NSColor(red: 0.122, green: 0.118, blue: 0.114, alpha: 1)
         window.minSize = NSSize(width: 880, height: 560)
         window.center()
