@@ -35,6 +35,10 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon")
             ]
+        ),
+        .testTarget(
+            name: "HandheldNotesCoreTests",
+            dependencies: ["HandheldNotesCore"]
         )
     ]
 )

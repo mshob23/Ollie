@@ -31,16 +31,19 @@ public final class BLEDeviceSyncService: NSObject, DeviceSyncService {
     private var ackChar: CBCharacteristic?
     private var dataChar: CBCharacteristic?
 
-    // The device's advertised files and our position working through them.
+    // The device's most-recently advertised files. NOTE: a `fileId` is a 1-based
+    // index into *this* list and the firmware RE-INDEXES after a delete (it
+    // rebuilds + re-notifies FILE_LIST), so we never cache ids across a delete —
+    // we always drive off the freshest list and transfer its FIRST entry.
     private var fileList: [DeviceFile] = []
-    private var transferQueue: [DeviceFile] = []
 
     // Reassembly state for the in-flight transfer.
     private var activeFile: DeviceFile?
     private var assembled = Data()
     private var runningCRC: UInt32 = CRC32.initial
     private var expectedSeq: UInt16 = 0
-    /// fileId → staged temp file + verified crc, awaiting `confirmSaved`.
+    /// fileId → staged temp file + verified crc, awaiting `confirmSaved`. (Only one
+    /// is in flight at a time, but a dictionary keeps the lookup id-keyed.)
     private var staged: [UInt16: (url: URL, crc: UInt32)] = [:]
 
     public override init() { super.init() }
@@ -65,7 +68,7 @@ public final class BLEDeviceSyncService: NSObject, DeviceSyncService {
         ackChar = nil
         dataChar = nil
         resetTransferState()
-        transferQueue.removeAll()
+        fileList.removeAll()
         for (_, s) in staged { try? FileManager.default.removeItem(at: s.url) }
         staged.removeAll()
         emit(.stateChanged(.idle))
@@ -83,27 +86,28 @@ public final class BLEDeviceSyncService: NSObject, DeviceSyncService {
         emit(.log("Sent DELETE_FILE for fileId=\(fileId)"))
         if let s = staged[fileId] { try? FileManager.default.removeItem(at: s.url) }
         staged[fileId] = nil
-        // Move on to the next queued file (if any). The firmware re-notifies the
-        // (shorter) FILE_LIST after a delete, but we drive the queue directly so a
-        // missed notify can't stall the batch.
-        startNextTransfer()
+        // We do NOT pre-pick the next file here: the firmware re-indexes ids after
+        // a delete and re-notifies the (shorter) FILE_LIST, and that notify is what
+        // drives the next transfer (`driveFromFileList`) — using a cached id would
+        // target the wrong file. TODO(hw): if a post-delete re-notify is ever
+        // dropped on a real link, add a REQUEST_LIST nudge here as a fallback.
     }
 
     // MARK: Transfer driving
 
-    private func startNextTransfer() {
+    /// Start transferring the FIRST file in the freshest FILE_LIST, if we're idle.
+    /// Called on every FILE_LIST notify (initial + each post-delete re-notify), so
+    /// it naturally walks the device empty one file at a time, re-index-safe.
+    private func driveFromFileList(_ files: [DeviceFile]) {
+        guard activeFile == nil, staged.isEmpty else { return } // busy → wait
         guard let peripheral, let controlChar else { return }
-        resetTransferState()
-        guard !transferQueue.isEmpty else {
+        guard let file = files.first else {
             emit(.stateChanged(.connected))
-            emit(.log("All transfers complete."))
+            emit(.log("All transfers complete — device SD card empty."))
             return
         }
-        let file = transferQueue.removeFirst()
+        resetTransferState()
         activeFile = file
-        assembled.removeAll(keepingCapacity: true)
-        runningCRC = CRC32.initial
-        expectedSeq = 0
         emit(.log("CONTROL START_TRANSFER id=\(file.id) (\(file.name))"))
         peripheral.writeValue(AudioSyncGATT.Control.start(fileId: file.id),
                               for: controlChar, type: .withResponse)
@@ -149,13 +153,18 @@ public final class BLEDeviceSyncService: NSObject, DeviceSyncService {
         // --- File fully received → CRC-32/ISO-HDLC verify ----------------------
         let computed = CRC32.finalize(runningCRC)
         guard computed == file.crc32 else {
+            // Corruption → abort and do NOT delete (the safety invariant). We stop
+            // the batch rather than auto-retry the same first-in-list file (which
+            // would loop, since nothing was deleted to advance the list). The user
+            // can re-sync. TODO(hw): a bounded per-file retry once a real link exists.
             emit(.log(String(format: "CRC MISMATCH id=%u (got 0x%08X, expected 0x%08X) — aborting, NOT deleting",
                              file.id, computed, file.crc32)))
             if let controlChar {
                 peripheral.writeValue(AudioSyncGATT.Control.abort(fileId: file.id),
                                       for: controlChar, type: .withResponse)
             }
-            startNextTransfer()
+            resetTransferState()
+            emit(.stateChanged(.error("Transfer of \(file.name) failed its integrity check.")))
             return
         }
         emit(.log(String(format: "CRC OK id=%u (0x%08X) — %d B received", file.id, computed, assembled.count)))
@@ -165,15 +174,20 @@ public final class BLEDeviceSyncService: NSObject, DeviceSyncService {
         do {
             try assembled.write(to: tmp, options: [.atomic])
         } catch {
+            if let controlChar {
+                peripheral.writeValue(AudioSyncGATT.Control.abort(fileId: file.id),
+                                      for: controlChar, type: .withResponse)
+            }
+            resetTransferState()
             emit(.stateChanged(.error("Couldn't stage received file: \(error.localizedDescription)")))
-            startNextTransfer()
             return
         }
         staged[file.id] = (url: tmp, crc: computed)
         resetTransferState()
         emit(.stateChanged(.savingNote(file: file.name)))
         // The app ingests → persists → calls confirmSaved(fileId:), which sends
-        // DELETE_FILE and triggers the next transfer.
+        // DELETE_FILE; the firmware then re-notifies the (re-indexed) FILE_LIST,
+        // and `driveFromFileList` starts the next file.
         emit(.fileReceived(fileId: file.id, url: tmp, suggestedSource: .device))
     }
 
@@ -290,14 +304,11 @@ extension BLEDeviceSyncService: @preconcurrency CBPeripheralDelegate {
             fileList = files
             emit(.fileListUpdated(files))
             emit(.log("FILE_LIST: \(value.count) B → \(files.count) recording(s)."))
-            // Drive the batch: queue everything not already staged, and if nothing
-            // is mid-transfer, kick off the first one. (Re-notified lists after a
-            // delete are handled by the confirmSaved → startNextTransfer path, so
-            // we only auto-start when idle to avoid double-driving.)
-            if activeFile == nil && staged.isEmpty {
-                transferQueue = files
-                startNextTransfer()
-            }
+            // Drive one file at a time off the freshest list (re-index-safe): the
+            // initial list starts the first transfer, and each post-delete
+            // re-notify starts the next. The `activeFile == nil && staged.isEmpty`
+            // guard inside makes a redundant notify a no-op.
+            driveFromFileList(files)
         case AudioSyncGATT.data:
             // One chunk frame: [fileId:u16 | seq:u16 | flags:u8 | payload]. Decode,
             // append, ACK (window-of-1), CRC-verify on LAST_CHUNK.
