@@ -17,6 +17,10 @@ struct CaptureBar: View {
     var onOpenSettings: () -> Void = {}
     var onOpenSync: () -> Void = {}
 
+    /// User tapped to open an empty draft to type into. The bar also auto-expands
+    /// whenever the draft has content or a recording/transcription is in progress.
+    @State private var composing = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerRow
@@ -57,9 +61,52 @@ struct CaptureBar: View {
         }
     }
 
-    // MARK: Computer / live capture
+    // MARK: Computer / live capture — compact when idle, expands while drafting
+
+    /// A draft is "active" once it has content or a recording/transcription runs.
+    private var isDrafting: Bool {
+        !model.draft.isEmpty || model.isRecording || model.isTranscribing
+    }
+    private var expanded: Bool { isDrafting || composing }
 
     private var computerCapture: some View {
+        Group {
+            if expanded {
+                expandedCapture
+            } else {
+                compactCapture
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: expanded)
+        .onChange(of: model.draft.isEmpty) { _, isEmpty in
+            if isEmpty { composing = false }   // collapse back to slim after Send / clear
+        }
+    }
+
+    /// Slim idle row: the record button + a one-line prompt. Click to start typing,
+    /// or hold F16 to talk — either expands into the full composer below.
+    private var compactCapture: some View {
+        HStack(spacing: 14) {
+            recordButton
+            Button(action: { composing = true }) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Eyebrow(text: "Draft")
+                    Text("Hold F16 to talk — or click to start typing a note.")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Color.hcSecondaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Start a new draft note")
+            Text("Ready")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.hcMutedText)
+        }
+    }
+
+    private var expandedCapture: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
                 recordButton
@@ -108,7 +155,7 @@ struct CaptureBar: View {
                         .buttonStyle(SecondaryButtonStyle())
                 }
 
-                Button(action: { model.concludeDraft() }) {
+                Button(action: { model.concludeDraft(); composing = false }) {
                     HStack(spacing: 6) {
                         Image(systemName: "paperplane.fill")
                         Text("Send")
