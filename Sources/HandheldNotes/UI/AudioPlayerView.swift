@@ -1,4 +1,5 @@
 import AVFoundation
+import HandheldNotesCore
 import SwiftUI
 
 /// A small AVAudioPlayer-backed transport with play/pause, a scrubber, and time

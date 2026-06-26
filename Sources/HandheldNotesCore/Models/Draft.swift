@@ -9,20 +9,20 @@ import Foundation
 /// Newline / Backspace edit the same buffer, and double-tap-middle (Enter)
 /// concludes. Only Computer / live mode drafts here; Local-mode recordings arrive
 /// from the device already concluded.
-struct Draft: Identifiable, Equatable, Sendable {
-    let id: UUID
+public struct Draft: Identifiable, Equatable, Sendable {
+    public let id: UUID
     /// The accumulating body the user is composing.
-    var transcript: String
-    var createdAt: Date
+    public var transcript: String
+    public var createdAt: Date
     /// Audio file name (in the store's `Audio/` dir) for the most recent recording
     /// appended to this draft, retained so the concluded note keeps a recording.
-    var audioFileName: String?
-    var durationSeconds: Double?
-    var engineUsed: String?
+    public var audioFileName: String?
+    public var durationSeconds: Double?
+    public var engineUsed: String?
     /// How many recordings have been appended (drives the count chip in the UI).
-    var appendCount: Int
+    public var appendCount: Int
 
-    init(id: UUID = UUID(), transcript: String = "", createdAt: Date = Date()) {
+    public init(id: UUID = UUID(), transcript: String = "", createdAt: Date = Date()) {
         self.id = id
         self.transcript = transcript
         self.createdAt = createdAt
@@ -32,18 +32,18 @@ struct Draft: Identifiable, Equatable, Sendable {
         self.appendCount = 0
     }
 
-    var isEmpty: Bool {
+    public var isEmpty: Bool {
         transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var wordCount: Int {
+    public var wordCount: Int {
         transcript.split { $0 == " " || $0.isNewline }.count
     }
 
     /// Append freshly transcribed speech, inserting a single space between the
     /// existing buffer and the new chunk when both sides need it (so successive
     /// hold-to-talks read as continuous prose).
-    mutating func appendSpeech(_ chunk: String) {
+    public mutating func appendSpeech(_ chunk: String) {
         let piece = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !piece.isEmpty else { return }
         if transcript.isEmpty {
@@ -57,13 +57,13 @@ struct Draft: Identifiable, Equatable, Sendable {
     }
 
     /// Device RIGHT-tap = Space.
-    mutating func typeSpace() { transcript += " " }
+    public mutating func typeSpace() { transcript += " " }
 
     /// Device RIGHT double-tap = Shift+Enter = newline.
-    mutating func typeNewline() { transcript += "\n" }
+    public mutating func typeNewline() { transcript += "\n" }
 
     /// Device BOTTOM = Backspace (delete the last character).
-    mutating func backspace() {
+    public mutating func backspace() {
         guard !transcript.isEmpty else { return }
         transcript.removeLast()
     }
@@ -73,7 +73,7 @@ struct Draft: Identifiable, Equatable, Sendable {
     /// stray leading/trailing space (and the derived title stays clean). Callers
     /// must only invoke this on a non-empty draft (see `AppModel.concludeDraft`,
     /// which treats an empty/whitespace draft as a no-op).
-    func makeNote() -> Note {
+    public func makeNote() -> Note {
         let now = Date()
         let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         return Note(

@@ -1,3 +1,4 @@
+import HandheldNotesCore
 import SwiftUI
 
 /// The persistent capture area, pinned to the top of the window and independent of

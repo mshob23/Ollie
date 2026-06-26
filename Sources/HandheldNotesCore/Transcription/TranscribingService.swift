@@ -2,18 +2,18 @@ import Foundation
 
 /// Which speech-to-text engine turns a recording into a transcript. Stored by
 /// raw value; unknown values fall back to `.appleSpeech` (the zero-install path).
-enum TranscriptionEngine: String, CaseIterable, Sendable, Codable {
+public enum TranscriptionEngine: String, CaseIterable, Sendable, Codable {
     case appleSpeech
     case whisper
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .appleSpeech: return "Apple Speech"
         case .whisper:     return "whisper.cpp"
         }
     }
 
-    var subtitle: String {
+    public var subtitle: String {
         switch self {
         case .appleSpeech: return "On-device, no setup. Best on macOS 26+."
         case .whisper:     return "Local whisper-cli + ffmpeg (Homebrew)."
@@ -23,14 +23,14 @@ enum TranscriptionEngine: String, CaseIterable, Sendable, Codable {
 
 /// Errors surfaced from any transcription path. Mirrors the old app's taxonomy
 /// so messages stay familiar.
-enum TranscriptionError: Error, LocalizedError {
+public enum TranscriptionError: Error, LocalizedError {
     case emptyRecording
     case noResult
     case missingTool(String)
     case appleSpeechUnavailable(String)
     case engineFailed(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .emptyRecording:
             return "The recording was empty — no audio to transcribe."
@@ -47,9 +47,14 @@ enum TranscriptionError: Error, LocalizedError {
 }
 
 /// The result of transcribing one audio file.
-struct TranscriptionResult: Sendable {
-    var text: String
-    var engineUsed: String
+public struct TranscriptionResult: Sendable {
+    public var text: String
+    public var engineUsed: String
+
+    public init(text: String, engineUsed: String) {
+        self.text = text
+        self.engineUsed = engineUsed
+    }
 }
 
 /// Anything that can turn an audio file into text. Two real implementations
@@ -62,17 +67,17 @@ protocol Transcribing: Sendable {
 /// Apple Speech if its CLI/model aren't installed, and Apple Speech falls back
 /// to a clearly-labelled placeholder transcript so a note still gets saved even
 /// on a machine with neither path available (keeps the demo unbreakable).
-struct TranscriptionService: Sendable {
-    var engine: TranscriptionEngine
+public struct TranscriptionService: Sendable {
+    public var engine: TranscriptionEngine
 
     private let apple = AppleSpeechTranscriber()
     private let whisper = WhisperCppTranscriber()
 
-    init(engine: TranscriptionEngine = .appleSpeech) {
+    public init(engine: TranscriptionEngine = .appleSpeech) {
         self.engine = engine
     }
 
-    func transcribe(url: URL) async throws -> TranscriptionResult {
+    public func transcribe(url: URL) async throws -> TranscriptionResult {
         switch engine {
         case .appleSpeech:
             return try await appleOrStub(url: url)

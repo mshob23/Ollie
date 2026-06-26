@@ -1,3 +1,4 @@
+import HandheldNotesCore
 import SwiftUI
 
 /// The left column: brand header, search field, and the scrollable list of notes

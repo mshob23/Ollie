@@ -34,12 +34,19 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/HandheldNotes"
 cp "$ROOT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
-# SwiftPM emits resources as a HandheldNotes_HandheldNotes.bundle next to the
-# executable. Copy it into the app bundle so the demo audio resolves at runtime.
-RES_BUNDLE="$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes_HandheldNotes.bundle"
-if [[ -d "$RES_BUNDLE" ]]; then
-  cp -R "$RES_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
-fi
+# SwiftPM emits resources (the demo WAVs) as a <Package>_<Target>.bundle next to
+# the executable. The WAVs now live in the HandheldNotesCore library target, so the
+# bundle is HandheldNotes_HandheldNotesCore.bundle (older layouts put them in the
+# app target → HandheldNotes_HandheldNotes.bundle). Copy whichever exists so the
+# demo audio + mock sync resolve at runtime via Bundle.module / the SampleAudio
+# fallbacks.
+for RES_BUNDLE in \
+  "$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes_HandheldNotesCore.bundle" \
+  "$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes_HandheldNotes.bundle"; do
+  if [[ -d "$RES_BUNDLE" ]]; then
+    cp -R "$RES_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
+  fi
+done
 if [[ -f "$ROOT_DIR/AppIcon.icns" ]]; then
   cp "$ROOT_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 fi

@@ -11,11 +11,11 @@ import Foundation
 ///
 /// All file access is synchronous and cheap (the dataset is tiny); the store is
 /// driven from the @MainActor AppModel, so it stays single-threaded by use.
-struct NotesStore {
+public struct NotesStore {
 
     // MARK: Locations
 
-    static func baseDirectory() throws -> URL {
+    public static func baseDirectory() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
@@ -24,18 +24,18 @@ struct NotesStore {
         return dir
     }
 
-    static func audioDirectory() throws -> URL {
+    public static func audioDirectory() throws -> URL {
         let dir = try baseDirectory().appendingPathComponent("Audio", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
-    static func notesURL() throws -> URL {
+    public static func notesURL() throws -> URL {
         try baseDirectory().appendingPathComponent("notes.json")
     }
 
     /// Absolute URL for a note's audio file, if it has one and the file exists.
-    static func audioURL(for note: Note) -> URL? {
+    public static func audioURL(for note: Note) -> URL? {
         guard let name = note.audioFileName,
               let dir = try? audioDirectory() else { return nil }
         let url = dir.appendingPathComponent(name)
@@ -44,7 +44,7 @@ struct NotesStore {
 
     // MARK: Load / Save
 
-    static func load() -> [Note] {
+    public static func load() -> [Note] {
         guard let url = try? notesURL(), let data = try? Data(contentsOf: url) else {
             return []
         }
@@ -57,7 +57,7 @@ struct NotesStore {
         }
     }
 
-    static func save(_ notes: [Note]) {
+    public static func save(_ notes: [Note]) {
         guard let url = try? notesURL() else { return }
         guard let data = try? encoder.encode(notes) else { return }
         try? data.write(to: url, options: [.atomic])
@@ -68,7 +68,8 @@ struct NotesStore {
     /// Copies an arbitrary audio file into the store under the note's id, returns
     /// the stored file name (relative). Always normalizes to `.wav` extension on
     /// the stored name (the bytes are copied as-is).
-    static func importAudio(from sourceURL: URL, noteID: UUID) throws -> String {
+    @discardableResult
+    public static func importAudio(from sourceURL: URL, noteID: UUID) throws -> String {
         let dir = try audioDirectory()
         let ext = sourceURL.pathExtension.isEmpty ? "wav" : sourceURL.pathExtension
         let fileName = "\(noteID.uuidString).\(ext)"
@@ -80,7 +81,7 @@ struct NotesStore {
         return fileName
     }
 
-    static func deleteAudio(named fileName: String) {
+    public static func deleteAudio(named fileName: String) {
         guard let dir = try? audioDirectory() else { return }
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(fileName))
     }

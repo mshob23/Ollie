@@ -1,12 +1,12 @@
 import Foundation
 
 /// Where a note came from. Drives the little source badge in the UI.
-enum NoteSource: String, Codable, Sendable, Hashable {
+public enum NoteSource: String, Codable, Sendable, Hashable {
     case computer   // Mac mic via the F16 push-to-talk hotkey
     case device     // synced from the handheld's SD card over BLE
     case seed       // demo content seeded on first run
 
-    var label: String {
+    public var label: String {
         switch self {
         case .computer: return "Computer"
         case .device:   return "Device"
@@ -15,7 +15,7 @@ enum NoteSource: String, Codable, Sendable, Hashable {
     }
 
     /// SF Symbol used for the source chip.
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .computer: return "mic.fill"
         case .device:   return "dot.radiowaves.left.and.right"
@@ -27,21 +27,21 @@ enum NoteSource: String, Codable, Sendable, Hashable {
 /// A single voice note: a transcript, its metadata, and (optionally) the audio
 /// file it was transcribed from. This is the heart of the app — everything the
 /// pipeline produces is one of these, and the store is just an array of them.
-struct Note: Identifiable, Codable, Hashable, Sendable {
-    let id: UUID
-    var title: String
-    var transcript: String
-    var createdAt: Date
-    var updatedAt: Date
-    var source: NoteSource
+public struct Note: Identifiable, Codable, Hashable, Sendable {
+    public let id: UUID
+    public var title: String
+    public var transcript: String
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var source: NoteSource
     /// File name (not path) inside the store's `Audio/` directory; nil if there
     /// is no audio or it was deleted.
-    var audioFileName: String?
-    var durationSeconds: Double?
-    var engineUsed: String?
-    var isFavorite: Bool
+    public var audioFileName: String?
+    public var durationSeconds: Double?
+    public var engineUsed: String?
+    public var isFavorite: Bool
 
-    init(
+    public init(
         id: UUID = UUID(),
         title: String,
         transcript: String,
@@ -67,7 +67,7 @@ struct Note: Identifiable, Codable, Hashable, Sendable {
 
     /// Tolerant decode: a field missing from an older notes.json falls back to a
     /// sensible default instead of failing the whole load.
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Untitled note"
@@ -85,22 +85,22 @@ struct Note: Identifiable, Codable, Hashable, Sendable {
     // MARK: Derived
 
     /// First line / sentence of the transcript, for list previews.
-    var preview: String {
+    public var preview: String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "No transcript" }
         let firstLine = trimmed.split(whereSeparator: \.isNewline).first.map(String.init) ?? trimmed
         return firstLine
     }
 
-    var hasAudio: Bool { audioFileName != nil }
+    public var hasAudio: Bool { audioFileName != nil }
 
-    var wordCount: Int {
+    public var wordCount: Int {
         transcript.split { $0 == " " || $0.isNewline }.count
     }
 
     /// Builds a human title from a transcript: first sentence or first handful of
     /// words, trimmed and capped. Falls back to a timestamped name.
-    static func deriveTitle(from transcript: String, date: Date) -> String {
+    public static func deriveTitle(from transcript: String, date: Date) -> String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             let fmt = DateFormatter()

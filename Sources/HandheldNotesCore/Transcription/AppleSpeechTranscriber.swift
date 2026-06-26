@@ -5,8 +5,8 @@ import Speech
 /// On-device speech-to-text via Apple's frameworks. Adapted from the old app's
 /// AppleSpeechTranscriptionRunner.
 ///
-/// macOS 26+ uses the new `SpeechAnalyzer` + `Speech.SpeechTranscriber` stack;
-/// the file-based path needs no Speech-Recognition TCC authorization. Older
+/// macOS 26+ / iOS 26+ use the new `SpeechAnalyzer` + `Speech.SpeechTranscriber`
+/// stack; the file-based path needs no Speech-Recognition TCC authorization. Older
 /// systems fall back to `SFSpeechRecognizer` pinned to on-device recognition.
 struct AppleSpeechTranscriber: Transcribing {
     func transcribe(url: URL) async throws -> TranscriptionResult {
@@ -15,7 +15,7 @@ struct AppleSpeechTranscriber: Transcribing {
         guard inputSize > 44 else { throw TranscriptionError.emptyRecording }
 
         let text: String
-        if #available(macOS 26, *) {
+        if #available(macOS 26, iOS 26, *) {
             text = try await Self.transcribeWithSpeechAnalyzer(url: url)
         } else {
             text = try await Self.transcribeWithSFSpeechRecognizer(url: url)
@@ -25,7 +25,7 @@ struct AppleSpeechTranscriber: Transcribing {
 
     // MARK: - macOS 26+: SpeechAnalyzer
 
-    @available(macOS 26, *)
+    @available(macOS 26, iOS 26, *)
     private static func transcribeWithSpeechAnalyzer(url: URL) async throws -> String {
         guard Speech.SpeechTranscriber.isAvailable else {
             throw TranscriptionError.appleSpeechUnavailable("this Mac does not support on-device transcription.")
@@ -61,7 +61,7 @@ struct AppleSpeechTranscriber: Transcribing {
         }
     }
 
-    @available(macOS 26, *)
+    @available(macOS 26, iOS 26, *)
     private static func bestSupportedLocale() async -> Locale? {
         if let match = await Speech.SpeechTranscriber.supportedLocale(equivalentTo: Locale.current) {
             return match
@@ -72,7 +72,7 @@ struct AppleSpeechTranscriber: Transcribing {
         return await Speech.SpeechTranscriber.supportedLocales.first
     }
 
-    @available(macOS 26, *)
+    @available(macOS 26, iOS 26, *)
     private static func collectFinalText(from transcriber: Speech.SpeechTranscriber) async throws -> String {
         var text = ""
         for try await result in transcriber.results where result.isFinal {

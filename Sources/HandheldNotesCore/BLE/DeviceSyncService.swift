@@ -1,7 +1,7 @@
 import Foundation
 
 /// High-level connection state of a device-sync session, surfaced to the UI.
-enum DeviceSyncState: Equatable, Sendable {
+public enum DeviceSyncState: Equatable, Sendable {
     case idle                       // not connected, not scanning
     case scanning                   // looking for the device
     case connecting                 // found it, connecting
@@ -11,7 +11,7 @@ enum DeviceSyncState: Equatable, Sendable {
     case error(String)
     case unavailable(String)        // BLE off / unsupported / no peripheral
 
-    var label: String {
+    public var label: String {
         switch self {
         case .idle: return "Not connected"
         case .scanning: return "Scanning for device…"
@@ -24,7 +24,7 @@ enum DeviceSyncState: Equatable, Sendable {
         }
     }
 
-    var isBusy: Bool {
+    public var isBusy: Bool {
         switch self {
         case .scanning, .connecting, .transferring, .savingNote: return true
         default: return false
@@ -33,7 +33,7 @@ enum DeviceSyncState: Equatable, Sendable {
 }
 
 /// Events a sync service reports back to the app as it works through a sync.
-enum DeviceSyncEvent: Sendable {
+public enum DeviceSyncEvent: Sendable {
     case stateChanged(DeviceSyncState)
     case fileListUpdated([DeviceFile])
     /// A complete audio file was received and verified; the app should ingest it
@@ -46,7 +46,7 @@ enum DeviceSyncEvent: Sendable {
 /// satisfy. The app talks only to this, so swapping mock ↔ BLE is a one-line
 /// change and the firmware can be matched later without touching the UI.
 @MainActor
-protocol DeviceSyncService: AnyObject {
+public protocol DeviceSyncService: AnyObject {
     var displayName: String { get }
     /// The app sets this to receive state/file/received events.
     var onEvent: ((DeviceSyncEvent) -> Void)? { get set }

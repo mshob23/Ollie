@@ -7,41 +7,44 @@ import SwiftUI
 // confident coral accent, soft rounded panels, and a New York serif for display
 // headings. Same exact hex values as the old app so the family resemblance is
 // real, not approximate.
+//
+// Cross-platform by construction: built on SwiftUI `Color` / `Font` only (no
+// NSColor / AppKit), so this same theme drives the future iOS app unchanged.
 
 extension Color {
     // Backgrounds (warm near-black "paper").
-    static let hcBackground       = Color(red: 0.122, green: 0.118, blue: 0.114) // #1F1E1D
-    static let hcBackgroundTop    = Color(red: 0.149, green: 0.137, blue: 0.125) // #262320
-    static let hcBackgroundBottom = Color(red: 0.106, green: 0.100, blue: 0.094) // #1B1918
+    public static let hcBackground       = Color(red: 0.122, green: 0.118, blue: 0.114) // #1F1E1D
+    public static let hcBackgroundTop    = Color(red: 0.149, green: 0.137, blue: 0.125) // #262320
+    public static let hcBackgroundBottom = Color(red: 0.106, green: 0.100, blue: 0.094) // #1B1918
 
     // Recessed surfaces / panels.
-    static let hcPanel       = Color(red: 0.102, green: 0.098, blue: 0.094)      // #1A1918
-    static let hcPanelRaised  = Color(red: 0.145, green: 0.138, blue: 0.130)     // slightly lifted card
-    static let hcCardBorder  = Color(red: 0.255, green: 0.239, blue: 0.216)      // #413D37 warm hairline
+    public static let hcPanel       = Color(red: 0.102, green: 0.098, blue: 0.094)      // #1A1918
+    public static let hcPanelRaised  = Color(red: 0.145, green: 0.138, blue: 0.130)     // slightly lifted card
+    public static let hcCardBorder  = Color(red: 0.255, green: 0.239, blue: 0.216)      // #413D37 warm hairline
 
     // Text.
-    static let hcPrimaryText   = Color(red: 0.925, green: 0.914, blue: 0.890)    // #ECE9E3 cream
-    static let hcSecondaryText = Color(red: 0.659, green: 0.635, blue: 0.604)    // #A8A29A
-    static let hcMutedText     = Color(red: 0.435, green: 0.416, blue: 0.388)    // #6F6A63
+    public static let hcPrimaryText   = Color(red: 0.925, green: 0.914, blue: 0.890)    // #ECE9E3 cream
+    public static let hcSecondaryText = Color(red: 0.659, green: 0.635, blue: 0.604)    // #A8A29A
+    public static let hcMutedText     = Color(red: 0.435, green: 0.416, blue: 0.388)    // #6F6A63
 
     // Accent (coral).
-    static let hcAccent        = Color(red: 0.851, green: 0.467, blue: 0.341)    // #D97757
-    static let hcAccentHover   = Color(red: 0.882, green: 0.541, blue: 0.408)    // #E18A68
-    static let hcAccentPressed = Color(red: 0.761, green: 0.376, blue: 0.244)    // #C2603E
-    static let hcOnAccent      = Color(red: 0.984, green: 0.965, blue: 0.933)    // #FBF6EE cream-on-coral
+    public static let hcAccent        = Color(red: 0.851, green: 0.467, blue: 0.341)    // #D97757
+    public static let hcAccentHover   = Color(red: 0.882, green: 0.541, blue: 0.408)    // #E18A68
+    public static let hcAccentPressed = Color(red: 0.761, green: 0.376, blue: 0.244)    // #C2603E
+    public static let hcOnAccent      = Color(red: 0.984, green: 0.965, blue: 0.933)    // #FBF6EE cream-on-coral
 
     // Soft accent tint for chips / selection.
-    static let hcAccentSoft    = Color(red: 0.851, green: 0.467, blue: 0.341).opacity(0.16)
-    static let hcOk            = Color(red: 0.498, green: 0.694, blue: 0.510)    // calm green
+    public static let hcAccentSoft    = Color(red: 0.851, green: 0.467, blue: 0.341).opacity(0.16)
+    public static let hcOk            = Color(red: 0.498, green: 0.694, blue: 0.510)    // calm green
 }
 
 extension Font {
     /// Serif display face (New York) for headings.
-    static func hcDisplay(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+    public static func hcDisplay(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .serif)
     }
     /// Tracked-caps eyebrow.
-    static func hcEyebrow(_ size: CGFloat = 10.5) -> Font {
+    public static func hcEyebrow(_ size: CGFloat = 10.5) -> Font {
         .system(size: size, weight: .semibold)
     }
 }
@@ -50,8 +53,9 @@ extension Font {
 
 /// The window background: a barely-perceptible warm vertical gradient — candlelit
 /// paper, not neon.
-struct WarmBackground: View {
-    var body: some View {
+public struct WarmBackground: View {
+    public init() {}
+    public var body: some View {
         LinearGradient(
             colors: [.hcBackgroundTop, .hcBackground, .hcBackgroundBottom],
             startPoint: .top, endPoint: .bottom)
@@ -60,10 +64,14 @@ struct WarmBackground: View {
 }
 
 /// A tracked-caps coral eyebrow label.
-struct Eyebrow: View {
+public struct Eyebrow: View {
     let text: String
     var color: Color = .hcAccent
-    var body: some View {
+    public init(text: String, color: Color = .hcAccent) {
+        self.text = text
+        self.color = color
+    }
+    public var body: some View {
         Text(text.uppercased())
             .font(.hcEyebrow())
             .tracking(1.7)
@@ -72,10 +80,14 @@ struct Eyebrow: View {
 }
 
 /// A softly rounded recessed panel for content wells.
-struct PanelBackground: ViewModifier {
+public struct PanelBackground: ViewModifier {
     var fill: Color = .hcPanel
     var radius: CGFloat = 14
-    func body(content: Content) -> some View {
+    public init(fill: Color = .hcPanel, radius: CGFloat = 14) {
+        self.fill = fill
+        self.radius = radius
+    }
+    public func body(content: Content) -> some View {
         content
             .background(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -89,15 +101,16 @@ struct PanelBackground: ViewModifier {
 }
 
 extension View {
-    func hcPanel(fill: Color = .hcPanel, radius: CGFloat = 14) -> some View {
+    public func hcPanel(fill: Color = .hcPanel, radius: CGFloat = 14) -> some View {
         modifier(PanelBackground(fill: fill, radius: radius))
     }
 }
 
 /// The app's primary capsule button (coral fill, cream text).
-struct PrimaryButtonStyle: ButtonStyle {
+public struct PrimaryButtonStyle: ButtonStyle {
     var enabled: Bool = true
-    func makeBody(configuration: Configuration) -> some View {
+    public init(enabled: Bool = true) { self.enabled = enabled }
+    public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13.5, weight: .semibold))
             .foregroundStyle(Color.hcOnAccent)
@@ -113,8 +126,9 @@ struct PrimaryButtonStyle: ButtonStyle {
 }
 
 /// A quiet outlined secondary capsule button.
-struct SecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
+public struct SecondaryButtonStyle: ButtonStyle {
+    public init() {}
+    public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(Color.hcPrimaryText)
@@ -129,11 +143,15 @@ struct SecondaryButtonStyle: ButtonStyle {
 }
 
 /// A small status dot.
-struct StatusDot: View {
+public struct StatusDot: View {
     var color: Color
     var pulsing: Bool = false
     @State private var on = false
-    var body: some View {
+    public init(color: Color, pulsing: Bool = false) {
+        self.color = color
+        self.pulsing = pulsing
+    }
+    public var body: some View {
         Circle()
             .fill(color)
             .frame(width: 9, height: 9)
@@ -144,14 +162,14 @@ struct StatusDot: View {
 }
 
 /// A small rounded source/metadata chip.
-struct Chip: View {
+public struct Chip: View {
     let symbol: String?
     let text: String
     var tint: Color = .hcSecondaryText
-    init(_ text: String, symbol: String? = nil, tint: Color = .hcSecondaryText) {
+    public init(_ text: String, symbol: String? = nil, tint: Color = .hcSecondaryText) {
         self.text = text; self.symbol = symbol; self.tint = tint
     }
-    var body: some View {
+    public var body: some View {
         HStack(spacing: 4) {
             if let symbol { Image(systemName: symbol).font(.system(size: 9.5, weight: .semibold)) }
             Text(text).font(.system(size: 11, weight: .medium))

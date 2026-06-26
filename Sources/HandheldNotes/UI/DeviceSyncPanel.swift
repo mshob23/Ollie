@@ -1,3 +1,4 @@
+import HandheldNotesCore
 import SwiftUI
 
 /// The Local-mode surface: a slide-over panel that drives the (mock) handheld

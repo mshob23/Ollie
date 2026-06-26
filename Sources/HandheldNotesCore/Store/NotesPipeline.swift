@@ -8,10 +8,10 @@ import Foundation
 /// Returns the note; the caller (AppModel) is responsible for inserting it into
 /// the observable array and persisting. Keeping persistence in the caller means
 /// the pipeline stays a pure transform that's easy to reason about.
-struct NotesPipeline: Sendable {
-    var transcription: TranscriptionService
+public struct NotesPipeline: Sendable {
+    public var transcription: TranscriptionService
 
-    init(engine: TranscriptionEngine) {
+    public init(engine: TranscriptionEngine) {
         self.transcription = TranscriptionService(engine: engine)
     }
 
@@ -19,17 +19,17 @@ struct NotesPipeline: Sendable {
     /// Computer/live mode, where speech is *appended to the active draft* instead
     /// of finalized. The audio is imported into the store under `noteID` so the
     /// eventual concluded note keeps a playable recording.
-    struct TranscribedClip: Sendable {
-        var text: String
-        var storedAudioName: String
-        var durationSeconds: Double?
-        var engineUsed: String?
+    public struct TranscribedClip: Sendable {
+        public var text: String
+        public var storedAudioName: String
+        public var durationSeconds: Double?
+        public var engineUsed: String?
     }
 
     /// Import + transcribe a recording and return the text (no `Note` produced).
     /// `noteID` should be the draft's id so the stored audio file matches the note
     /// that will eventually be concluded.
-    func transcribeClip(audioURL: URL, noteID: UUID) async throws -> TranscribedClip {
+    public func transcribeClip(audioURL: URL, noteID: UUID) async throws -> TranscribedClip {
         let duration = try? AudioInfo.duration(of: audioURL)
         let storedName = try NotesStore.importAudio(from: audioURL, noteID: noteID)
         let result: TranscriptionResult
@@ -51,7 +51,7 @@ struct NotesPipeline: Sendable {
     /// - Parameter copyAudio: whether to copy the source audio into the store.
     ///   For mock device files (bundled, read-only) we copy; for mic captures we
     ///   also copy so the original temp file can be cleaned up.
-    func ingest(audioURL: URL, source: NoteSource) async throws -> Note {
+    public func ingest(audioURL: URL, source: NoteSource) async throws -> Note {
         let noteID = UUID()
         let duration = try? AudioInfo.duration(of: audioURL)
 

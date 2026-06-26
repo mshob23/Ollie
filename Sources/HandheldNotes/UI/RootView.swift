@@ -1,3 +1,4 @@
+import HandheldNotesCore
 import SwiftUI
 
 /// The whole window: a notes-first split — the notes list on the left, and a

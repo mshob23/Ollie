@@ -1,3 +1,4 @@
+import HandheldNotesCore
 import SwiftUI
 
 /// The settings sheet. Two things to decide: **how the capture mode is chosen**

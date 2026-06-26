@@ -1,4 +1,5 @@
 import AppKit
+import HandheldNotesCore
 import SwiftUI
 
 /// Hosts the SwiftUI `RootView` inside a real AppKit window. We drive the window
@@ -8,7 +9,9 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
-    private let model = AppModel()
+    // Inject the macOS Carbon hotkey as the core's PushToTalkController so the
+    // platform-agnostic AppModel can drive push-to-talk without importing Carbon.
+    private let model = AppModel(pushToTalk: { handler in HotKeyManager(callback: handler) })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)

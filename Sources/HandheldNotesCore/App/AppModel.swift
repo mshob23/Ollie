@@ -3,32 +3,47 @@ import Combine
 import Foundation
 import SwiftUI
 
+/// Drives the global push-to-talk hotkey (press → record, release → stop). The
+/// concrete implementation is platform-specific (macOS uses Carbon, which lives
+/// in the app target), so `AppModel` depends only on this protocol and the app
+/// injects a factory. iOS has no global hotkey, so it simply passes `nil`.
+///
+/// `@MainActor` because the only implementation (macOS Carbon `HotKeyManager`)
+/// touches main-thread state, and `AppModel` (also `@MainActor`) owns it.
+@MainActor
+public protocol PushToTalkController: AnyObject {
+    /// Begin listening for the hotkey. Returns whether the primary registration
+    /// succeeded (a fallback path may still cover it). Safe to ignore.
+    @discardableResult
+    func register() -> Bool
+}
+
 /// App-wide settings persisted as JSON next to the notes.
-struct NotesSettings: Codable, Equatable, Sendable {
-    var transcriptionEngineID: String = TranscriptionEngine.appleSpeech.rawValue
-    var hasSeededDemo: Bool = false
+public struct NotesSettings: Codable, Equatable, Sendable {
+    public var transcriptionEngineID: String = TranscriptionEngine.appleSpeech.rawValue
+    public var hasSeededDemo: Bool = false
 
     /// Manual vs. Automatic mode selection (see `ModeSelection`).
-    var modeSelectionID: String = ModeSelection.manual.rawValue
+    public var modeSelectionID: String = ModeSelection.manual.rawValue
     /// The user's explicit Computer/Local choice, honored when `modeSelection`
     /// is `.manual`.
-    var manualModeID: String = CaptureMode.computer.rawValue
+    public var manualModeID: String = CaptureMode.computer.rawValue
 
-    var engine: TranscriptionEngine {
+    public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
-    var modeSelection: ModeSelection {
+    public var modeSelection: ModeSelection {
         ModeSelection(rawValue: modeSelectionID) ?? .manual
     }
-    var manualMode: CaptureMode {
+    public var manualMode: CaptureMode {
         CaptureMode(rawValue: manualModeID) ?? .computer
     }
 
-    init() {}
+    public init() {}
 
     /// Tolerant decode so an older settings.json (missing the new mode keys) still
     /// loads, keeping the existing engine choice and seed flag.
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let fresh = NotesSettings()
         transcriptionEngineID = try c.decodeIfPresent(String.self, forKey: .transcriptionEngineID) ?? fresh.transcriptionEngineID
@@ -37,7 +52,7 @@ struct NotesSettings: Codable, Equatable, Sendable {
         manualModeID = try c.decodeIfPresent(String.self, forKey: .manualModeID) ?? fresh.manualModeID
     }
 
-    static func load() -> NotesSettings {
+    public static func load() -> NotesSettings {
         guard let url = try? Self.url(), let data = try? Data(contentsOf: url),
               let s = try? JSONDecoder().decode(NotesSettings.self, from: data) else {
             return NotesSettings()
@@ -45,7 +60,7 @@ struct NotesSettings: Codable, Equatable, Sendable {
         return s
     }
 
-    func save() {
+    public func save() {
         guard let url = try? Self.url() else { return }
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try? enc.encode(self).write(to: url, options: [.atomic])
@@ -57,7 +72,7 @@ struct NotesSettings: Codable, Equatable, Sendable {
 }
 
 /// What kind of capture is currently happening, for the capture bar UI.
-enum RecordingState: Equatable {
+public enum RecordingState: Equatable {
     case idle
     case recording          // mic is live (Computer mode)
     case transcribing       // a capture is being turned into a note
@@ -68,34 +83,34 @@ enum RecordingState: Equatable {
 /// services, and the app's mutable state. Everything the UI triggers funnels
 /// through here.
 @MainActor
-final class AppModel: ObservableObject {
+public final class AppModel: ObservableObject {
 
     // Notes + selection + search.
-    @Published var notes: [Note] = []
-    @Published var selectedNoteID: Note.ID?
-    @Published var searchText: String = ""
+    @Published public var notes: [Note] = []
+    @Published public var selectedNoteID: Note.ID?
+    @Published public var searchText: String = ""
 
     // Capture state.
-    @Published var recordingState: RecordingState = .idle
-    @Published var micLevel: Float = 0
+    @Published public var recordingState: RecordingState = .idle
+    @Published public var micLevel: Float = 0
 
     // The active in-progress draft (Computer / live mode). Accumulates appended
     // speech + edits until the user explicitly concludes it into a saved note.
-    @Published var draft = Draft()
+    @Published public var draft = Draft()
 
     // Simulated handheld connectivity. With the mock service there's no radio, so
     // this stands in for "device in range." In Automatic mode it decides the mode
     // (connected → Computer, out of range → Local); the user toggles it to watch
     // Auto flip. Persisted? No — it's runtime/session state.
-    @Published var simulatedDeviceConnected: Bool = true
+    @Published public var simulatedDeviceConnected: Bool = true
 
     // Device sync state + log.
-    @Published var syncState: DeviceSyncState = .idle
-    @Published var deviceFiles: [DeviceFile] = []
-    @Published var syncLog: [String] = []
+    @Published public var syncState: DeviceSyncState = .idle
+    @Published public var deviceFiles: [DeviceFile] = []
+    @Published public var syncLog: [String] = []
 
     // Settings.
-    @Published var settings: NotesSettings {
+    @Published public var settings: NotesSettings {
         didSet {
             if oldValue != settings { settings.save() }
             if oldValue.transcriptionEngineID != settings.transcriptionEngineID {
@@ -105,21 +120,32 @@ final class AppModel: ObservableObject {
     }
 
     // Banner for transient, non-fatal messages (permission denied, etc.).
-    @Published var banner: String?
+    @Published public var banner: String?
 
     // Services.
     private let mic = MicCaptureService()
-    private var hotKey: HotKeyManager?
-    private(set) var deviceSync: DeviceSyncService
+    private var hotKey: PushToTalkController?
+    private let pushToTalkFactory: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)?
+    public private(set) var deviceSync: DeviceSyncService
     private var pipeline: NotesPipeline
     private var micLevelTimer: Timer?
     private var captureURL: URL?
 
-    init() {
+    /// - Parameters:
+    ///   - deviceSync: the sync backend (defaults to the mock; the app can pass a
+    ///     real `BLEDeviceSyncService`).
+    ///   - pushToTalk: factory that builds the platform hotkey controller from a
+    ///     press/release handler. Pass `nil` on platforms with no global hotkey
+    ///     (e.g. iOS); the macOS app injects one wrapping its Carbon `HotKeyManager`.
+    public init(
+        deviceSync: DeviceSyncService? = nil,
+        pushToTalk: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)? = nil
+    ) {
         let loaded = NotesSettings.load()
         self.settings = loaded
         self.pipeline = NotesPipeline(engine: loaded.engine)
-        self.deviceSync = MockDeviceSyncService()
+        self.deviceSync = deviceSync ?? MockDeviceSyncService()
+        self.pushToTalkFactory = pushToTalk
 
         self.notes = NotesStore.load()
         seedDemoNotesIfNeeded()
@@ -131,7 +157,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived
 
-    var filteredNotes: [Note] {
+    public var filteredNotes: [Note] {
         let sorted = notes.sorted { $0.createdAt > $1.createdAt }
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return sorted }
@@ -140,17 +166,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var selectedNote: Note? {
+    public var selectedNote: Note? {
         guard let id = selectedNoteID else { return nil }
         return notes.first { $0.id == id }
     }
 
-    var isRecording: Bool {
+    public var isRecording: Bool {
         if case .recording = recordingState { return true }
         return false
     }
 
-    var isTranscribing: Bool {
+    public var isTranscribing: Bool {
         if case .transcribing = recordingState { return true }
         return false
     }
@@ -160,7 +186,7 @@ final class AppModel: ObservableObject {
     /// The capture mode in effect right now. In Manual it's the user's explicit
     /// choice; in Automatic it follows simulated device connectivity (connected →
     /// Computer live transcribe, out of range → Local store-and-sync).
-    var activeMode: CaptureMode {
+    public var activeMode: CaptureMode {
         switch settings.modeSelection {
         case .manual:    return settings.manualMode
         case .automatic: return simulatedDeviceConnected ? .computer : .local
@@ -168,17 +194,17 @@ final class AppModel: ObservableObject {
     }
 
     /// True when the active mode was chosen automatically (for the UI badge).
-    var modeIsAutomatic: Bool { settings.modeSelection == .automatic }
+    public var modeIsAutomatic: Bool { settings.modeSelection == .automatic }
 
     /// Manual-mode toggle between Computer and Local.
-    func setManualMode(_ mode: CaptureMode) {
+    public func setManualMode(_ mode: CaptureMode) {
         settings.manualModeID = mode.rawValue
     }
 
     /// Flip simulated connectivity (Automatic mode). Coming back *into* range is
     /// the moment the handheld hands over anything it recorded offline, so we kick
     /// off a device sync — finished notes drop straight into the list.
-    func setSimulatedConnected(_ connected: Bool) {
+    public func setSimulatedConnected(_ connected: Bool) {
         let wasConnected = simulatedDeviceConnected
         simulatedDeviceConnected = connected
         if connected && !wasConnected && settings.modeSelection == .automatic {
@@ -188,7 +214,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Notes CRUD
 
-    func updateTitle(_ title: String, for id: Note.ID) {
+    public func updateTitle(_ title: String, for id: Note.ID) {
         guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         notes[idx].title = trimmed.isEmpty ? notes[idx].title : trimmed
@@ -196,21 +222,21 @@ final class AppModel: ObservableObject {
         persist()
     }
 
-    func updateTranscript(_ transcript: String, for id: Note.ID) {
+    public func updateTranscript(_ transcript: String, for id: Note.ID) {
         guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         notes[idx].transcript = transcript
         notes[idx].updatedAt = Date()
         persist()
     }
 
-    func toggleFavorite(_ id: Note.ID) {
+    public func toggleFavorite(_ id: Note.ID) {
         guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         notes[idx].isFavorite.toggle()
         notes[idx].updatedAt = Date()
         persist()
     }
 
-    func delete(_ id: Note.ID) {
+    public func delete(_ id: Note.ID) {
         guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
         if let audio = notes[idx].audioFileName { NotesStore.deleteAudio(named: audio) }
         notes.remove(at: idx)
@@ -231,12 +257,12 @@ final class AppModel: ObservableObject {
     // A recording no longer creates a note. Hold-to-talk transcribes and *appends*
     // the speech to `draft`; the draft is only finalized on an explicit conclude.
 
-    func toggleRecording() {
+    public func toggleRecording() {
         if isRecording { Task { await stopRecordingAndAppend() } }
         else { Task { await startRecording() } }
     }
 
-    func startRecording() async {
+    public func startRecording() async {
         guard !isRecording, !isTranscribing else { return }
         // Live capture only makes sense in Computer mode. In Local mode the device
         // is doing the recording; ignore the Mac mic.
@@ -255,7 +281,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Stop the mic, transcribe, and APPEND the result to the active draft.
-    func stopRecordingAndAppend() async {
+    public func stopRecordingAndAppend() async {
         guard isRecording else { return }
         stopMicLevelPolling()
         let url: URL
@@ -283,7 +309,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func cancelRecording() {
+    public func cancelRecording() {
         guard isRecording else { return }
         stopMicLevelPolling()
         mic.cancel()
@@ -292,12 +318,12 @@ final class AppModel: ObservableObject {
 
     // MARK: Draft editing (mirrors the device's RIGHT / BOTTOM buttons)
 
-    func draftSpace()    { draft.typeSpace() }
-    func draftNewline()  { draft.typeNewline() }
-    func draftBackspace(){ draft.backspace() }
+    public func draftSpace()    { draft.typeSpace() }
+    public func draftNewline()  { draft.typeNewline() }
+    public func draftBackspace(){ draft.backspace() }
 
     /// Direct-edit binding target for the draft transcript (typing in the field).
-    func setDraftTranscript(_ text: String) { draft.transcript = text }
+    public func setDraftTranscript(_ text: String) { draft.transcript = text }
 
     /// Explicitly conclude the active draft (device double-tap-middle = Enter, or
     /// the Send button / ⌘↩). Finalizes it into the saved list and starts a fresh
@@ -310,7 +336,7 @@ final class AppModel: ObservableObject {
     /// products of the Space/Newline/Backspace edit keys counts as empty and is
     /// dropped here. If such an empty draft is dropped, any audio it happened to
     /// retain is cleaned up so it can't orphan a file.
-    func concludeDraft() {
+    public func concludeDraft() {
         guard !draft.isEmpty else {
             // Empty/whitespace conclude: reset to a clean draft, save nothing.
             clearDraft()
@@ -322,19 +348,19 @@ final class AppModel: ObservableObject {
     }
 
     /// Discard the active draft without saving (and drop its retained audio).
-    func clearDraft() {
+    public func clearDraft() {
         if let audio = draft.audioFileName { NotesStore.deleteAudio(named: audio) }
         draft = Draft()
     }
 
     // MARK: Device sync (mock by default)
 
-    func startDeviceSync() {
+    public func startDeviceSync() {
         syncLog.removeAll()
         deviceSync.startSync()
     }
 
-    func stopDeviceSync() {
+    public func stopDeviceSync() {
         deviceSync.stop()
     }
 
@@ -352,7 +378,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     let note = await self.ingest(url: url, source: source, cleanupSource: false)
                     if note != nil {
-                        // Confirm the save so the (mock) device can free the slot.
+                        // Confirm the save so the device can free the slot.
                         self.deviceSync.confirmSaved(fileId: fileId)
                     }
                 }
@@ -392,14 +418,14 @@ final class AppModel: ObservableObject {
 
     private func registerHotKey() {
         // Press = start recording, release = stop + transcribe (push-to-talk).
-        hotKey = HotKeyManager { [weak self] pressed in
+        // No factory (e.g. iOS) → no global hotkey; the UI record button still works.
+        guard let pushToTalkFactory else { return }
+        hotKey = pushToTalkFactory { [weak self] pressed in
             guard let self else { return }
-            Task { @MainActor in
-                if pressed { await self.startRecording() }
-                else { await self.stopRecordingAndAppend() }
-            }
+            if pressed { Task { await self.startRecording() } }
+            else { Task { await self.stopRecordingAndAppend() } }
         }
-        _ = hotKey?.register()
+        hotKey?.register()
     }
 
     // MARK: Pipeline rebuild on engine change
@@ -425,7 +451,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Audio URL passthrough for the UI player
 
-    func audioURL(for note: Note) -> URL? { NotesStore.audioURL(for: note) }
+    public func audioURL(for note: Note) -> URL? { NotesStore.audioURL(for: note) }
 
     // MARK: Demo seeding
 

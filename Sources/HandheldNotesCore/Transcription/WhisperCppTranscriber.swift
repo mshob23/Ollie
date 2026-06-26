@@ -1,11 +1,18 @@
 import AVFoundation
 import Foundation
 
+#if os(macOS)
+
 /// Local whisper.cpp transcription, adapted from the old app's
 /// WhisperCppTranscriptionRunner. Shells out to `whisper-cli` (+ `ffmpeg` for any
 /// non-WAV input). If the tools/model aren't installed, `isAvailable` is false
 /// and the dispatcher falls back to Apple Speech — so this is a real path when
 /// present and a no-op otherwise.
+///
+/// macOS-only: it depends on `Process` (subprocess spawning) and a home-directory
+/// model path, neither of which exists on iOS. The non-macOS stub below keeps the
+/// type's surface identical so `TranscriptionService` compiles unchanged and just
+/// falls back to Apple Speech off-macOS.
 struct WhisperCppTranscriber: Transcribing {
     /// Resolved lazily; checks the common Homebrew locations + a model in
     /// `~/.whisper-models`.
@@ -96,8 +103,23 @@ struct WhisperCppTranscriber: Transcribing {
     }
 }
 
+#else
+
+/// Non-macOS stub: there is no subprocess/CLI path on iOS, so whisper.cpp is never
+/// available and `TranscriptionService` transparently falls back to Apple Speech.
+/// Same surface as the macOS implementation so callers compile unchanged.
+struct WhisperCppTranscriber: Transcribing {
+    var isAvailable: Bool { false }
+
+    func transcribe(url: URL) async throws -> TranscriptionResult {
+        throw TranscriptionError.missingTool("whisper-cli (unavailable on this platform)")
+    }
+}
+
+#endif
+
 /// Small helper for reading an audio file's duration (used for note metadata and
-/// the "engine unavailable" placeholder text).
+/// the "engine unavailable" placeholder text). Cross-platform (AVFoundation).
 enum AudioInfo {
     static func duration(of url: URL) throws -> Double {
         let file = try AVAudioFile(forReading: url)

@@ -1,4 +1,5 @@
 import AppKit
+import HandheldNotesCore
 import SwiftUI
 
 /// The right pane: the selected note's editable title, a clear source indicator,
