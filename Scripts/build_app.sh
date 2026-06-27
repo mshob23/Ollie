@@ -12,6 +12,10 @@ APP_NAME="Handheld Notes"
 APP_BUNDLE="$BUILD_DIR/${BUILD_CONFIG}/${APP_NAME}.app"
 EXECUTABLE="$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes"
 ENTITLEMENTS="$ROOT_DIR/HandheldNotes.entitlements"
+# Developer ID provisioning profile authorizing the restricted iCloud/CloudKit + aps
+# entitlements. Without it embedded, AMFI denies launch ("error 163") on a Developer-ID
+# binary carrying those entitlements. Override with PROVISION_PROFILE=/path if needed.
+PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/HandheldNotes.provisionprofile}"
 
 strip_distribution_xattrs() {
   # Deep clean: the SwiftPM-generated resource .bundle carries com.apple.FinderInfo,
@@ -50,6 +54,19 @@ done
 if [[ -f "$ROOT_DIR/AppIcon.icns" ]]; then
   cp "$ROOT_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 fi
+
+# Embed the Developer ID provisioning profile BEFORE codesign so the signature seals
+# it. macOS evaluates this profile at every launch to authorize the iCloud + aps
+# entitlements; without it the app won't launch (error 163). codesign --deep leaves
+# the profile byte-for-byte unchanged — it just must be present first. On macOS the
+# file MUST be named exactly Contents/embedded.provisionprofile.
+if [[ -f "$PROVISION_PROFILE" ]]; then
+  cp "$PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
+  echo "Embedded provisioning profile: $PROVISION_PROFILE"
+else
+  echo "WARNING: no provisioning profile at $PROVISION_PROFILE — the app will NOT launch with the iCloud/aps entitlements (error 163)." >&2
+fi
+
 strip_distribution_xattrs
 
 # Prefer a stable Developer ID identity; fall back to ad-hoc if none is installed.
