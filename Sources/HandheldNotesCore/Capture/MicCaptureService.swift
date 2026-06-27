@@ -153,21 +153,30 @@ private final class RecordingSink: @unchecked Sendable {
     }
 
     init(url: URL, inputFormat: AVAudioFormat, targetFormat: AVAudioFormat) throws {
-        guard let conv = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw NSError(domain: "RecordingSink", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "could not build audio converter"])
-        }
+        // On-disk format: 16 kHz mono int16 WAV (what whisper.cpp / Apple Speech want).
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000.0,
+            AVSampleRateKey: targetFormat.sampleRate,
             AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
         ]
-        self.outputFile = try AVAudioFile(forWriting: url, settings: settings)
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        self.outputFile = file
+        // CRITICAL: write buffers in the file's OWN `processingFormat`, not a hand-built
+        // int16 format. `AVAudioFile(forWriting:settings:)` processes audio in a canonical
+        // (float, deinterleaved) format and converts to the on-disk int16 itself — handing
+        // its writer an int16 buffer trips a fatal CoreAudio assertion (CAAssertRtn inside
+        // ExtAudioFileWrite) and aborts the process. So target the processing format; the
+        // file still STORES 16 kHz mono int16 per `settings` above.
+        let processing = file.processingFormat
+        guard let conv = AVAudioConverter(from: inputFormat, to: processing) else {
+            throw NSError(domain: "RecordingSink", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build audio converter"])
+        }
         self.converter = conv
-        self.targetFormat = targetFormat
+        self.targetFormat = processing
     }
 
     func consume(_ buffer: AVAudioPCMBuffer) {
