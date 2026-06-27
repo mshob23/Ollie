@@ -83,7 +83,12 @@ final class MicCaptureService {
         }
         self.sink = sink
 
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { buffer, _ in
+        // The tap fires on a realtime audio thread. Mark the block @Sendable so it is
+        // NOT inferred as @MainActor — it's written inside this @MainActor method, and an
+        // inherited main-actor isolation makes Swift 6 TRAP (EXC_BREAKPOINT in
+        // swift_task_checkIsolated) the instant AVAudioEngine invokes it off the main
+        // thread. @Sendable keeps it nonisolated; it only touches the Sendable sink.
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { @Sendable buffer, _ in
             sink.consume(buffer)
         }
 
