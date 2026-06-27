@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds Handheld Notes into a real, launchable .app bundle and signs it with a
-# stable Developer ID identity (so macOS permission grants persist across builds,
-# the same reasoning as the old app's build_app.sh). Prints the bundle path last.
+# Builds Handheld Notes into a real, launchable .app bundle and signs it with a stable
+# identity (so macOS permission grants persist across builds). See the HC_SIGN block
+# below for the dev (default) vs release signing modes. Prints the bundle path last.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-debug}"
@@ -11,11 +11,23 @@ BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build}"
 APP_NAME="Handheld Notes"
 APP_BUNDLE="$BUILD_DIR/${BUILD_CONFIG}/${APP_NAME}.app"
 EXECUTABLE="$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes"
-ENTITLEMENTS="$ROOT_DIR/HandheldNotes.entitlements"
-# Developer ID provisioning profile authorizing the restricted iCloud/CloudKit + aps
-# entitlements. Without it embedded, AMFI denies launch ("error 163") on a Developer-ID
-# binary carrying those entitlements. Override with PROVISION_PROFILE=/path if needed.
-PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/HandheldNotes.provisionprofile}"
+# Signing mode. DEV (default): Apple Development cert + the macOS Development profile +
+# the development entitlements (aps=development, CloudKit=Development). This puts the Mac
+# on the SAME development push network as the from-Xcode iPhone build, so iCloud sync is
+# instant in BOTH directions while iterating. RELEASE (HC_SIGN=release): Developer ID +
+# the Production profile + production entitlements — notarizable, not device-locked, the
+# eventual ship build. Each profile authorizes only its own aps/CloudKit environment, so
+# the entitlements file MUST match the profile (mismatch = AMFI "error 163" at launch).
+HC_SIGN="${HC_SIGN:-dev}"
+if [[ "$HC_SIGN" == "release" ]]; then
+  ENTITLEMENTS="${ENTITLEMENTS:-$ROOT_DIR/HandheldNotes-release.entitlements}"
+  PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/HandheldNotes.provisionprofile}"
+  DEFAULT_IDENTITY="Developer ID Application: Mohammad Shobaki (2J5S7H2LTB)"
+else
+  ENTITLEMENTS="${ENTITLEMENTS:-$ROOT_DIR/HandheldNotes.entitlements}"
+  PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/HandheldNotes-dev.provisionprofile}"
+  DEFAULT_IDENTITY="Apple Development: Mohammad Shobaki (N93RW3CSQ2)"
+fi
 
 strip_distribution_xattrs() {
   # Deep clean: the SwiftPM-generated resource .bundle carries com.apple.FinderInfo,
@@ -69,9 +81,12 @@ fi
 
 strip_distribution_xattrs
 
-# Prefer a stable Developer ID identity; fall back to ad-hoc if none is installed.
+# Use the mode's identity (set in the HC_SIGN block) if it's installed; otherwise fall
+# back to ad-hoc (which still launches for local dev, but grants don't persist).
 if [[ -z "${CODE_SIGN_IDENTITY:-}" ]]; then
-  CODE_SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
+  if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$DEFAULT_IDENTITY"; then
+    CODE_SIGN_IDENTITY="$DEFAULT_IDENTITY"
+  fi
 fi
 
 # Sign with up to 3 attempts. On a fileprovider-backed / cloud-synced filesystem
