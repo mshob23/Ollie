@@ -98,6 +98,7 @@ private struct SourceBanner: View {
         case .computer: return .hcAccent
         case .device:   return .hcOk
         case .watch:    return .hcAccent
+        case .phone:    return .hcAccent
         case .seed:     return .hcSecondaryText
         }
     }
@@ -107,6 +108,7 @@ private struct SourceBanner: View {
         case .computer: return "Computer mode · captured on this Mac"
         case .device:   return "Local mode · synced from the handheld"
         case .watch:    return "Watch · captured on Apple Watch"
+        case .phone:    return "iPhone · composed on your iPhone"
         case .seed:     return "Demo note"
         }
     }
@@ -119,6 +121,8 @@ private struct SourceBanner: View {
             return "Recorded offline to the device's SD card and transferred over BLE on reconnect."
         case .watch:
             return "Recorded on the Apple Watch and transferred to your iPhone, which transcribed it."
+        case .phone:
+            return "Typed or dictated in the iPhone app's note composer."
         case .seed:
             return "Sample content seeded on first launch so the app isn't empty."
         }
@@ -204,6 +208,7 @@ private struct NoteHeader: View {
         case .computer: return .hcAccent
         case .device:   return .hcOk
         case .watch:    return .hcAccent
+        case .phone:    return .hcAccent
         case .seed:     return .hcSecondaryText
         }
     }

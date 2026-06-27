@@ -5,6 +5,7 @@ public enum NoteSource: String, Codable, Sendable, Hashable {
     case computer   // Mac mic via the F16 push-to-talk hotkey
     case device     // synced from the handheld's SD card over BLE
     case watch      // recorded on the Apple Watch, transferred to iPhone over WatchConnectivity
+    case phone      // composed on the iPhone — typed, or recorded + transcribed on-device
     case seed       // demo content seeded on first run
 
     public var label: String {
@@ -12,6 +13,7 @@ public enum NoteSource: String, Codable, Sendable, Hashable {
         case .computer: return "Computer"
         case .device:   return "Device"
         case .watch:    return "Watch"
+        case .phone:    return "iPhone"
         case .seed:     return "Demo"
         }
     }
@@ -22,6 +24,7 @@ public enum NoteSource: String, Codable, Sendable, Hashable {
         case .computer: return "mic.fill"
         case .device:   return "dot.radiowaves.left.and.right"
         case .watch:    return "applewatch"
+        case .phone:    return "iphone"
         case .seed:     return "sparkles"
         }
     }
