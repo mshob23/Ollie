@@ -82,12 +82,11 @@ public enum NotesDataStore {
         return try! ModelContainer(for: schema, configurations: [mem])
     }
 
-    /// Temporary diagnostic: record the CloudKit-vs-local outcome to a file in /tmp
-    /// (and NSLog), so a signing/entitlement/account problem is visible even when
-    /// the unified log doesn't surface this process's output.
+    /// Record the CloudKit-vs-local outcome to the unified log (tagged `HNDIAG` so
+    /// it's greppable via `log show --predicate 'eventMessage CONTAINS "HNDIAG"'`).
+    /// Keep this: a future signing/entitlement/account regression silently drops the
+    /// app to the local store, and this line is the fastest way to catch it.
     static func writeDiag(_ message: String) {
-        let line = "HNDIAG \(message)\n"
-        NSLog("%@", line)
-        try? line.write(toFile: "/tmp/hn_diag.txt", atomically: true, encoding: .utf8)
+        NSLog("HNDIAG %@", message)
     }
 }
