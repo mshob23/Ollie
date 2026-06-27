@@ -1,6 +1,8 @@
 import AVFoundation
 import Foundation
+#if canImport(Speech)
 import Speech
+#endif
 
 /// On-device speech-to-text via Apple's frameworks. Adapted from the old app's
 /// AppleSpeechTranscriptionRunner.
@@ -8,6 +10,14 @@ import Speech
 /// macOS 26+ / iOS 26+ use the new `SpeechAnalyzer` + `Speech.SpeechTranscriber`
 /// stack; the file-based path needs no Speech-Recognition TCC authorization. Older
 /// systems fall back to `SFSpeechRecognizer` pinned to on-device recognition.
+///
+/// The Speech framework does **not** exist on watchOS, so the whole engine is
+/// compiled out there (`#if canImport(Speech)`). The core still builds for watchOS
+/// — important because the watch app's Xcode project includes this package in its
+/// graph — and the watch never transcribes anyway (it ships audio to the iPhone).
+/// On a Speech-less platform `transcribe` throws `appleSpeechUnavailable`, which the
+/// caller (`TranscriptionService.appleOrStub`) already turns into a saved placeholder.
+#if canImport(Speech)
 struct AppleSpeechTranscriber: Transcribing {
     func transcribe(url: URL) async throws -> TranscriptionResult {
         let inputAttrs = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -128,6 +138,16 @@ struct AppleSpeechTranscriber: Transcribing {
         }
     }
 }
+#else
+/// watchOS (no Speech framework): a stub so the type still exists and the package
+/// compiles. It never runs in practice — the watch ships audio to the iPhone — and
+/// if it ever were invoked it throws, which the caller turns into a placeholder.
+struct AppleSpeechTranscriber: Transcribing {
+    func transcribe(url: URL) async throws -> TranscriptionResult {
+        throw TranscriptionError.appleSpeechUnavailable("Apple Speech is not available on this platform.")
+    }
+}
+#endif
 
 /// Guards a checked continuation so a handler that can fire more than once only
 /// resumes it a single time.

@@ -414,6 +414,15 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Ingest a recording transferred from the Apple Watch over WatchConnectivity.
+    /// The watch is a thin capture front-end: it records audio and ships the file
+    /// to the iPhone, which runs the normal transcribe → save pipeline. The passed
+    /// URL is a temp copy the iOS receiver made out of the WatchConnectivity inbox,
+    /// so we own it and clean it up once ingested.
+    public func ingestFromWatch(url: URL) async {
+        await ingest(url: url, source: .watch, cleanupSource: true)
+    }
+
     // MARK: Hotkey
 
     private func registerHotKey() {

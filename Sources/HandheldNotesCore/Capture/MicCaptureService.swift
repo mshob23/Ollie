@@ -40,6 +40,13 @@ final class MicCaptureService {
     var level: Float { sink?.level ?? 0 }
 
     static func requestPermission() async -> Bool {
+        // `AVCaptureDevice` is the macOS/iOS capture-permission door and doesn't exist
+        // on watchOS. This Mac-side capture service never runs on the watch (the watch
+        // has its own recorder), but the package still compiles for the watchOS SDK
+        // because it's in the watch app's project graph — so stub the permission there.
+        #if os(watchOS)
+        return false
+        #else
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return true
         case .notDetermined:
@@ -49,6 +56,7 @@ final class MicCaptureService {
         default:
             return false
         }
+        #endif
     }
 
     /// Start recording into a fresh temp WAV. Returns the URL being written.

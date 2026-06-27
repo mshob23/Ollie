@@ -172,6 +172,7 @@ struct NoteRow: View {
         switch note.source {
         case .computer: return .hcAccent
         case .device:   return .hcOk
+        case .watch:    return .hcAccent
         case .seed:     return .hcSecondaryText
         }
     }
