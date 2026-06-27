@@ -1,4 +1,5 @@
 import AVFoundation
+import CloudKit
 import Combine
 import Foundation
 import SwiftData
@@ -191,6 +192,7 @@ public final class AppModel: ObservableObject {
 
         // Migration + seed run against the store, THEN project into `notes`.
         importLegacyNotesIfNeeded()
+        if CommandLine.arguments.contains("--wipe-all-notes") { deleteAllNotes() }
         seedDemoNotesIfNeeded()
         reloadNotes()
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
@@ -297,6 +299,31 @@ public final class AppModel: ObservableObject {
         if selectedNoteID == id { selectedNoteID = nil }
         saveAndReload()
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
+    }
+
+    /// Maintenance only (behind the `--wipe-all-notes` launch arg): delete every note
+    /// + its audio so a shared library can be cleared of test/demo clutter. The
+    /// deletions mirror out via CloudKit, so peers go empty too. Not surfaced in the UI.
+    public func deleteAllNotes() {
+        let all = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+        for entity in all {
+            if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
+            modelContext.delete(entity)
+        }
+        selectedNoteID = nil
+        saveAndReload()
+        // NSPCC's per-record deletion *exports* are slow/batched, so also delete the
+        // CloudKit mirror zone outright — that clears every peer immediately. NSPCC
+        // re-creates an empty zone on its next sync. Safe because the local store is
+        // now empty (nothing to re-upload). Peers must have empty local stores too
+        // (uninstalled / wiped) or they'll just re-populate the zone.
+        let zoneID = CKRecordZone.ID(zoneName: "com.apple.coredata.cloudkit.zone")
+        CKContainer(identifier: NotesDataStore.cloudKitContainerID)
+            .privateCloudDatabase
+            .delete(withRecordZoneID: zoneID) { _, error in
+                NSLog("HNDIAG cloud zone delete: %@", error.map { "\($0)" } ?? "ok")
+            }
+        NSLog("HNDIAG wiped %d local notes + requested cloud zone delete", all.count)
     }
 
     /// Create a note from content composed on this device (the iPhone compose
@@ -722,6 +749,16 @@ public final class AppModel: ObservableObject {
     // MARK: Demo seeding
 
     private func seedDemoNotesIfNeeded() {
+        // Demo seeding is OFF by default. The dedup-by-id below only sees the LOCAL
+        // store, but CloudKit mirroring keys records by NSPCC's internal id (not the
+        // note's `id`), so two devices seeding before they first sync produce copies
+        // that never merge — i.e. duplicates. Opt in with HN_SEED_DEMO=1 only for a
+        // throwaway screenshot/demo build on a single device.
+        guard ProcessInfo.processInfo.environment["HN_SEED_DEMO"] == "1" else {
+            settings.hasSeededDemo = true
+            settings.save()
+            return
+        }
         // Only seed an empty store, and only once (mirrors the legacy flag). The
         // store being empty after a real import means a genuinely fresh install.
         guard !settings.hasSeededDemo else { return }
