@@ -97,9 +97,13 @@ public struct TranscriptionService: Sendable {
             return try await apple.transcribe(url: url)
         } catch {
             let seconds = (try? AudioInfo.duration(of: url)) ?? 0
-            let placeholder = "[Transcription engine unavailable on this machine — "
-                + "audio captured (\(String(format: "%.1f", seconds))s) and saved. "
-                + "Install whisper-cli/ffmpeg or run on macOS 26+ to get a real transcript.]"
+            #if os(macOS)
+            let hint = "Install whisper-cli/ffmpeg or run on macOS 26+ to get a real transcript."
+            #else
+            let hint = "A real transcript is produced on-device — the Simulator just has no speech models."
+            #endif
+            let placeholder = "[Transcription unavailable here — "
+                + "audio captured (\(String(format: "%.1f", seconds))s) and saved. " + hint + "]"
             return TranscriptionResult(text: placeholder, engineUsed: "demo")
         }
     }
