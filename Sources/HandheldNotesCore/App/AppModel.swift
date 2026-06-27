@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import SwiftData
 import SwiftUI
 
 /// Drives the global push-to-talk hotkey (press → record, release → stop). The
@@ -29,6 +30,18 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     /// is `.manual`.
     public var manualModeID: String = CaptureMode.computer.rawValue
 
+    /// One-time guard: have we already imported the legacy `notes.json` into the
+    /// SwiftData store? Mirrors `hasSeededDemo` — set once the import runs so a
+    /// later launch never re-imports (and the renamed `notes.json.imported`
+    /// backup is left untouched).
+    public var didImportLegacyJSON: Bool = false
+
+    /// Sync recordings (the audio blobs) over iCloud alongside the transcripts.
+    /// Default ON — the user has the iCloud space and wants audio synced. When
+    /// off, only the lightweight note metadata/transcript syncs; audio stays
+    /// local to whichever device captured it.
+    public var syncAudioOverICloud: Bool = true
+
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
@@ -50,6 +63,8 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         hasSeededDemo = try c.decodeIfPresent(Bool.self, forKey: .hasSeededDemo) ?? fresh.hasSeededDemo
         modeSelectionID = try c.decodeIfPresent(String.self, forKey: .modeSelectionID) ?? fresh.modeSelectionID
         manualModeID = try c.decodeIfPresent(String.self, forKey: .manualModeID) ?? fresh.manualModeID
+        didImportLegacyJSON = try c.decodeIfPresent(Bool.self, forKey: .didImportLegacyJSON) ?? fresh.didImportLegacyJSON
+        syncAudioOverICloud = try c.decodeIfPresent(Bool.self, forKey: .syncAudioOverICloud) ?? fresh.syncAudioOverICloud
     }
 
     public static func load() -> NotesSettings {
@@ -131,15 +146,29 @@ public final class AppModel: ObservableObject {
     private var micLevelTimer: Timer?
     private var captureURL: URL?
 
+    // Persistence. `AppModel` owns the SwiftData container + context; the public
+    // `notes` array is a projection fetched out of it (see `reloadNotes`). The
+    // container prefers private-iCloud and degrades to local — sync, when it
+    // lights up, just flows changes into the same store this fetches from.
+    private let modelContainer: ModelContainer
+    private let modelContext: ModelContext
+
+    /// True when the live store is CloudKit-backed (vs. the local fallback).
+    /// Purely informational (e.g. a Settings indicator); behavior is identical
+    /// either way.
+    public var isCloudSyncActive: Bool { NotesDataStore.isCloudKitActive }
+
     /// - Parameters:
     ///   - deviceSync: the sync backend (defaults to the mock; the app can pass a
     ///     real `BLEDeviceSyncService`).
     ///   - pushToTalk: factory that builds the platform hotkey controller from a
     ///     press/release handler. Pass `nil` on platforms with no global hotkey
     ///     (e.g. iOS); the macOS app injects one wrapping its Carbon `HotKeyManager`.
+    ///   - inMemoryStore: use an in-memory SwiftData store (tests only).
     public init(
         deviceSync: DeviceSyncService? = nil,
-        pushToTalk: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)? = nil
+        pushToTalk: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)? = nil,
+        inMemoryStore: Bool = false
     ) {
         let loaded = NotesSettings.load()
         self.settings = loaded
@@ -147,9 +176,22 @@ public final class AppModel: ObservableObject {
         self.deviceSync = deviceSync ?? MockDeviceSyncService()
         self.pushToTalkFactory = pushToTalk
 
-        self.notes = NotesStore.load()
+        // Stand up the SwiftData store (CloudKit-preferred, local fallback).
+        let container = NotesDataStore.makeContainer(inMemory: inMemoryStore)
+        self.modelContainer = container
+        self.modelContext = ModelContext(container)
+        // Coalesce our own explicit saves; we drive persistence deliberately.
+        self.modelContext.autosaveEnabled = false
+
+        // Migration + seed run against the store, THEN project into `notes`.
+        importLegacyNotesIfNeeded()
         seedDemoNotesIfNeeded()
+        reloadNotes()
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
+
+        // Pick up changes that arrive from iCloud (another device's edits) and
+        // re-project them into the observable array.
+        observeRemoteChanges()
 
         wireDeviceSync()
         registerHotKey()
@@ -213,43 +255,123 @@ public final class AppModel: ObservableObject {
     }
 
     // MARK: Notes CRUD
+    //
+    // Every write mutates the matching `NoteEntity` and `context.save()`s, then
+    // re-projects into `notes`. The public array + views/search/selection stay
+    // byte-for-byte unchanged; persistence (and iCloud sync) is what moved
+    // underneath. CloudKit forbids unique constraints, so identity is enforced by
+    // fetching the entity for an id rather than relying on a DB constraint.
 
     public func updateTitle(_ title: String, for id: Note.ID) {
-        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard let entity = entity(for: id) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        notes[idx].title = trimmed.isEmpty ? notes[idx].title : trimmed
-        notes[idx].updatedAt = Date()
-        persist()
+        entity.title = trimmed.isEmpty ? entity.title : trimmed
+        entity.updatedAt = Date()
+        saveAndReload()
     }
 
     public func updateTranscript(_ transcript: String, for id: Note.ID) {
-        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes[idx].transcript = transcript
-        notes[idx].updatedAt = Date()
-        persist()
+        guard let entity = entity(for: id) else { return }
+        entity.transcript = transcript
+        entity.updatedAt = Date()
+        saveAndReload()
     }
 
     public func toggleFavorite(_ id: Note.ID) {
-        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes[idx].isFavorite.toggle()
-        notes[idx].updatedAt = Date()
-        persist()
+        guard let entity = entity(for: id) else { return }
+        entity.isFavorite.toggle()
+        entity.updatedAt = Date()
+        saveAndReload()
     }
 
     public func delete(_ id: Note.ID) {
-        guard let idx = notes.firstIndex(where: { $0.id == id }) else { return }
-        if let audio = notes[idx].audioFileName { NotesStore.deleteAudio(named: audio) }
-        notes.remove(at: idx)
-        if selectedNoteID == id { selectedNoteID = filteredNotes.first?.id }
-        persist()
+        guard let entity = entity(for: id) else { return }
+        if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
+        modelContext.delete(entity)
+        if selectedNoteID == id { selectedNoteID = nil }
+        saveAndReload()
+        if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
     }
 
-    private func persist() { NotesStore.save(notes) }
-
     private func insert(_ note: Note, select: Bool) {
-        notes.insert(note, at: 0)
-        persist()
+        // Upsert by id so a re-ingest / double-import converges instead of
+        // duplicating (no unique constraint to lean on under CloudKit).
+        if let existing = entity(for: note.id) {
+            existing.apply(note)
+        } else {
+            modelContext.insert(NoteEntity(note: note))
+        }
+        saveAndReload()
         if select { selectedNoteID = note.id }
+        // Pull the recording into the synced blob (best-effort, off the hot path).
+        syncAudioIfEnabled(for: note)
+    }
+
+    // MARK: SwiftData projection helpers
+
+    /// Fetch the entity for a note id (the CloudKit-safe stand-in for a unique
+    /// lookup). Returns nil if none / on error.
+    private func entity(for id: Note.ID) -> NoteEntity? {
+        var descriptor = FetchDescriptor<NoteEntity>(
+            predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    /// Re-project all stored entities into the observable `notes` array. The
+    /// array's own `filteredNotes` re-sorts, so the fetch order doesn't matter,
+    /// but we sort newest-first to keep things predictable.
+    private func reloadNotes() {
+        let descriptor = FetchDescriptor<NoteEntity>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        let entities = (try? modelContext.fetch(descriptor)) ?? []
+        notes = entities.map(Note.init(entity:))
+    }
+
+    /// Save pending context changes and re-project. Used by every mutation.
+    private func saveAndReload() {
+        do { try modelContext.save() }
+        catch { banner = "Couldn't save notes: \(error.localizedDescription)" }
+        reloadNotes()
+    }
+
+    // MARK: Audio sync (read local file → entity blob)
+
+    /// Read a note's local recording into its entity's `audioData` so it syncs
+    /// over iCloud. No-op when audio sync is disabled or the note has no audio.
+    /// Best-effort and asynchronous — failure never affects the saved note.
+    private func syncAudioIfEnabled(for note: Note) {
+        guard settings.syncAudioOverICloud, note.audioFileName != nil else { return }
+        Task { [weak self] in
+            guard let encoded = await AudioSync.encode(for: note) else { return }
+            await MainActor.run {
+                guard let self, let entity = self.entity(for: note.id) else { return }
+                // Skip if an identical blob already rode along (avoids re-writing
+                // and re-syncing on every reload).
+                if entity.audioData == encoded.data { return }
+                entity.audioData = encoded.data
+                entity.audioFileName = encoded.fileName
+                self.saveAndReload()
+            }
+        }
+    }
+
+    // MARK: Remote (iCloud) change observation
+
+    /// Re-project when the store changes underneath us — e.g. CloudKit pushes
+    /// another device's edits into the local store. SwiftData posts
+    /// `.NSPersistentStoreRemoteChange`-style notifications via the model context
+    /// did-save notification; observing `ModelContext.didSave` keeps the array
+    /// fresh without polling.
+    private func observeRemoteChanges() {
+        NotificationCenter.default.addObserver(
+            forName: ModelContext.didSave,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            // Hop to the main actor; materialize any newly-synced audio lazily on
+            // access (see audioURL(for:)), so here we just refresh the list.
+            Task { @MainActor [weak self] in self?.reloadNotes() }
+        }
     }
 
     // MARK: Computer / live mode — record APPENDS to the active draft
@@ -460,19 +582,86 @@ public final class AppModel: ObservableObject {
 
     // MARK: Audio URL passthrough for the UI player
 
-    public func audioURL(for note: Note) -> URL? { NotesStore.audioURL(for: note) }
+    /// Resolve a note's playable audio URL. On a device that received the note
+    /// over iCloud but doesn't have the local `Audio/<id>.<ext>` file yet, this
+    /// first **materializes** the synced `audioData` blob to disk so the player
+    /// finds it. Falls back to the plain local lookup otherwise.
+    public func audioURL(for note: Note) -> URL? {
+        if let url = NotesStore.audioURL(for: note) { return url }
+        // No local file — try to write out a synced blob, if one arrived.
+        if let entity = entity(for: note.id), let url = AudioSync.materialize(entity) {
+            return url
+        }
+        return nil
+    }
+
+    // MARK: One-time legacy JSON import (notes.json → SwiftData)
+
+    /// On first launch after the SwiftData migration, fold any pre-existing
+    /// `notes.json` into the store. Insert-if-id-absent (never blind append) so a
+    /// Mac+iPhone that both still carry the same legacy file converge on one copy
+    /// instead of doubling up. Tolerant-decodes (each `Note` already falls back
+    /// field-by-field). Then sets `didImportLegacyJSON` and renames the file to
+    /// `notes.json.imported` (kept as a backup; not deleted).
+    private func importLegacyNotesIfNeeded() {
+        guard !settings.didImportLegacyJSON else { return }
+        guard NotesStore.legacyNotesFileExists() else {
+            // Nothing to import — mark done so we don't keep checking, and a
+            // future `notes.json` (there won't be one) isn't silently absorbed.
+            settings.didImportLegacyJSON = true
+            settings.save()
+            return
+        }
+
+        let legacy = NotesStore.load() // tolerant decode of [Note]
+        var importedAny = false
+        for note in legacy where entity(for: note.id) == nil {
+            modelContext.insert(NoteEntity(note: note))
+            importedAny = true
+        }
+        if importedAny { try? modelContext.save() }
+
+        // Pull each imported note's local audio into its synced blob.
+        if settings.syncAudioOverICloud {
+            for note in legacy where note.audioFileName != nil {
+                syncAudioIfEnabled(for: note)
+            }
+        }
+
+        NotesStore.archiveLegacyNotesFile()
+        settings.didImportLegacyJSON = true
+        settings.save()
+    }
 
     // MARK: Demo seeding
 
     private func seedDemoNotesIfNeeded() {
-        guard !settings.hasSeededDemo, notes.isEmpty else { return }
-        // Build the deterministic demo set and de-dupe by the fixed seed ids so a
-        // fresh launch shows exactly these notes once — never a doubled-up list,
-        // even if this path is reached with stale leftovers in the store.
-        let demos = DemoSeed.makeNotes()
-        var seen = Set<Note.ID>()
-        notes = demos.filter { seen.insert($0.id).inserted }
-        persist()
+        // Only seed an empty store, and only once (mirrors the legacy flag). The
+        // store being empty after a real import means a genuinely fresh install.
+        guard !settings.hasSeededDemo else { return }
+        let isEmpty = (try? modelContext.fetchCount(FetchDescriptor<NoteEntity>())) == 0
+        guard isEmpty else {
+            // Non-empty store (e.g. imported or already synced from iCloud):
+            // don't seed demo content, but record that we won't.
+            settings.hasSeededDemo = true
+            settings.save()
+            return
+        }
+        // Build the deterministic demo set and insert-if-id-absent on the fixed
+        // seed ids so a fresh launch shows exactly these notes once — never a
+        // doubled-up list, even if two devices seed before they first sync.
+        for demo in DemoSeed.makeNotes() where entity(for: demo.id) == nil {
+            modelContext.insert(NoteEntity(note: demo))
+        }
+        try? modelContext.save()
+        // Carry each seeded note's bundled audio into its synced blob so the demo
+        // recording syncs too (the import path does the same for real notes).
+        // Done after the save so the entities exist for the async lookup.
+        if settings.syncAudioOverICloud {
+            for demo in DemoSeed.makeNotes() where demo.audioFileName != nil {
+                syncAudioIfEnabled(for: demo)
+            }
+        }
         settings.hasSeededDemo = true
         settings.save()
     }

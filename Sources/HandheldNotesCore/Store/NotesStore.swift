@@ -63,6 +63,24 @@ public struct NotesStore {
         try? data.write(to: url, options: [.atomic])
     }
 
+    /// True if a legacy `notes.json` exists to import (used by the one-time
+    /// SwiftData migration).
+    public static func legacyNotesFileExists() -> Bool {
+        guard let url = try? notesURL() else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// After importing `notes.json` into the SwiftData store, rename it to
+    /// `notes.json.imported` so it's kept as a backup but never re-read by the
+    /// legacy loader. Best-effort; safe to call when no file exists.
+    public static func archiveLegacyNotesFile() {
+        guard let url = try? notesURL() else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let backup = url.appendingPathExtension("imported")
+        try? FileManager.default.removeItem(at: backup) // clear any prior backup
+        try? FileManager.default.moveItem(at: url, to: backup)
+    }
+
     // MARK: Audio file management
 
     /// Copies an arbitrary audio file into the store under the note's id, returns
