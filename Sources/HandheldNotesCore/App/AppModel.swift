@@ -293,6 +293,53 @@ public final class AppModel: ObservableObject {
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
     }
 
+    /// Create a note from content composed on this device (the iPhone compose
+    /// sheet: typed body, optionally a recorded + on-device-transcribed voice
+    /// note). Routes through the same `insert()` persist path as every other
+    /// write, so it lands in the store, projects into `notes`, and CloudKit-mirrors
+    /// like any note — tagged `.phone`.
+    ///
+    /// - Parameters:
+    ///   - title: an explicit title; if empty/whitespace one is derived from the
+    ///     body (reusing `Note.deriveTitle`, the same helper the pipeline uses).
+    ///   - transcript: the note body (typed and/or transcribed text).
+    ///   - audioURL: optional recording to keep with the note. It's imported into
+    ///     the store under the new note's id (so it plays back and rides iCloud via
+    ///     the normal audio-sync step); the source file is left for the caller.
+    /// - Returns: the saved note (also selected and appended to `notes`).
+    @discardableResult
+    public func composeNote(title: String, transcript: String, audioURL: URL? = nil) -> Note {
+        let id = UUID()
+        let now = Date()
+        let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTitle = trimmedTitle.isEmpty
+            ? Note.deriveTitle(from: body, date: now)
+            : trimmedTitle
+
+        // Pull the recording into the store under this id so it plays back and
+        // syncs (best-effort; a failed import just yields a text-only note).
+        var storedAudioName: String?
+        var durationSeconds: Double?
+        if let audioURL {
+            durationSeconds = try? AudioInfo.duration(of: audioURL)
+            storedAudioName = try? NotesStore.importAudio(from: audioURL, noteID: id)
+        }
+
+        let note = Note(
+            id: id,
+            title: finalTitle,
+            transcript: body,
+            createdAt: now,
+            updatedAt: now,
+            source: .phone,
+            audioFileName: storedAudioName,
+            durationSeconds: durationSeconds,
+            engineUsed: storedAudioName != nil ? settings.engine.displayName : nil)
+        insert(note, select: true)
+        return note
+    }
+
     private func insert(_ note: Note, select: Bool) {
         // Upsert by id so a re-ingest / double-import converges instead of
         // duplicating (no unique constraint to lean on under CloudKit).
