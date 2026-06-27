@@ -42,9 +42,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.window = window
 
         NSApp.activate(ignoringOtherApps: true)
+
+        // CloudKit *incremental* sync needs silent remote-notification pushes. SwiftData /
+        // NSPersistentCloudKitContainer creates the CKDatabaseSubscription but does NOT
+        // register the app for remote notifications — so without this call the app only
+        // imports peers' changes at store setup (i.e. on launch), never live. (apsd showed
+        // zero pushes for our container until this was added.) Silent/content-available
+        // pushes need no user permission, so there's nothing to prompt for.
+        NSApp.registerForRemoteNotifications()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func application(_ application: NSApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NSLog("HNDIAG APNs registered: %d-byte token — CloudKit live push enabled", deviceToken.count)
+    }
+
+    func application(_ application: NSApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NSLog("HNDIAG APNs registration FAILED: %@", error.localizedDescription)
+    }
+
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        // A CloudKit silent push. NSPersistentCloudKitContainer imports the change and
+        // posts .NSPersistentStoreRemoteChange, which AppModel observes to refresh the UI.
+        NSLog("HNDIAG remote notification received (CloudKit change)")
+    }
 
     private func setupMainMenu() {
         let mainMenu = NSMenu()
