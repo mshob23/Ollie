@@ -10,7 +10,7 @@
 	     "Invalid value of (null) for entitlement com.apple.application-identifier …
 	     access to CloudKit will be denied" — unless this is present. Xcode injects it
 	     automatically; this app is hand-bundled (swift build + manual codesign), so it
-	     must be set explicitly. Must be TEAMID.BUNDLEID and match the embedded profile. -->
+	     must be set explicitly. Must be TEAMID.BUNDLEID and match the Developer ID profile. -->
 	<key>com.apple.application-identifier</key>
 	<string>2J5S7H2LTB.com.mohammadshobaki.handheldnotes</string>
 	<key>com.apple.developer.team-identifier</key>
@@ -24,15 +24,12 @@
 		<string>CloudKit</string>
 	</array>
 	<key>com.apple.developer.aps-environment</key>
-	<string>development</string>
-	<!-- DEV signing: this Mac build uses the macOS *Development* provisioning profile
-	     (Apple Development cert), so it lives on the same development push network as the
-	     from-Xcode iPhone build. Both apps therefore share one CloudKit environment AND
-	     one APNs environment — which is what makes incremental sync instant in BOTH
-	     directions. The production values live in HandheldNotes-release.entitlements
-	     (HC_SIGN=release). aps + container-environment MUST match the embedded profile,
-	     or AMFI denies launch (error 163). -->
+	<string>production</string>
+	<!-- This is a `swift build -c debug` binary, which would otherwise default to
+	     the DEVELOPMENT CloudKit environment. The iPhone app is pinned to Production,
+	     so pin the Mac there too — otherwise they sync to different "rooms" of the
+	     same iCloud account and never converge. Matches the Developer ID profile. -->
 	<key>com.apple.developer.icloud-container-environment</key>
-	<string>Development</string>
+	<string>Production</string>
 </dict>
 </plist>
