@@ -43,6 +43,15 @@ public enum NotesDataStore {
 
         // 1) Preferred: the user's PRIVATE iCloud database. Inert (but harmless)
         //    until the portal container + signing profile exist.
+        //
+        //    Pointing a `ModelConfiguration` at a CloudKit database turns on the
+        //    mirroring machinery, which transparently enables persistent history
+        //    AND the `.NSPersistentStoreRemoteChange` notification — that's the
+        //    signal `AppModel.observeRemoteChanges()` listens for to live-refresh
+        //    when another device's edits sync in. There is no separate switch to
+        //    flip (SwiftData's `ModelConfiguration` exposes no remote-change
+        //    option; it's implied by CloudKit mirroring), so nothing extra is set
+        //    here.
         let cloud = ModelConfiguration(
             schema: schema,
             cloudKitDatabase: .private(cloudKitContainerID))

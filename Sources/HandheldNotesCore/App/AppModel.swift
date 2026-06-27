@@ -153,6 +153,12 @@ public final class AppModel: ObservableObject {
     private let modelContainer: ModelContainer
     private let modelContext: ModelContext
 
+    /// Test-only seam onto the backing container, so a test can open a SECOND
+    /// `ModelContext` on the SAME store and simulate an external/remote write
+    /// (the shape a CloudKit import takes) before asserting `refresh()` surfaces
+    /// it. Not for app use — production reads/writes go through the members above.
+    internal var modelContainerForTesting: ModelContainer { modelContainer }
+
     /// True when the live store is CloudKit-backed (vs. the local fallback).
     /// Purely informational (e.g. a Settings indicator); behavior is identical
     /// either way.
@@ -368,10 +374,21 @@ public final class AppModel: ObservableObject {
     /// Re-project all stored entities into the observable `notes` array. The
     /// array's own `filteredNotes` re-sorts, so the fetch order doesn't matter,
     /// but we sort newest-first to keep things predictable.
+    ///
+    /// **Reads through a FRESH `ModelContext`, not the long-lived write context.**
+    /// SwiftData's context keeps a registry of materialized objects and can serve a
+    /// fetch out of that cache — so a row CloudKit just imported into the store
+    /// (under `NSPersistentStoreRemoteChange`) may not surface through the write
+    /// context that never saw the insert. A short-lived context built per reload
+    /// has an empty registry, so its fetch always reflects the latest *persisted*
+    /// state (our own just-saved writes included, since `saveAndReload` saves
+    /// first). Read-only and discarded immediately; mutations still go through the
+    /// write context (`modelContext`).
     private func reloadNotes() {
         let descriptor = FetchDescriptor<NoteEntity>(
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
-        let entities = (try? modelContext.fetch(descriptor)) ?? []
+        let readContext = ModelContext(modelContainer)
+        let entities = (try? readContext.fetch(descriptor)) ?? []
         notes = entities.map(Note.init(entity:))
     }
 
@@ -405,20 +422,42 @@ public final class AppModel: ObservableObject {
 
     // MARK: Remote (iCloud) change observation
 
-    /// Re-project when the store changes underneath us — e.g. CloudKit pushes
-    /// another device's edits into the local store. SwiftData posts
-    /// `.NSPersistentStoreRemoteChange`-style notifications via the model context
-    /// did-save notification; observing `ModelContext.didSave` keeps the array
-    /// fresh without polling.
+    /// Re-project when the store changes underneath us, from EITHER direction:
+    ///
+    ///   1. `ModelContext.didSave` — a LOCAL save on any context for this store
+    ///      (our own writes, plus the per-reload read context's no-op saves). This
+    ///      is what kept the list fresh for on-device edits.
+    ///   2. `.NSPersistentStoreRemoteChange` — the store-coordinator-level signal
+    ///      that the persistent store changed OUT OF BAND, which is how CloudKit
+    ///      mirroring announces another device's edits after it imports them via
+    ///      persistent history. `didSave` does NOT reliably fire for those imports
+    ///      (no `ModelContext` on this process performed the save), so without this
+    ///      second observer a synced-in note could sit invisible until the next
+    ///      local write. Posting this notification is enabled automatically by the
+    ///      CloudKit-mirrored `ModelConfiguration` (it turns on persistent history
+    ///      + remote-change tracking) — see `NotesDataStore`.
+    ///
+    /// Both just call `reloadNotes()`, whose fresh-context fetch surfaces the
+    /// newly-arrived rows; newly-synced audio is materialized lazily on access
+    /// (see `audioURL(for:)`).
     private func observeRemoteChanges() {
-        NotificationCenter.default.addObserver(
-            forName: ModelContext.didSave,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            // Hop to the main actor; materialize any newly-synced audio lazily on
-            // access (see audioURL(for:)), so here we just refresh the list.
+        let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
             Task { @MainActor [weak self] in self?.reloadNotes() }
         }
+        NotificationCenter.default.addObserver(
+            forName: ModelContext.didSave,
+            object: nil, queue: .main, using: refresh)
+        NotificationCenter.default.addObserver(
+            forName: .NSPersistentStoreRemoteChange,
+            object: nil, queue: .main, using: refresh)
+    }
+
+    /// Public manual re-projection: re-fetch the store and refresh the observable
+    /// `notes` array. Backs the platform pull-to-refresh / refresh affordances so
+    /// the user can force a reconciliation even if a remote-change notification was
+    /// missed. Cheap and idempotent (a fresh fetch + assign).
+    public func refresh() {
+        reloadNotes()
     }
 
     // MARK: Computer / live mode — record APPENDS to the active draft

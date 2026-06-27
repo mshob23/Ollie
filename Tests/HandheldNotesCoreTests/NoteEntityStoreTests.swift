@@ -90,3 +90,60 @@ extension NotesDataStore {
         return try! ModelContainer(for: schema, configurations: [config])
     }
 }
+
+/// Exercises the live-refresh contract of `AppModel.refresh()` WITHOUT CloudKit
+/// or iCloud: an in-memory store, with an "external" write applied through a
+/// SECOND `ModelContext` on the SAME container — the shape a synced-in edit from
+/// another device takes (CloudKit imports rows into the store out of band, then
+/// posts `.NSPersistentStoreRemoteChange`). `refresh()` must re-project and pick
+/// the new row up. Also pins that ordinary local insert + delete still reflect.
+@MainActor
+final class AppModelRefreshTests: XCTestCase {
+
+    /// A row written by a SEPARATE context on the same store (simulating a remote
+    /// CloudKit import) must appear in `notes` after `refresh()` — proving the
+    /// re-projection reads the latest *persisted* state, not the write context's
+    /// stale object cache.
+    func testRefreshSurfacesExternallyWrittenNote() throws {
+        let model = AppModel(inMemoryStore: true)
+
+        // A note id that the model has never seen (no insert went through it).
+        let remoteID = UUID()
+        XCTAssertFalse(model.notes.contains { $0.id == remoteID },
+                       "precondition: the remote note isn't present yet")
+
+        // Simulate the CloudKit import: a DIFFERENT ModelContext on the SAME
+        // container inserts the row and saves it into the store.
+        let externalContext = ModelContext(model.modelContainerForTesting)
+        let entity = NoteEntity(note: Note(
+            id: remoteID,
+            title: "Synced from another device",
+            transcript: "Arrived over iCloud.",
+            source: .phone))
+        externalContext.insert(entity)
+        try externalContext.save()
+
+        // The manual refresh (and, in the app, the remote-change notification)
+        // re-projects: the externally-written row is now in the list.
+        model.refresh()
+        XCTAssertTrue(model.notes.contains { $0.id == remoteID },
+                      "refresh() must surface a row written by another context/device")
+        XCTAssertEqual(model.notes.first { $0.id == remoteID }?.title,
+                       "Synced from another device")
+    }
+
+    /// A normal local insert lands in `notes`, and a delete removes it — the
+    /// projection tracks ordinary on-device CRUD (regression guard alongside the
+    /// remote path).
+    func testLocalInsertAndDeleteReflectInNotes() throws {
+        let model = AppModel(inMemoryStore: true)
+
+        let note = model.composeNote(title: "Local note", transcript: "Typed here.")
+        XCTAssertTrue(model.notes.contains { $0.id == note.id },
+                      "a locally composed note must appear in notes")
+
+        model.delete(note.id)
+        XCTAssertFalse(model.notes.contains { $0.id == note.id },
+                       "a deleted note must drop out of notes")
+    }
+}

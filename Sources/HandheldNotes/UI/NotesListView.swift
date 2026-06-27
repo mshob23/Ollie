@@ -43,6 +43,20 @@ struct NotesListView: View {
                         .foregroundStyle(Color.hcMutedText)
                 }
                 Spacer()
+                // Manual refresh: re-project the store on demand. The list normally
+                // updates itself on iCloud remote-change notifications
+                // (AppModel.observeRemoteChanges()); this is the explicit fallback,
+                // sized to sit cleanly beside the brand mark. (The Mac list is a
+                // ScrollView, not a List, so a header button fits better than
+                // .refreshable's pull gesture.)
+                Button(action: { model.refresh() }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.hcMutedText)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh notes")
+                .accessibilityLabel("Refresh notes")
             }
         }
         .padding(.horizontal, 16)
