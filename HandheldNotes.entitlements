@@ -16,5 +16,11 @@
 	</array>
 	<key>com.apple.developer.aps-environment</key>
 	<string>production</string>
+	<!-- This is a `swift build -c debug` binary, which would otherwise default to
+	     the DEVELOPMENT CloudKit environment. The iPhone app is pinned to Production,
+	     so pin the Mac there too — otherwise they sync to different "rooms" of the
+	     same iCloud account and never converge. Matches the Developer ID profile. -->
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>Production</string>
 </dict>
 </plist>

@@ -55,9 +55,15 @@ public enum NotesDataStore {
         let cloud = ModelConfiguration(
             schema: schema,
             cloudKitDatabase: .private(cloudKitContainerID))
-        if let container = try? ModelContainer(for: schema, configurations: [cloud]) {
+        do {
+            let container = try ModelContainer(for: schema, configurations: [cloud])
             isCloudKitActive = true
+            Self.writeDiag("CloudKit ACTIVE — \(cloudKitContainerID)")
             return container
+        } catch {
+            // Don't swallow silently — record WHY CloudKit couldn't start so a
+            // signing/entitlement/account problem is diagnosable.
+            Self.writeDiag("CloudKit FAILED, using local fallback — \(String(describing: error))")
         }
 
         // 2) Fallback: a normal on-disk store, no CloudKit. The app stays fully
@@ -74,5 +80,14 @@ public enum NotesDataStore {
         isCloudKitActive = false
         let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try! ModelContainer(for: schema, configurations: [mem])
+    }
+
+    /// Temporary diagnostic: record the CloudKit-vs-local outcome to a file in /tmp
+    /// (and NSLog), so a signing/entitlement/account problem is visible even when
+    /// the unified log doesn't surface this process's output.
+    static func writeDiag(_ message: String) {
+        let line = "HNDIAG \(message)\n"
+        NSLog("%@", line)
+        try? line.write(toFile: "/tmp/hn_diag.txt", atomically: true, encoding: .utf8)
     }
 }
