@@ -1,4 +1,4 @@
-# Handheld Notes — Ecosystem Status
+# Ollie — Ecosystem Status
 
 *Snapshot of the whole system, June 2026.*
 

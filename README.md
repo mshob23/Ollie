@@ -1,7 +1,7 @@
-# Handheld Notes
+# Ollie
 
 A macOS **voice-notes system**. Where the sibling *Handheld Companion* app is a clipboard
-utility (hold F16 → record → transcribe → copy), **Handheld Notes** is a notes database:
+utility (hold F16 → record → transcribe → copy), **Ollie** is a notes database:
 every capture lands as a saved, titled, searchable note with its audio attached and playable.
 
 How you capture:
@@ -21,7 +21,7 @@ the iCloud sync story.
 
 ```bash
 ./Scripts/build_app.sh                       # builds + signs a real .app, prints its path
-open ".build/debug/Handheld Notes.app"       # launch it
+open ".build/debug/Ollie.app"       # launch it
 ```
 
 Or run the executable directly: `swift run HandheldNotes`.
