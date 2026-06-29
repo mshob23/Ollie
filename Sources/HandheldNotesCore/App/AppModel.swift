@@ -238,6 +238,7 @@ public final class AppModel: ObservableObject {
         guard let entity = entity(for: id) else { return }
         if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
         modelContext.delete(entity)
+        SpotlightIndexer.remove(ids: [id])
         if selectedNoteID == id { selectedNoteID = nil }
         saveAndReload()
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
@@ -252,6 +253,7 @@ public final class AppModel: ObservableObject {
             if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
             modelContext.delete(entity)
         }
+        SpotlightIndexer.removeAll()
         selectedNoteID = nil
         saveAndReload()
         // NSPCC's per-record deletion *exports* are slow/batched, so also delete the
@@ -355,6 +357,8 @@ public final class AppModel: ObservableObject {
         let readContext = ModelContext(modelContainer)
         let entities = (try? readContext.fetch(descriptor)) ?? []
         notes = entities.map(Note.init(entity:))
+        // Keep system Spotlight in sync with the live projection (best-effort, async).
+        SpotlightIndexer.index(notes)
     }
 
     /// Save pending context changes and re-project. Used by every mutation.
