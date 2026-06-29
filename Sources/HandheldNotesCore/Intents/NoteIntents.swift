@@ -15,6 +15,10 @@ public struct FindNotesIntent: AppIntent {
     public init() {}
     public init(query: String) { self.query = query }
 
+    public static var parameterSummary: some ParameterSummary {
+        Summary("Find notes matching \(\.$query)")
+    }
+
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<[NoteAppEntity]> & ProvidesDialog {
         let results = NoteIntentStore.search(query, limit: 25)
@@ -35,6 +39,10 @@ public struct SaveNoteIntent: AppIntent {
 
     public init() {}
     public init(text: String) { self.text = text }
+
+    public static var parameterSummary: some ParameterSummary {
+        Summary("Save a note saying \(\.$text)")
+    }
 
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<NoteAppEntity> {
