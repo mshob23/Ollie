@@ -162,8 +162,10 @@ public final class AppModel: ObservableObject {
         self.pipeline = NotesPipeline(engine: loaded.engine)
         self.pushToTalkFactory = pushToTalk
 
-        // Stand up the SwiftData store (CloudKit-preferred, local fallback).
-        let container = NotesDataStore.makeContainer(inMemory: inMemoryStore)
+        // Stand up the SwiftData store (CloudKit-preferred, local fallback). Production
+        // uses the process-wide SHARED container so background-launched App Intents read
+        // the SAME store; tests get an isolated in-memory one.
+        let container = inMemoryStore ? NotesDataStore.makeContainer(inMemory: true) : NotesDataStore.shared
         self.modelContainer = container
         self.modelContext = ModelContext(container)
         // Coalesce our own explicit saves; we drive persistence deliberately.

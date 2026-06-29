@@ -28,6 +28,13 @@ public enum NotesDataStore {
     /// init) and read from the UI.
     @MainActor public private(set) static var isCloudKitActive = false
 
+    /// The process-wide shared container, created once on first access. BOTH the
+    /// app (`AppModel`) and the App Intents / Spotlight code read through this one
+    /// container, so a background-launched intent never opens a competing CloudKit
+    /// store on the same file. (Tests pass `inMemory: true` to `makeContainer`
+    /// directly instead of touching this.)
+    @MainActor public static let shared: ModelContainer = makeContainer(inMemory: false)
+
     /// Build (once) the shared container. Prefers private-CloudKit mirroring and
     /// degrades to a local-only store if that can't be constructed. `inMemory`
     /// is for tests.
