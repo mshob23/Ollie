@@ -11,7 +11,7 @@
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Handheld Notes</string>
+  <string>Ollie</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundlePackageType</key>
@@ -25,9 +25,9 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Mohammad Shobaki</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Handheld Notes records audio so it can transcribe it into a saved note.</string>
+  <string>Ollie records audio so it can transcribe it into a saved note.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Handheld Notes transcribes your recordings with Apple’s on-device speech recognition.</string>
+  <string>Ollie transcribes your recordings with Apple’s on-device speech recognition.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

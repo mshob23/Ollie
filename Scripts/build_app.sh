@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds Handheld Notes into a real, launchable .app bundle and signs it with a stable
+# Builds Ollie into a real, launchable .app bundle and signs it with a stable
 # identity (so macOS permission grants persist across builds). See the HC_SIGN block
 # below for the dev (default) vs release signing modes. Prints the bundle path last.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-debug}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build}"
-APP_NAME="Handheld Notes"
+APP_NAME="Ollie"
 APP_BUNDLE="$BUILD_DIR/${BUILD_CONFIG}/${APP_NAME}.app"
 EXECUTABLE="$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes"
 # Signing mode. DEV (default): Apple Development cert + the macOS Development profile +

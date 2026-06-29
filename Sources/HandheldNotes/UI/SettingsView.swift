@@ -114,7 +114,7 @@ struct SettingsView: View {
             Image(systemName: "lock.shield")
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(Color.hcMutedText)
-            Text("Handheld Notes · all capture and transcription stays on this Mac.")
+            Text("Ollie · all capture and transcription stays on this Mac.")
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(Color.hcMutedText)
             Spacer()

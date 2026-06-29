@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# Package Handheld Notes (Mac) into a NOTARIZED, downloadable .dmg.
+# Package Ollie (Mac) into a NOTARIZED, downloadable .dmg.
 #
 # Why notarized direct-download instead of the Mac App Store / TestFlight: the app uses
 # a global hotkey (Capture/HotKeyManager.swift) + Accessibility, which cannot run in the
@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # Pipeline: build_app.sh (release: Developer ID + hardened runtime + embedded profile)
 #   -> stage the .app with an Applications drop-link -> hdiutil .dmg -> sign the .dmg
-#   -> notarytool submit --wait -> stapler staple -> dist/HandheldNotes.dmg.
+#   -> notarytool submit --wait -> stapler staple -> dist/Ollie.dmg.
 #
 # ONE-TIME credential setup (stores YOUR App Store Connect API key in the login
 # keychain; this script only references the profile NAME, never the secret):
@@ -25,9 +25,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NOTARY_PROFILE="${NOTARY_PROFILE:-HN_NOTARY}"
 DEV_ID="${DEV_ID:-Developer ID Application: Mohammad Shobaki (2J5S7H2LTB)}"
-APP_NAME="Handheld Notes"
+APP_NAME="Ollie"
 DIST_DIR="$ROOT_DIR/dist"
-FINAL_DMG="$DIST_DIR/HandheldNotes.dmg"
+FINAL_DMG="$DIST_DIR/Ollie.dmg"
 
 # SwiftPM's SQLite build DB throws "disk I/O error" when .build sits on the iCloud-
 # synced repo path, so build OUTSIDE iCloud (also avoids codesign xattr re-stamp races
@@ -36,7 +36,7 @@ export BUILD_DIR="${BUILD_DIR:-$HOME/Library/Caches/HandheldNotes-build}"
 
 STAGE_ROOT="$(mktemp -d)"          # stage + assemble the image on a clean (non-iCloud) FS
 STAGE="$STAGE_ROOT/dmg"
-DMG_PATH="$STAGE_ROOT/HandheldNotes.dmg"
+DMG_PATH="$STAGE_ROOT/Ollie.dmg"
 cleanup() { rm -rf "$STAGE_ROOT"; }
 trap cleanup EXIT
 
@@ -75,5 +75,5 @@ cp "$DMG_PATH" "$FINAL_DMG"
 echo ""
 echo "==> Done: $FINAL_DMG"
 if [ -z "${SKIP_NOTARIZE:-}" ]; then
-  echo "    Notarized — testers download it, open it, and drag Handheld Notes to Applications; no Gatekeeper block."
+  echo "    Notarized — testers download it, open it, and drag Ollie to Applications; no Gatekeeper block."
 fi

@@ -35,7 +35,7 @@ struct NotesListView: View {
                         .foregroundStyle(Color.hcOnAccent)
                 }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Handheld Notes")
+                    Text("Ollie")
                         .font(.hcDisplay(18, weight: .semibold))
                         .foregroundStyle(Color.hcPrimaryText)
                     Text("\(model.notes.count) note\(model.notes.count == 1 ? "" : "s")")

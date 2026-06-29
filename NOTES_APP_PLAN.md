@@ -1,7 +1,7 @@
-# Handheld Notes — App Plan
+# Ollie — App Plan
 
 A macOS **voice-notes system**. Where the existing **Handheld Companion** app is a
-*clipboard utility* (hold F16 → record → transcribe → copy), **Handheld Notes** is a
+*clipboard utility* (hold F16 → record → transcribe → copy), **Ollie** is a
 *notes database*: every capture lands as a saved, titled, searchable note with its audio
 attached and playable. Notes sync across the Mac, iPhone, and Apple Watch apps over iCloud.
 
@@ -208,7 +208,7 @@ cd /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes
 ./Scripts/build_app.sh
 
 # Launch it
-open ".build/debug/Handheld Notes.app"
+open ".build/debug/Ollie.app"
 ```
 
 Or run the raw executable (still shows the window; uses the bundle's resources from the
