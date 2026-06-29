@@ -1,8 +1,8 @@
 import Foundation
 
 /// The convergence point for both capture modes. Given an audio file and where
-/// it came from, it: imports the audio into the store, transcribes it, derives a
-/// title, and returns a finished `Note`. Mode-agnostic — Computer mode and the
+/// it came from, it: imports the audio into the store, transcribes it, and
+/// returns a finished `Note` (tagged `.voice`). Mode-agnostic — Computer mode and the
 /// (mock or real) device sync both call this.
 ///
 /// Returns the note; the caller (AppModel) is responsible for inserting it into
@@ -72,11 +72,10 @@ public struct NotesPipeline: Sendable {
         }
 
         let now = Date()
-        let title = Note.deriveTitle(from: result.text, date: now)
         return Note(
             id: noteID,
-            title: title,
             transcript: result.text,
+            kind: .voice,
             createdAt: now,
             source: source,
             audioFileName: storedName,

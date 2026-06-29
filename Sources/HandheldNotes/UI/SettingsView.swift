@@ -16,6 +16,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     engineSection
+                    captureSection
                     footer
                 }
                 .padding(.horizontal, 24)
@@ -105,6 +106,29 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: Capture (geotag)
+
+    private var captureSection: some View {
+        SettingsSection(
+            eyebrow: "Capture",
+            title: "Geotag notes",
+            blurb: "Tag each new note with where you were — an on-device reverse-geocoded place name. Off by default; the coordinate never leaves your Mac."
+        ) {
+            Toggle(isOn: $model.settings.geotagEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remember where a note was taken")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Color.hcPrimaryText)
+                    Text("Asks for location permission the first time you capture with this on.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.hcSecondaryText)
+                }
+            }
+            .toggleStyle(.switch)
+            .tint(.hcAccent)
+        }
     }
 
     // MARK: Footer

@@ -135,11 +135,13 @@ struct NoteRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(note.title)
+            HStack(alignment: .top, spacing: 6) {
+                Text(note.preview)
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(Color.hcPrimaryText)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if note.isFavorite {
                     Image(systemName: "star.fill")
@@ -147,12 +149,6 @@ struct NoteRow: View {
                         .foregroundStyle(Color.hcAccent)
                 }
             }
-            Text(note.preview)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.hcSecondaryText)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 7) {
                 Image(systemName: note.source.symbol)
@@ -165,6 +161,15 @@ struct NoteRow: View {
                     Image(systemName: "waveform")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Color.hcMutedText)
+                }
+                if let place = note.location {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.hcMutedText)
+                    Text(place.label)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.hcMutedText)
+                        .lineLimit(1)
                 }
                 Spacer()
             }

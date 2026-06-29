@@ -2,7 +2,7 @@ import AppKit
 import HandheldNotesCore
 import SwiftUI
 
-/// The right pane: the selected note's editable title, a clear source indicator,
+/// The right pane: the selected note's derived headline, a clear source indicator,
 /// metadata chips, the audio player, and the transcript in a calm, editable
 /// reading panel. When nothing is selected it shows a friendly empty state.
 struct NoteDetailView: View {
@@ -125,26 +125,22 @@ private struct SourceBanner: View {
     }
 }
 
-// MARK: - Header (editable title + metadata chips + actions)
+// MARK: - Header (derived headline + metadata chips + actions)
 
-/// Editable title + a row of metadata chips + favorite/delete actions.
+/// A read-only derived headline + a row of metadata chips + favorite/delete actions.
 private struct NoteHeader: View {
     @EnvironmentObject var model: AppModel
     let note: Note
-    @State private var titleDraft: String = ""
-    @FocusState private var titleFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .top, spacing: 12) {
-                TextField("Title", text: $titleDraft, axis: .vertical)
-                    .textFieldStyle(.plain)
+                // Display-only derived headline — Ollie has no editable titles.
+                Text(note.derivedTitle)
                     .font(.hcDisplay(26, weight: .semibold))
                     .foregroundStyle(Color.hcPrimaryText)
                     .lineLimit(1...3)
-                    .focused($titleFocused)
-                    .onSubmit { commit() }
-                    .help("Click to rename this note")
+                    .textSelection(.enabled)
 
                 Spacer(minLength: 0)
 
@@ -172,6 +168,9 @@ private struct NoteHeader: View {
                 Chip(note.source.label, symbol: note.source.symbol, tint: sourceTint)
                 Chip(relativeDate, symbol: "clock")
                     .help(fullDate)
+                if let place = note.location {
+                    Chip(place.label, symbol: "mappin.and.ellipse")
+                }
                 if let secs = note.durationSeconds, secs > 0 {
                     Chip(AudioPlayerModel.timeString(secs), symbol: "waveform")
                 }
@@ -185,18 +184,6 @@ private struct NoteHeader: View {
                 }
             }
         }
-        .onAppear { titleDraft = note.title }
-        .onChange(of: note.id) { _, _ in titleDraft = note.title; titleFocused = false }
-        .onChange(of: titleFocused) { _, focused in if !focused { commit() } }
-    }
-
-    private func commit() {
-        let trimmed = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != note.title else {
-            titleDraft = note.title   // snap back if cleared
-            return
-        }
-        model.updateTitle(trimmed, for: note.id)
     }
 
     private var sourceTint: Color {

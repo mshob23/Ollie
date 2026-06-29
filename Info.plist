@@ -28,6 +28,8 @@
   <string>Ollie records audio so it can transcribe it into a saved note.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Ollie transcribes your recordings with Apple’s on-device speech recognition.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Ollie can tag a note with the place you took it. Location is reverse-geocoded on your Mac and never leaves it.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

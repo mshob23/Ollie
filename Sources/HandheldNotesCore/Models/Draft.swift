@@ -78,8 +78,8 @@ public struct Draft: Identifiable, Equatable, Sendable {
         let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         return Note(
             id: id,
-            title: Note.deriveTitle(from: body, date: now),
             transcript: body,
+            kind: audioFileName != nil ? .voice : .text,
             createdAt: createdAt,
             updatedAt: now,
             source: .computer,

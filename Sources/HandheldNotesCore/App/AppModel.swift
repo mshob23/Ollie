@@ -37,6 +37,12 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     /// local to whichever device captured it.
     public var syncAudioOverICloud: Bool = true
 
+    /// Capture an opt-in geotag (an on-device reverse-geocoded place label; see
+    /// `LocationStamper`) on notes composed/concluded on this device. Default OFF —
+    /// location is the most privacy-sensitive signal, so it's explicit opt-in. When
+    /// off, no location is ever requested or stored.
+    public var geotagEnabled: Bool = false
+
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
@@ -53,6 +59,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         hasSeededDemo = try c.decodeIfPresent(Bool.self, forKey: .hasSeededDemo) ?? fresh.hasSeededDemo
         didImportLegacyJSON = try c.decodeIfPresent(Bool.self, forKey: .didImportLegacyJSON) ?? fresh.didImportLegacyJSON
         syncAudioOverICloud = try c.decodeIfPresent(Bool.self, forKey: .syncAudioOverICloud) ?? fresh.syncAudioOverICloud
+        geotagEnabled = try c.decodeIfPresent(Bool.self, forKey: .geotagEnabled) ?? fresh.geotagEnabled
     }
 
     public static func load() -> NotesSettings {
@@ -121,6 +128,7 @@ public final class AppModel: ObservableObject {
     private var pipeline: NotesPipeline
     private var micLevelTimer: Timer?
     private var captureURL: URL?
+    private let locationStamper = LocationStamper()
 
     // Persistence. `AppModel` owns the SwiftData container + context; the public
     // `notes` array is a projection fetched out of it (see `reloadNotes`). The
@@ -182,7 +190,8 @@ public final class AppModel: ObservableObject {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return sorted }
         return sorted.filter {
-            $0.title.lowercased().contains(q) || $0.transcript.lowercased().contains(q)
+            $0.transcript.lowercased().contains(q)
+                || ($0.location?.label.lowercased().contains(q) ?? false)
         }
     }
 
@@ -208,14 +217,6 @@ public final class AppModel: ObservableObject {
     // byte-for-byte unchanged; persistence (and iCloud sync) is what moved
     // underneath. CloudKit forbids unique constraints, so identity is enforced by
     // fetching the entity for an id rather than relying on a DB constraint.
-
-    public func updateTitle(_ title: String, for id: Note.ID) {
-        guard let entity = entity(for: id) else { return }
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        entity.title = trimmed.isEmpty ? entity.title : trimmed
-        entity.updatedAt = Date()
-        saveAndReload()
-    }
 
     public func updateTranscript(_ transcript: String, for id: Note.ID) {
         guard let entity = entity(for: id) else { return }
@@ -272,22 +273,17 @@ public final class AppModel: ObservableObject {
     /// like any note — tagged `.phone`.
     ///
     /// - Parameters:
-    ///   - title: an explicit title; if empty/whitespace one is derived from the
-    ///     body (reusing `Note.deriveTitle`, the same helper the pipeline uses).
-    ///   - transcript: the note body (typed and/or transcribed text).
+    ///   - transcript: the note body (typed and/or transcribed text). Its `kind` is
+    ///     `.voice` when a recording is attached, else `.text`.
     ///   - audioURL: optional recording to keep with the note. It's imported into
     ///     the store under the new note's id (so it plays back and rides iCloud via
     ///     the normal audio-sync step); the source file is left for the caller.
     /// - Returns: the saved note (also selected and appended to `notes`).
     @discardableResult
-    public func composeNote(title: String, transcript: String, audioURL: URL? = nil) -> Note {
+    public func composeNote(transcript: String, audioURL: URL? = nil) -> Note {
         let id = UUID()
         let now = Date()
         let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalTitle = trimmedTitle.isEmpty
-            ? Note.deriveTitle(from: body, date: now)
-            : trimmedTitle
 
         // Pull the recording into the store under this id so it plays back and
         // syncs (best-effort; a failed import just yields a text-only note).
@@ -300,8 +296,8 @@ public final class AppModel: ObservableObject {
 
         let note = Note(
             id: id,
-            title: finalTitle,
             transcript: body,
+            kind: storedAudioName != nil ? .voice : .text,
             createdAt: now,
             updatedAt: now,
             source: .phone,
@@ -309,6 +305,7 @@ public final class AppModel: ObservableObject {
             durationSeconds: durationSeconds,
             engineUsed: storedAudioName != nil ? settings.engine.displayName : nil)
         insert(note, select: true)
+        stampLocationIfEnabled(for: note)
         return note
     }
 
@@ -383,6 +380,25 @@ public final class AppModel: ObservableObject {
                 entity.audioFileName = encoded.fileName
                 self.saveAndReload()
             }
+        }
+    }
+
+    // MARK: Location stamping (opt-in geotag)
+
+    /// Capture an opt-in location for a freshly-created note and patch it onto the
+    /// entity. Mirrors `syncAudioIfEnabled`: guarded by the setting, asynchronous,
+    /// and best-effort — a denied permission or missing fix simply leaves the note
+    /// un-located and never affects the save. Only the on-device, real-time capture
+    /// sites call this (compose + draft-conclude), not imports/seeds.
+    private func stampLocationIfEnabled(for note: Note) {
+        guard settings.geotagEnabled else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let place = await self.locationStamper.stamp() else { return }
+            guard let entity = self.entity(for: note.id) else { return }
+            entity.location = place
+            entity.updatedAt = Date()
+            self.saveAndReload()
         }
     }
 
@@ -512,6 +528,7 @@ public final class AppModel: ObservableObject {
         }
         let note = draft.makeNote()
         insert(note, select: true)
+        stampLocationIfEnabled(for: note)
         draft = Draft()
     }
 
