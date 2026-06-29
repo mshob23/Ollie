@@ -4,8 +4,6 @@
 <dict>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<key>com.apple.security.device.bluetooth</key>
-	<true/>
 	<!-- REQUIRED for CloudKit. cloudd rejects the container outright —
 	     "Invalid value of (null) for entitlement com.apple.application-identifier …
 	     access to CloudKit will be denied" — unless this is present. Xcode injects it

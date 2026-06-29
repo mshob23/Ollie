@@ -13,13 +13,13 @@ let package = Package(
         .library(name: "HandheldNotesCore", targets: ["HandheldNotesCore"])
     ],
     targets: [
-        // Shared, platform-agnostic core: model, storage, BLE audio-sync client,
-        // transcription, mic capture, theme tokens, and the observable AppModel.
-        // A future iOS app links this same target — it must NOT reference AppKit
-        // or Carbon (macOS-only); those stay in the executable target below.
-        // Frameworks it uses (SwiftUI / AVFoundation / CoreBluetooth / Speech) are
-        // linked implicitly by `import`, and all exist on both macOS and iOS, so no
-        // explicit (and unconditional) linkerSettings are needed here.
+        // Shared, platform-agnostic core: model, storage, transcription, mic
+        // capture, theme tokens, and the observable AppModel. The iOS app links
+        // this same target — it must NOT reference AppKit or Carbon (macOS-only);
+        // those stay in the executable target below. Frameworks it uses (SwiftUI /
+        // AVFoundation / Speech / SwiftData / CloudKit) are linked implicitly by
+        // `import`, and all exist on both macOS and iOS, so no explicit (and
+        // unconditional) linkerSettings are needed here.
         .target(
             name: "HandheldNotesCore",
             resources: [
