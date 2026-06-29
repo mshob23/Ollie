@@ -28,6 +28,10 @@ public enum CorpusExporter {
 
     /// Mirror the corpus to disk. Safe on a background thread.
     public static func export(_ notes: [Note]) {
+        // De-dup by id first — CloudKit mirroring can briefly surface duplicate-id
+        // rows, and the corpus an LLM reads shouldn't contain the same note twice.
+        var seen = Set<UUID>()
+        let notes = notes.filter { seen.insert($0.id).inserted }
         let dir = exportDirectory
         let notesDir = dir.appendingPathComponent("notes", isDirectory: true)
         let fm = FileManager.default
