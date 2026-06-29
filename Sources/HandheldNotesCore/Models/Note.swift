@@ -27,67 +27,116 @@ public enum NoteSource: String, Codable, Sendable, Hashable {
     }
 }
 
-/// A single voice note: a transcript, its metadata, and (optionally) the audio
-/// file it was transcribed from. This is the heart of the app — everything the
-/// pipeline produces is one of these, and the store is just an array of them.
+/// How a note was captured: spoken (then transcribed) or typed. `source` says
+/// *which device*; `kind` says *voice vs. text*. Provenance the UI and the future
+/// on-device intelligence can lean on. Set at capture for new notes; legacy notes
+/// (written before `kind` existed) infer it from whether audio rode along.
+public enum CaptureKind: String, Codable, Sendable, Hashable {
+    case voice
+    case text
+}
+
+/// An optional, opt-in capture location. `label` is an on-device reverse-geocoded
+/// place name ("Gold's Gym"); the raw coordinate is optional so the user can keep
+/// just the human label if they'd rather not store precise coordinates.
+public struct PlaceStamp: Codable, Hashable, Sendable {
+    public var label: String
+    public var latitude: Double?
+    public var longitude: Double?
+
+    public init(label: String, latitude: Double? = nil, longitude: Double? = nil) {
+        self.label = label
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
+/// A single note: a transcript (spoken-then-transcribed OR typed), its metadata,
+/// and (optionally) the audio it was transcribed from. The heart of the app —
+/// everything the pipeline produces is one of these.
+///
+/// **No stored title.** Ollie deliberately has no titles: a note's identity is its
+/// content + context (time, source, place). ``derivedTitle`` offers a *computed*,
+/// display-only headline for the few places that still want a one-line label, and
+/// is the seam a future AI `summary` slots into — but nothing stores or edits a
+/// title.
 public struct Note: Identifiable, Codable, Hashable, Sendable {
+    /// Bump when the record's shape changes in a way a future migration branches on.
+    public static let currentSchemaVersion = 2
+
     public let id: UUID
-    public var title: String
     public var transcript: String
+    /// Voice (transcribed) vs. text (typed). See ``CaptureKind``.
+    public var kind: CaptureKind
     public var createdAt: Date
     public var updatedAt: Date
     public var source: NoteSource
-    /// File name (not path) inside the store's `Audio/` directory; nil if there
-    /// is no audio or it was deleted.
+    /// Optional, opt-in geotag (see ``PlaceStamp``). Nil unless the user enabled
+    /// geotagging and a fix was available shortly after capture.
+    public var location: PlaceStamp?
+    /// File name (not path) inside the store's `Audio/` directory; nil if there is
+    /// no audio or it was deleted.
     public var audioFileName: String?
     public var durationSeconds: Double?
     public var engineUsed: String?
     public var isFavorite: Bool
+    /// The record-shape version this note was written with (see
+    /// ``currentSchemaVersion``); lets future migrations reason about old rows.
+    public var schemaVersion: Int
 
     public init(
         id: UUID = UUID(),
-        title: String,
         transcript: String,
+        kind: CaptureKind = .voice,
         createdAt: Date = Date(),
         updatedAt: Date? = nil,
         source: NoteSource,
+        location: PlaceStamp? = nil,
         audioFileName: String? = nil,
         durationSeconds: Double? = nil,
         engineUsed: String? = nil,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        schemaVersion: Int = Note.currentSchemaVersion
     ) {
         self.id = id
-        self.title = title
         self.transcript = transcript
+        self.kind = kind
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
         self.source = source
+        self.location = location
         self.audioFileName = audioFileName
         self.durationSeconds = durationSeconds
         self.engineUsed = engineUsed
         self.isFavorite = isFavorite
+        self.schemaVersion = schemaVersion
     }
 
-    /// Tolerant decode: a field missing from an older notes.json falls back to a
-    /// sensible default instead of failing the whole load.
+    /// Tolerant decode: a field missing from an older `notes.json` falls back to a
+    /// sensible default instead of failing the whole load. A pre-`kind` note infers
+    /// `kind` from whether audio rode along; a pre-title-removal note simply ignores
+    /// its now-gone `title` key.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Untitled note"
         transcript = try c.decodeIfPresent(String.self, forKey: .transcript) ?? ""
         let created = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         createdAt = created
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? created
         source = try c.decodeIfPresent(NoteSource.self, forKey: .source) ?? .seed
+        location = try c.decodeIfPresent(PlaceStamp.self, forKey: .location)
         audioFileName = try c.decodeIfPresent(String.self, forKey: .audioFileName)
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         engineUsed = try c.decodeIfPresent(String.self, forKey: .engineUsed)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        let decodedKind = try c.decodeIfPresent(CaptureKind.self, forKey: .kind)
+        kind = decodedKind ?? (audioFileName != nil ? .voice : .text)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
     }
 
     // MARK: Derived
 
-    /// First line / sentence of the transcript, for list previews.
+    /// First line of the transcript, for list previews.
     public var preview: String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "No transcript" }
@@ -101,8 +150,15 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
         transcript.split { $0 == " " || $0.isNewline }.count
     }
 
-    /// Builds a human title from a transcript: first sentence or first handful of
-    /// words, trimmed and capped. Falls back to a timestamped name.
+    /// A computed, display-only headline — first sentence / few words of the
+    /// transcript. **Not stored and not user-editable** (Ollie has no titles); a
+    /// convenience for one-line labels and the seam a future AI `summary` replaces.
+    public var derivedTitle: String { Note.deriveTitle(from: transcript, date: createdAt) }
+
+    /// Builds a human headline from a transcript: first sentence or first handful
+    /// of words, trimmed and capped. Falls back to a timestamped name. Backs
+    /// ``derivedTitle``; kept as a static helper so callers can derive a label
+    /// without a `Note` instance.
     public static func deriveTitle(from transcript: String, date: Date) -> String {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
