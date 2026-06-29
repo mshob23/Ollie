@@ -359,6 +359,11 @@ public final class AppModel: ObservableObject {
         notes = entities.map(Note.init(entity:))
         // Keep system Spotlight in sync with the live projection (best-effort, async).
         SpotlightIndexer.index(notes)
+        #if os(macOS)
+        // Rung 3: mirror the corpus to ~/Ollie (JSONL + Markdown) for external tools
+        // (Obsidian, the Ollie MCP server, any LLM). Mac-only for now; off-main, best-effort.
+        CorpusExporter.exportInBackground(notes)
+        #endif
     }
 
     /// Save pending context changes and re-project. Used by every mutation.

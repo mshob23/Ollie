@@ -22,9 +22,16 @@ public struct FindNotesIntent: AppIntent {
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<[NoteAppEntity]> & ProvidesDialog {
         let results = NoteIntentStore.search(query, limit: 25)
-        let dialog: IntentDialog = results.isEmpty
-            ? "No notes matching “\(query)”."
-            : "Found \(results.count) note\(results.count == 1 ? "" : "s")."
+        let dialog: IntentDialog
+        if results.isEmpty {
+            dialog = "No notes matching “\(query)”."
+        } else {
+            // Name the actual matches, not just a count — so "Find Notes" shows WHAT
+            // it found. (The full list is also returned as the value for chaining.)
+            let names = results.prefix(3).map(\.headline).joined(separator: "; ")
+            let more = results.count > 3 ? " (+\(results.count - 3) more)" : ""
+            dialog = "Found \(results.count): \(names)\(more)"
+        }
         return .result(value: results, dialog: dialog)
     }
 }
