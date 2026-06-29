@@ -2,11 +2,10 @@ import HandheldNotesCore
 import SwiftUI
 
 /// The whole window: a notes-first split — the notes list on the left, and a
-/// center column with the capture bar on top of the selected note's detail. A
-/// device-sync panel slides in from the right; settings opens as a sheet.
+/// center column with the capture bar on top of the selected note's detail.
+/// Settings opens as a sheet.
 struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @State private var showSync = false
     @State private var showSettings = false
 
     var body: some View {
@@ -16,8 +15,7 @@ struct RootView: View {
             VStack(spacing: 0) {
                 // Persistent capture area — the active DRAFT lives here, above the
                 // whole window and independent of which note is selected.
-                CaptureBar(onOpenSettings: { showSettings = true },
-                           onOpenSync: { showSync.toggle() })
+                CaptureBar(onOpenSettings: { showSettings = true })
                     .padding(.horizontal, 18)
                     .padding(.top, 14)
                     .padding(.bottom, 10)
@@ -30,11 +28,6 @@ struct RootView: View {
 
                     NoteDetailView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if showSync {
-                        DeviceSyncPanel(isPresented: $showSync)
-                            .transition(.move(edge: .trailing))
-                    }
                 }
             }
 
@@ -48,7 +41,6 @@ struct RootView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showSync)
         .animation(.easeInOut(duration: 0.25), value: model.banner)
         .sheet(isPresented: $showSettings) {
             SettingsView(isPresented: $showSettings)

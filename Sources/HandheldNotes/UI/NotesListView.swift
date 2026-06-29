@@ -185,7 +185,6 @@ struct NoteRow: View {
     private var sourceTint: Color {
         switch note.source {
         case .computer: return .hcAccent
-        case .device:   return .hcOk
         case .watch:    return .hcAccent
         case .phone:    return .hcAccent
         case .seed:     return .hcSecondaryText

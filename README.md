@@ -1,22 +1,21 @@
 # Handheld Notes
 
-A macOS **voice-notes system** — the desktop companion to the Handheld Communicator
-device. Where the sibling *Handheld Companion* app is a clipboard utility (hold F16 →
-record → transcribe → copy), **Handheld Notes** is a notes database: every capture lands
-as a saved, titled, searchable note with its audio attached and playable.
+A macOS **voice-notes system**. Where the sibling *Handheld Companion* app is a clipboard
+utility (hold F16 → record → transcribe → copy), **Handheld Notes** is a notes database:
+every capture lands as a saved, titled, searchable note with its audio attached and playable.
 
-Two capture modes:
-- **Computer mode** — a global **F16** push-to-talk records the Mac mic, transcribes, and
-  saves the result as a note. (Real.)
-- **Local mode** — the handheld records to its SD card offline and later syncs the audio
-  over BLE; the app transcribes each file, saves it, and tells the device to delete its
-  copy. (Pipeline real; the BLE device side is **stubbed** with a mock that replays bundled
-  sample audio through the same path, so the whole flow runs with no hardware.)
+How you capture:
+- A global **F16** push-to-talk records the Mac mic, transcribes, and **appends** the speech
+  to a live draft, which you conclude (Send / ⌘↩) into a saved note.
+- Notes captured on an **iPhone** or **Apple Watch** (sibling repo) arrive over **iCloud /
+  WatchConnectivity** and drop straight into the same library.
 
-Transcription reuses the proven whisper.cpp + Apple Speech engine from the sibling app.
+Notes sync across your Mac, iPhone, and Apple Watch through **iCloud (CloudKit + SwiftData)** —
+one library, every device. Transcription reuses the proven whisper.cpp + Apple Speech engine
+from the sibling app.
 
-See [`NOTES_APP_PLAN.md`](./NOTES_APP_PLAN.md) for the full architecture, the BLE audio-sync
-GATT protocol sketch, the data model, and what is real vs. stubbed.
+See [`NOTES_APP_PLAN.md`](./NOTES_APP_PLAN.md) for the full architecture, the data model, and
+the iCloud sync story.
 
 ## Build & run
 

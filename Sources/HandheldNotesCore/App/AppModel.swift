@@ -25,12 +25,6 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     public var transcriptionEngineID: String = TranscriptionEngine.appleSpeech.rawValue
     public var hasSeededDemo: Bool = false
 
-    /// Manual vs. Automatic mode selection (see `ModeSelection`).
-    public var modeSelectionID: String = ModeSelection.manual.rawValue
-    /// The user's explicit Computer/Local choice, honored when `modeSelection`
-    /// is `.manual`.
-    public var manualModeID: String = CaptureMode.computer.rawValue
-
     /// One-time guard: have we already imported the legacy `notes.json` into the
     /// SwiftData store? Mirrors `hasSeededDemo` — set once the import runs so a
     /// later launch never re-imports (and the renamed `notes.json.imported`
@@ -46,24 +40,17 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
-    public var modeSelection: ModeSelection {
-        ModeSelection(rawValue: modeSelectionID) ?? .manual
-    }
-    public var manualMode: CaptureMode {
-        CaptureMode(rawValue: manualModeID) ?? .computer
-    }
 
     public init() {}
 
-    /// Tolerant decode so an older settings.json (missing the new mode keys) still
-    /// loads, keeping the existing engine choice and seed flag.
+    /// Tolerant decode so an older settings.json (missing newer keys, or carrying
+    /// the now-removed mode keys) still loads, keeping the existing engine choice
+    /// and seed flag.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let fresh = NotesSettings()
         transcriptionEngineID = try c.decodeIfPresent(String.self, forKey: .transcriptionEngineID) ?? fresh.transcriptionEngineID
         hasSeededDemo = try c.decodeIfPresent(Bool.self, forKey: .hasSeededDemo) ?? fresh.hasSeededDemo
-        modeSelectionID = try c.decodeIfPresent(String.self, forKey: .modeSelectionID) ?? fresh.modeSelectionID
-        manualModeID = try c.decodeIfPresent(String.self, forKey: .manualModeID) ?? fresh.manualModeID
         didImportLegacyJSON = try c.decodeIfPresent(Bool.self, forKey: .didImportLegacyJSON) ?? fresh.didImportLegacyJSON
         syncAudioOverICloud = try c.decodeIfPresent(Bool.self, forKey: .syncAudioOverICloud) ?? fresh.syncAudioOverICloud
     }
@@ -90,7 +77,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
 /// What kind of capture is currently happening, for the capture bar UI.
 public enum RecordingState: Equatable {
     case idle
-    case recording          // mic is live (Computer mode)
+    case recording          // mic is live
     case transcribing       // a capture is being turned into a note
     case error(String)
 }
@@ -110,20 +97,9 @@ public final class AppModel: ObservableObject {
     @Published public var recordingState: RecordingState = .idle
     @Published public var micLevel: Float = 0
 
-    // The active in-progress draft (Computer / live mode). Accumulates appended
+    // The active in-progress draft (live mic capture). Accumulates appended
     // speech + edits until the user explicitly concludes it into a saved note.
     @Published public var draft = Draft()
-
-    // Simulated handheld connectivity. With the mock service there's no radio, so
-    // this stands in for "device in range." In Automatic mode it decides the mode
-    // (connected → Computer, out of range → Local); the user toggles it to watch
-    // Auto flip. Persisted? No — it's runtime/session state.
-    @Published public var simulatedDeviceConnected: Bool = true
-
-    // Device sync state + log.
-    @Published public var syncState: DeviceSyncState = .idle
-    @Published public var deviceFiles: [DeviceFile] = []
-    @Published public var syncLog: [String] = []
 
     // Settings.
     @Published public var settings: NotesSettings {
@@ -142,7 +118,6 @@ public final class AppModel: ObservableObject {
     private let mic = MicCaptureService()
     private var hotKey: PushToTalkController?
     private let pushToTalkFactory: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)?
-    public private(set) var deviceSync: DeviceSyncService
     private var pipeline: NotesPipeline
     private var micLevelTimer: Timer?
     private var captureURL: URL?
@@ -166,21 +141,17 @@ public final class AppModel: ObservableObject {
     public var isCloudSyncActive: Bool { NotesDataStore.isCloudKitActive }
 
     /// - Parameters:
-    ///   - deviceSync: the sync backend (defaults to the mock; the app can pass a
-    ///     real `BLEDeviceSyncService`).
     ///   - pushToTalk: factory that builds the platform hotkey controller from a
     ///     press/release handler. Pass `nil` on platforms with no global hotkey
     ///     (e.g. iOS); the macOS app injects one wrapping its Carbon `HotKeyManager`.
     ///   - inMemoryStore: use an in-memory SwiftData store (tests only).
     public init(
-        deviceSync: DeviceSyncService? = nil,
         pushToTalk: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)? = nil,
         inMemoryStore: Bool = false
     ) {
         let loaded = NotesSettings.load()
         self.settings = loaded
         self.pipeline = NotesPipeline(engine: loaded.engine)
-        self.deviceSync = deviceSync ?? MockDeviceSyncService()
         self.pushToTalkFactory = pushToTalk
 
         // Stand up the SwiftData store (CloudKit-preferred, local fallback).
@@ -201,7 +172,6 @@ public final class AppModel: ObservableObject {
         // re-project them into the observable array.
         observeRemoteChanges()
 
-        wireDeviceSync()
         registerHotKey()
     }
 
@@ -229,37 +199,6 @@ public final class AppModel: ObservableObject {
     public var isTranscribing: Bool {
         if case .transcribing = recordingState { return true }
         return false
-    }
-
-    // MARK: Mode
-
-    /// The capture mode in effect right now. In Manual it's the user's explicit
-    /// choice; in Automatic it follows simulated device connectivity (connected →
-    /// Computer live transcribe, out of range → Local store-and-sync).
-    public var activeMode: CaptureMode {
-        switch settings.modeSelection {
-        case .manual:    return settings.manualMode
-        case .automatic: return simulatedDeviceConnected ? .computer : .local
-        }
-    }
-
-    /// True when the active mode was chosen automatically (for the UI badge).
-    public var modeIsAutomatic: Bool { settings.modeSelection == .automatic }
-
-    /// Manual-mode toggle between Computer and Local.
-    public func setManualMode(_ mode: CaptureMode) {
-        settings.manualModeID = mode.rawValue
-    }
-
-    /// Flip simulated connectivity (Automatic mode). Coming back *into* range is
-    /// the moment the handheld hands over anything it recorded offline, so we kick
-    /// off a device sync — finished notes drop straight into the list.
-    public func setSimulatedConnected(_ connected: Bool) {
-        let wasConnected = simulatedDeviceConnected
-        simulatedDeviceConnected = connected
-        if connected && !wasConnected && settings.modeSelection == .automatic {
-            startDeviceSync()
-        }
     }
 
     // MARK: Notes CRUD
@@ -487,7 +426,7 @@ public final class AppModel: ObservableObject {
         reloadNotes()
     }
 
-    // MARK: Computer / live mode — record APPENDS to the active draft
+    // MARK: Live mic capture — record APPENDS to the active draft
     //
     // A recording no longer creates a note. Hold-to-talk transcribes and *appends*
     // the speech to `draft`; the draft is only finalized on an explicit conclude.
@@ -499,12 +438,6 @@ public final class AppModel: ObservableObject {
 
     public func startRecording() async {
         guard !isRecording, !isTranscribing else { return }
-        // Live capture only makes sense in Computer mode. In Local mode the device
-        // is doing the recording; ignore the Mac mic.
-        guard activeMode == .computer else {
-            banner = "Local mode is active — the handheld records offline. Switch to Computer mode to dictate here."
-            return
-        }
         do {
             captureURL = try await mic.start()
             recordingState = .recording
@@ -588,50 +521,12 @@ public final class AppModel: ObservableObject {
         draft = Draft()
     }
 
-    // MARK: Device sync (mock by default)
-
-    public func startDeviceSync() {
-        syncLog.removeAll()
-        deviceSync.startSync()
-    }
-
-    public func stopDeviceSync() {
-        deviceSync.stop()
-    }
-
-    private func wireDeviceSync() {
-        deviceSync.onEvent = { [weak self] event in
-            guard let self else { return }
-            switch event {
-            case .stateChanged(let state):
-                self.syncState = state
-            case .fileListUpdated(let files):
-                self.deviceFiles = files
-            case .log(let line):
-                self.appendLog(line)
-            case .fileReceived(let fileId, let url, let source):
-                Task { @MainActor in
-                    let note = await self.ingest(url: url, source: source, cleanupSource: false)
-                    if note != nil {
-                        // Confirm the save so the device can free the slot.
-                        self.deviceSync.confirmSaved(fileId: fileId)
-                    }
-                }
-            }
-        }
-    }
-
-    private func appendLog(_ line: String) {
-        syncLog.append(line)
-        if syncLog.count > 200 { syncLog.removeFirst(syncLog.count - 200) }
-    }
-
-    // MARK: Device/Local ingest — recordings arrive ALREADY concluded
+    // MARK: External ingest — recordings arrive ALREADY concluded
     //
-    // Local-mode files were composed and concluded on the device, so they drop
-    // straight into the saved list as finished notes (no Mac-side drafting). This
-    // deliberately does NOT touch `recordingState`/`draft` — the Computer-mode
-    // capture area is independent of a background device sync.
+    // Audio captured elsewhere (e.g. the Apple Watch) was composed and concluded
+    // there, so it drops straight into the saved list as a finished note (no
+    // Mac-side drafting). This deliberately does NOT touch `recordingState`/`draft`
+    // — the live capture area is independent of a background ingest.
 
     @discardableResult
     private func ingest(url: URL, source: NoteSource, cleanupSource: Bool) async -> Note? {

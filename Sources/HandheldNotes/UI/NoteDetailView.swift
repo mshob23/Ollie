@@ -96,7 +96,6 @@ private struct SourceBanner: View {
     private var tint: Color {
         switch source {
         case .computer: return .hcAccent
-        case .device:   return .hcOk
         case .watch:    return .hcAccent
         case .phone:    return .hcAccent
         case .seed:     return .hcSecondaryText
@@ -105,8 +104,7 @@ private struct SourceBanner: View {
 
     private var headline: String {
         switch source {
-        case .computer: return "Computer mode · captured on this Mac"
-        case .device:   return "Local mode · synced from the handheld"
+        case .computer: return "Computer · captured on this Mac"
         case .watch:    return "Watch · captured on Apple Watch"
         case .phone:    return "iPhone · composed on your iPhone"
         case .seed:     return "Demo note"
@@ -117,8 +115,6 @@ private struct SourceBanner: View {
         switch source {
         case .computer:
             return "Dictated live with the F16 push-to-talk hotkey, then transcribed here."
-        case .device:
-            return "Recorded offline to the device's SD card and transferred over BLE on reconnect."
         case .watch:
             return "Recorded on the Apple Watch and transferred to your iPhone, which transcribed it."
         case .phone:
@@ -206,7 +202,6 @@ private struct NoteHeader: View {
     private var sourceTint: Color {
         switch note.source {
         case .computer: return .hcAccent
-        case .device:   return .hcOk
         case .watch:    return .hcAccent
         case .phone:    return .hcAccent
         case .seed:     return .hcSecondaryText

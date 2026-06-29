@@ -24,10 +24,8 @@
   <string>14.0</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Mohammad Shobaki</string>
-  <key>NSBluetoothAlwaysUsageDescription</key>
-  <string>Handheld Notes connects to your handheld device to sync the voice recordings it captured offline.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Handheld Notes records audio in Computer mode so it can transcribe it into a saved note.</string>
+  <string>Handheld Notes records audio so it can transcribe it into a saved note.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Handheld Notes transcribes your recordings with Apple’s on-device speech recognition.</string>
   <key>NSPrincipalClass</key>
