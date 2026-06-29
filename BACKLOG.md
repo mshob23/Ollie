@@ -21,10 +21,14 @@ shipped on TestFlight build 7 + the notarized Mac `.dmg`.
 
 ## Next — the big bet
 
-- **Rung 1 — in-app intelligence (semantic search + "ask your thoughts").** On-device
-  embeddings (`NLEmbedding`) + the Foundation Models LLM = RAG over the corpus. Turns
-  "find notes related to Hassan" into real semantic, spelling-tolerant, ranked results
-  plus a synthesized answer. The crown jewel; a deliberate multi-session build.
+- **Rung 1a — on-device semantic search: BUILT + SHELVED (June 2026).** Works
+  (`NLContextualEmbedding` + a local cached `EmbeddingIndex` actor), but it's
+  corpus-limited / B-grade and MCP + Claude does it better — so un-wired from the app,
+  engine kept dormant in `Sources/HandheldNotesCore/Intelligence/`. Full write-up +
+  revival steps: `docs/semantic-search.md`.
+- **Rung 1b — generative "ask your thoughts": not started.** Foundation Models LLM + RAG
+  over the corpus (synthesized answers). Needs Apple Intelligence; where the real fuzz
+  lives. The crown jewel, deferred.
 
 ## Polish / fixes
 
