@@ -126,13 +126,16 @@ final class SyncHealthTests: XCTestCase {
 
     // MARK: fold(...) — event-fold transitions
 
-    /// A START event (endDate == nil) from idle → .syncing.
+    /// A START event (endDate == nil) from idle → .syncing. The failure counter is
+    /// untouched by START events.
     func testStartEventTransitionsToSyncing() {
         let fold = SyncHealth.fold(
             current: .idle(lastSuccess: nil), lastSuccess: nil,
+            consecutiveFailures: 0,
             isEnd: false, succeeded: false, degradation: nil, endDate: nil)
         XCTAssertEqual(fold.health, .syncing)
         XCTAssertNil(fold.lastSuccessfulSync)
+        XCTAssertEqual(fold.consecutiveFailures, 0)
     }
 
     /// A succeeded import-END yields `.idle` with lastSuccess set to the end date.
@@ -140,44 +143,142 @@ final class SyncHealthTests: XCTestCase {
         let end = Date(timeIntervalSince1970: 2_000_000)
         let fold = SyncHealth.fold(
             current: .syncing, lastSuccess: nil,
+            consecutiveFailures: 0,
             isEnd: true, succeeded: true, degradation: nil, endDate: end)
         XCTAssertEqual(fold.health, .idle(lastSuccess: end))
         XCTAssertEqual(fold.lastSuccessfulSync, end)
+        XCTAssertEqual(fold.consecutiveFailures, 0)
     }
 
-    /// A failed export-END yields `.degraded` with the classified cause. The caller
-    /// pre-classifies the error; here we feed the result of `classify` directly.
-    func testFailedExportEndYieldsDegraded() {
+    // MARK: fold(...) — debounced degraded escalation
+
+    /// DEBOUNCE: a single failed END (the 1st consecutive failure) must NOT escalate
+    /// to `.degraded`. It only bumps the failure counter to 1 and preserves the
+    /// current health. This is the transient recoverable CKError-1011 on cold launch
+    /// that recovers ~1s later — it must stay healthy and never fire the schema banner.
+    func testSingleFailedEndDoesNotDegrade() {
         let now = Date(timeIntervalSince1970: 3_000_000)
-        let degradation = SyncHealth.classify(CKError(.quotaExceeded))
+        let degradation = SyncHealth.classify(CKError(.serverRejectedRequest))
+        XCTAssertEqual(degradation, .schemaNotDeployed)  // would-be banner cause
         let fold = SyncHealth.fold(
             current: .syncing, lastSuccess: nil,
+            consecutiveFailures: 0,
             isEnd: true, succeeded: false, degradation: degradation,
             endDate: now, now: now)
-        XCTAssertEqual(fold.health, .degraded(.quota, since: now))
+        // Still healthy (in-flight syncing preserved), NOT degraded.
+        XCTAssertEqual(fold.health, .syncing)
+        XCTAssertEqual(fold.consecutiveFailures, 1)
+    }
+
+    /// DEBOUNCE (case a): one failed event THEN a successful event → sync stays
+    /// healthy (`.idle`), the counter resets to 0, and no degraded banner is fired.
+    func testFailureThenSuccessStaysHealthy() {
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        // 1st failure: counter → 1, still .syncing (not degraded).
+        let failDeg = SyncHealth.classify(CKError(.serverRejectedRequest))
+        let afterFail = SyncHealth.fold(
+            current: .syncing, lastSuccess: nil,
+            consecutiveFailures: 0,
+            isEnd: true, succeeded: false, degradation: failDeg,
+            endDate: now, now: now)
+        XCTAssertEqual(afterFail.health, .syncing)
+        XCTAssertEqual(afterFail.consecutiveFailures, 1)
+
+        // Success: feeds the running count back in; resets to 0 and goes idle.
+        let end = Date(timeIntervalSince1970: 3_000_500)
+        let afterSuccess = SyncHealth.fold(
+            current: afterFail.health, lastSuccess: afterFail.lastSuccessfulSync,
+            consecutiveFailures: afterFail.consecutiveFailures,
+            isEnd: true, succeeded: true, degradation: nil, endDate: end)
+        XCTAssertEqual(afterSuccess.health, .idle(lastSuccess: end))
+        XCTAssertEqual(afterSuccess.lastSuccessfulSync, end)
+        XCTAssertEqual(afterSuccess.consecutiveFailures, 0)
+        // Crucially never .degraded.
+        if case .degraded = afterSuccess.health {
+            XCTFail("a failure followed by a success must not be degraded")
+        }
+    }
+
+    /// DEBOUNCE (case b): two CONSECUTIVE failed events (no success between) → the
+    /// 2nd escalates to `.degraded` with the correct classification. A persistent
+    /// outage (the real June incident produced many consecutive fails) still surfaces.
+    func testTwoConsecutiveFailuresDegrade() {
+        let t1 = Date(timeIntervalSince1970: 3_000_000)
+        let degradation = SyncHealth.classify(CKError(.serverRejectedRequest))
+        let afterFirst = SyncHealth.fold(
+            current: .syncing, lastSuccess: nil,
+            consecutiveFailures: 0,
+            isEnd: true, succeeded: false, degradation: degradation,
+            endDate: t1, now: t1)
+        XCTAssertEqual(afterFirst.health, .syncing, "1st failure debounced")
+        XCTAssertEqual(afterFirst.consecutiveFailures, 1)
+
+        let t2 = Date(timeIntervalSince1970: 3_000_001)
+        let afterSecond = SyncHealth.fold(
+            current: afterFirst.health, lastSuccess: afterFirst.lastSuccessfulSync,
+            consecutiveFailures: afterFirst.consecutiveFailures,
+            isEnd: true, succeeded: false, degradation: degradation,
+            endDate: t2, now: t2)
+        XCTAssertEqual(afterSecond.health, .degraded(.schemaNotDeployed, since: t2),
+                       "2nd consecutive failure escalates to degraded")
+        XCTAssertEqual(afterSecond.consecutiveFailures, 2)
+    }
+
+    /// DEBOUNCE (case c): failure, failure (→ degraded), then success → back to
+    /// `.idle` with the degraded state cleared and the counter reset to 0.
+    func testFailureFailureThenSuccessRecovers() {
+        let degradation = SyncHealth.classify(CKError(.quotaExceeded))
+        let t1 = Date(timeIntervalSince1970: 3_000_000)
+        let f1 = SyncHealth.fold(
+            current: .syncing, lastSuccess: nil,
+            consecutiveFailures: 0,
+            isEnd: true, succeeded: false, degradation: degradation,
+            endDate: t1, now: t1)
+        let t2 = Date(timeIntervalSince1970: 3_000_001)
+        let f2 = SyncHealth.fold(
+            current: f1.health, lastSuccess: f1.lastSuccessfulSync,
+            consecutiveFailures: f1.consecutiveFailures,
+            isEnd: true, succeeded: false, degradation: degradation,
+            endDate: t2, now: t2)
+        XCTAssertEqual(f2.health, .degraded(.quota, since: t2))
+        XCTAssertEqual(f2.consecutiveFailures, 2)
+
+        // Recovery.
+        let end = Date(timeIntervalSince1970: 3_000_500)
+        let s = SyncHealth.fold(
+            current: f2.health, lastSuccess: f2.lastSuccessfulSync,
+            consecutiveFailures: f2.consecutiveFailures,
+            isEnd: true, succeeded: true, degradation: nil, endDate: end)
+        XCTAssertEqual(s.health, .idle(lastSuccess: end))
+        XCTAssertEqual(s.lastSuccessfulSync, end)
+        XCTAssertEqual(s.consecutiveFailures, 0)
     }
 
     /// A success CLEARS a prior degraded state (degraded is sticky only until a
-    /// phase actually succeeds).
+    /// phase actually succeeds) and resets the failure counter.
     func testSuccessClearsPriorDegraded() {
         let priorDegradedSince = Date(timeIntervalSince1970: 1_000)
         let end = Date(timeIntervalSince1970: 5_000)
         let fold = SyncHealth.fold(
             current: .degraded(.network, since: priorDegradedSince),
             lastSuccess: nil,
+            consecutiveFailures: 2,
             isEnd: true, succeeded: true, degradation: nil, endDate: end)
         XCTAssertEqual(fold.health, .idle(lastSuccess: end))
         XCTAssertEqual(fold.lastSuccessfulSync, end)
+        XCTAssertEqual(fold.consecutiveFailures, 0)
     }
 
     /// While degraded, a START event must NOT flap back to `.syncing` (that would
-    /// hide a live failure behind an in-flight retry). The state stays degraded.
+    /// hide a live failure behind an in-flight retry). The state and counter stay put.
     func testStartWhileDegradedStaysDegraded() {
         let since = Date(timeIntervalSince1970: 1_000)
         let fold = SyncHealth.fold(
             current: .degraded(.schemaNotDeployed, since: since),
             lastSuccess: nil,
+            consecutiveFailures: 2,
             isEnd: false, succeeded: false, degradation: nil, endDate: nil)
         XCTAssertEqual(fold.health, .degraded(.schemaNotDeployed, since: since))
+        XCTAssertEqual(fold.consecutiveFailures, 2)
     }
 }
