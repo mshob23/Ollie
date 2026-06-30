@@ -1,6 +1,7 @@
 import AVFoundation
 import CloudKit
 import Combine
+import CoreData
 import Foundation
 import SwiftData
 import SwiftUI
@@ -121,6 +122,32 @@ public final class AppModel: ObservableObject {
     // Banner for transient, non-fatal messages (permission denied, etc.).
     @Published public var banner: String?
 
+    // MARK: Sync health (observability backbone)
+    //
+    // Folded from NSPersistentCloudKitContainer phase events (see
+    // `observeSyncEvents`). The UI renders an indicator/banner off `syncHealth`;
+    // `lastSuccessfulSync` backs a "last synced <relative>" affordance even when
+    // no event is currently in flight.
+
+    /// Observable health of iCloud sync. Seeded at init from the construction-time
+    /// CloudKit-vs-local outcome, then driven by CloudKit phase events.
+    @Published public private(set) var syncHealth: SyncHealth
+
+    /// Timestamp of the most recent successful import/export phase, or `nil` if
+    /// none has completed this run. Drives a "last synced …" UI affordance and the
+    /// staleness backstop.
+    public private(set) var lastSuccessfulSync: Date?
+
+    /// Repeating staleness backstop (see `startSyncStalenessTimer`). Conservative:
+    /// it never hard-errors, it only keeps the UI's "last synced" honest and logs a
+    /// breadcrumb if events have gone quiet. Invalidated on deinit.
+    ///
+    /// Held in a small `@unchecked Sendable` box so the nonisolated `deinit` can
+    /// invalidate it under Swift 6 strict concurrency (a bare `Timer?` stored
+    /// property can't be touched from a nonisolated deinit). Only ever mutated on
+    /// the main actor, so the box's unchecked Sendability is sound.
+    private let syncStalenessTimer = TimerBox()
+
     // Services.
     private let mic = MicCaptureService()
     private var hotKey: PushToTalkController?
@@ -171,6 +198,13 @@ public final class AppModel: ObservableObject {
         // Coalesce our own explicit saves; we drive persistence deliberately.
         self.modelContext.autosaveEnabled = false
 
+        // Seed sync health from the construction-time CloudKit-vs-local outcome.
+        // `isCloudKitActive` is now settled (the container above has been built).
+        // This is the SEED only — from here on, CloudKit phase events drive the
+        // state (see `observeSyncEvents`). A local-only store stays `.localOnly`
+        // forever (no events); a CloudKit store starts at idle-with-no-success.
+        self.syncHealth = NotesDataStore.isCloudKitActive ? .idle(lastSuccess: nil) : .localOnly
+
         // Migration + seed run against the store, THEN project into `notes`.
         importLegacyNotesIfNeeded()
         if CommandLine.arguments.contains("--wipe-all-notes") { deleteAllNotes() }
@@ -182,7 +216,19 @@ public final class AppModel: ObservableObject {
         // re-project them into the observable array.
         observeRemoteChanges()
 
+        // Fold CloudKit phase events into `syncHealth` (the observability backbone),
+        // and arm the no-event staleness backstop.
+        observeSyncEvents()
+        startSyncStalenessTimer()
+
         registerHotKey()
+    }
+
+    deinit {
+        // Tear down the repeating staleness backstop so it can't outlive the model.
+        // (The timer captures `self` weakly, so this is belt-and-suspenders, but it
+        // also stops the timer from firing into a deallocated run-loop slot.)
+        syncStalenessTimer.invalidate()
     }
 
     // MARK: Derived
@@ -245,10 +291,32 @@ public final class AppModel: ObservableObject {
     }
 
     /// Maintenance only (behind the `--wipe-all-notes` launch arg): delete every note
-    /// + its audio so a shared library can be cleared of test/demo clutter. The
-    /// deletions mirror out via CloudKit, so peers go empty too. Not surfaced in the UI.
+    /// + its audio so a shared library can be cleared of test/demo clutter.
+    ///
+    /// **Deletes RECORDS, never the CloudKit ZONE.** An earlier version deleted the
+    /// mirror zone outright to clear peers immediately; that is exactly what wedged
+    /// sync for hours (tearing the zone down out from under
+    /// `NSPersistentCloudKitContainer` leaves it in a state it can't cleanly
+    /// recover from). The right primitive is per-record deletion: we delete the
+    /// local `NoteEntity` rows and let NSPCC mirror those deletions out as ordinary
+    /// record deletes. Slower to propagate, but it never corrupts the zone.
+    ///
+    /// **Backs up first.** Before any deletion we snapshot the corpus to a
+    /// timestamped `~/Ollie/backups/` file (all platforms — iOS sandbox included),
+    /// so a wipe is always recoverable.
+    /// The backup is best-effort here (this is a maintenance arg, not the in-app
+    /// `resetSync` which *verifies* the backup and refuses to proceed without it).
     public func deleteAllNotes() {
         let all = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+
+        // Safety net: snapshot the live corpus before destroying it. Runs on ALL
+        // platforms — `CorpusExporter.backup` compiles everywhere and `~/Ollie`
+        // (via `homeDirectoryForCurrentUser`) is a valid location inside the iOS
+        // sandbox too. The doc above promises a backup first; this delivers it on
+        // iOS as well, not just macOS. Best-effort on this maintenance path.
+        let backupURL = CorpusExporter.backup(notes)
+        Diag.log("HNDIAG deleteAllNotes backup: \(backupURL?.path ?? "FAILED")")
+
         for entity in all {
             if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
             modelContext.delete(entity)
@@ -256,18 +324,10 @@ public final class AppModel: ObservableObject {
         SpotlightIndexer.removeAll()
         selectedNoteID = nil
         saveAndReload()
-        // NSPCC's per-record deletion *exports* are slow/batched, so also delete the
-        // CloudKit mirror zone outright — that clears every peer immediately. NSPCC
-        // re-creates an empty zone on its next sync. Safe because the local store is
-        // now empty (nothing to re-upload). Peers must have empty local stores too
-        // (uninstalled / wiped) or they'll just re-populate the zone.
-        let zoneID = CKRecordZone.ID(zoneName: "com.apple.coredata.cloudkit.zone")
-        CKContainer(identifier: NotesDataStore.cloudKitContainerID)
-            .privateCloudDatabase
-            .delete(withRecordZoneID: zoneID) { _, error in
-                NSLog("HNDIAG cloud zone delete: %@", error.map { "\($0)" } ?? "ok")
-            }
-        NSLog("HNDIAG wiped %d local notes + requested cloud zone delete", all.count)
+        // The record deletions above mirror out via CloudKit as ordinary per-record
+        // deletes — peers go empty as those propagate. We deliberately DO NOT delete
+        // the CloudKit zone: that is the operation that previously wedged sync.
+        Diag.log("HNDIAG wiped \(all.count) local notes (records deleted; zone untouched)")
     }
 
     /// Create a note from content composed on this device (the iPhone compose
@@ -451,6 +511,249 @@ public final class AppModel: ObservableObject {
     /// missed. Cheap and idempotent (a fresh fetch + assign).
     public func refresh() {
         reloadNotes()
+    }
+
+    // MARK: Sync levers (F4 syncNow / F7 resetSync)
+
+    /// Timestamp of the last manual `syncNow()` press. Distinct from
+    /// `lastSuccessfulSync` (which tracks CloudKit phase *success*): this is just
+    /// "when did the user last ask us to re-reconcile", surfaced next to the manual
+    /// control so a tap gives visible feedback even though there's nothing to pull.
+    public private(set) var lastManualSync: Date?
+
+    /// Manual "sync now" lever.
+    ///
+    /// **What it actually does — and honestly does NOT.** This re-projects the local
+    /// store into `notes` (a fresh-context fetch) and re-runs the corpus export, then
+    /// stamps `lastManualSync`. That makes it a real, useful reconcile of *local*
+    /// state: it surfaces any rows CloudKit already imported into the store but whose
+    /// remote-change notification we might have missed, and it refreshes the `~/Ollie`
+    /// mirror the MCP/Obsidian read.
+    ///
+    /// It does **not** — and cannot — compel CloudKit to fetch from the server *right
+    /// now*. SwiftData / `NSPersistentCloudKitContainer` expose no public API to force
+    /// an immediate pull; mirroring runs on its own schedule. So this is named and
+    /// documented as a local re-reconcile, NOT a "pull from cloud". If the server has
+    /// newer records that NSPCC hasn't imported yet, they appear when it next syncs of
+    /// its own accord — `syncNow()` can't hurry that along.
+    public func syncNow() {
+        reloadNotes()
+        lastManualSync = Date()
+        Diag.log("HNDIAG syncNow: re-projected local store + re-exported corpus "
+            + "(local reconcile only; no forced server pull)")
+    }
+
+    /// The outcome of `resetSync()`: a relaunch is required because the shared
+    /// `ModelContainer` is a process-wide one-shot static that cannot be rebuilt
+    /// live. The UI uses this to tell the user to quit and reopen.
+    public enum ResetSyncOutcome: Equatable, Sendable {
+        /// The local store files were deleted; the user must quit + relaunch so a
+        /// fresh container is built against a clean store.
+        case relaunchRequired
+    }
+
+    /// Errors `resetSync()` can throw BEFORE it touches anything destructive. If any
+    /// of these is thrown, NO store file was deleted — the store is exactly as it was.
+    public enum ResetSyncError: Error, Equatable {
+        /// The pre-delete backup couldn't be written (or came back empty). We refuse
+        /// to delete the store without a verified, non-empty backup on disk.
+        case backupFailed
+        /// The store directory couldn't be located, so there was nothing safe to delete.
+        case storeDirectoryUnavailable
+    }
+
+    /// Posted (main thread) when `resetSync()` succeeds, carrying
+    /// `ResetSyncOutcome.relaunchRequired`. A UI layer that doesn't call `resetSync()`
+    /// directly can observe this to surface the "quit and reopen" prompt.
+    public static let didRequireRelaunchNotification =
+        Notification.Name("AppModel.didRequireRelaunch")
+
+    /// Test-only seam onto the store files `resetSync()` deletes. Production reads
+    /// the real `NotesDataStore.storeFileURLs()`; a test points this at temp files so
+    /// the suite can exercise the delete path WITHOUT touching the real on-disk store.
+    /// Internal (not public) so only the test target reaches it.
+    internal var storeFileURLsForReset: [URL] = NotesDataStore.storeFileURLs()
+
+    /// In-app equivalent of the CLI store-delete recovery: when sync is wedged, blow
+    /// away the LOCAL SwiftData store so the next launch rebuilds a clean one and
+    /// re-imports from CloudKit. The safe counterpart to the old "delete the zone"
+    /// hammer.
+    ///
+    /// **Ordering is the safety contract:**
+    ///   1. Take a backup FIRST and **verify** the backup file exists and is
+    ///      non-empty. If it isn't, throw `.backupFailed` and delete NOTHING — the
+    ///      store is left exactly as it was. (This is the verify-before-destroy
+    ///      pattern `deleteAllNotes` only does best-effort; here it's mandatory.)
+    ///   2. Only then delete the local store files (`default.store` + `-wal` / `-shm`).
+    ///   3. Signal `.relaunchRequired` (and post `didRequireRelaunchNotification`) so
+    ///      the UI tells the user to quit + reopen — the shared `ModelContainer` is a
+    ///      one-shot static and can't be rebuilt in-process.
+    ///
+    /// **It NEVER touches the CloudKit zone.** Tearing the zone down is precisely what
+    /// caused the prior multi-hour sync wedge. This deletes only LOCAL files; the
+    /// server-side records are untouched and re-import on the clean relaunch.
+    ///
+    /// - Returns: `.relaunchRequired` on success.
+    /// - Throws: `ResetSyncError` if the backup can't be verified or the store
+    ///   directory can't be found — in either case nothing was deleted.
+    @discardableResult
+    public func resetSync() throws -> ResetSyncOutcome {
+        // (a) Backup FIRST, and verify it landed non-empty BEFORE deleting anything.
+        guard let backupURL = CorpusExporter.backup(notes) else {
+            Diag.log("HNDIAG resetSync ABORTED: backup write failed (nothing deleted)")
+            throw ResetSyncError.backupFailed
+        }
+        let fm = FileManager.default
+        let size = (try? fm.attributesOfItem(atPath: backupURL.path)[.size] as? Int) ?? nil
+        // An EMPTY corpus legitimately produces a valid 0-byte (or header-only)
+        // backup. Requiring >0 bytes there would wrongly refuse to reset an empty —
+        // possibly wedged — store. So: when there are no notes, require only that the
+        // backup file EXISTS; keep the strict non-empty check when notes are present.
+        let backupExists = fm.fileExists(atPath: backupURL.path)
+        let backupOK = notes.isEmpty ? backupExists : (backupExists && (size ?? 0) > 0)
+        guard backupOK else {
+            Diag.log("HNDIAG resetSync ABORTED: backup empty/missing at \(backupURL.path) (nothing deleted)")
+            throw ResetSyncError.backupFailed
+        }
+        Diag.log("HNDIAG resetSync backup verified: \(backupURL.path) (\(size ?? 0) bytes, notes=\(notes.count))")
+
+        // (b) Only now delete the LOCAL store files. NEVER the CloudKit zone.
+        let storeFiles = storeFileURLsForReset
+        guard !storeFiles.isEmpty else {
+            Diag.log("HNDIAG resetSync ABORTED: store directory unavailable (nothing deleted)")
+            throw ResetSyncError.storeDirectoryUnavailable
+        }
+        for url in storeFiles where fm.fileExists(atPath: url.path) {
+            do {
+                try fm.removeItem(at: url)
+                Diag.log("HNDIAG resetSync deleted \(url.lastPathComponent)")
+            } catch {
+                // A partial delete still requires a relaunch; log and continue so the
+                // remaining companions are also removed. (The main `.store` going is
+                // what forces the rebuild.)
+                Diag.log("HNDIAG resetSync could not delete \(url.lastPathComponent): \(error)")
+            }
+        }
+
+        // (c) Signal "relaunch required" — the shared container is a one-shot static.
+        NotificationCenter.default.post(
+            name: AppModel.didRequireRelaunchNotification, object: self)
+        Diag.log("HNDIAG resetSync complete: local store cleared, relaunch required (zone untouched)")
+        return .relaunchRequired
+    }
+
+    // MARK: Sync-health observation (CloudKit phase events)
+
+    /// Subscribe to `NSPersistentCloudKitContainer.eventChangedNotification` and
+    /// fold each phase event into `syncHealth`.
+    ///
+    /// **This fires in-process under SwiftData.** Pointing a `ModelConfiguration`
+    /// at a CloudKit database stands up an `NSPersistentCloudKitContainer` under
+    /// the hood, and it posts this notification for every sync phase. We observe
+    /// with `object: nil` (we don't own the container instance) and pull the typed
+    /// `Event` out of `userInfo`.
+    ///
+    /// Each phase (setup/import/export) posts a **START** event (`endDate == nil`)
+    /// then an **END** event (`endDate != nil`, `succeeded`/`error` populated). The
+    /// fold:
+    ///   - **START** → show `.syncing`, but only if we're not already `.degraded`
+    ///     (a degraded state is sticky until a phase actually SUCCEEDS, so an
+    ///     in-flight retry doesn't flap the UI back to "syncing" and hide the
+    ///     problem).
+    ///   - **END + succeeded** → record `lastSuccessfulSync` and go
+    ///     `.idle(lastSuccess:)`. A success CLEARS any prior `.degraded`.
+    ///   - **END + failed** → `.degraded(classify(error), since: now)`.
+    ///
+    /// A local-only store never gets a CloudKit container, so this observer simply
+    /// never fires there and `syncHealth` stays `.localOnly`.
+    private func observeSyncEvents() {
+        NotificationCenter.default.addObserver(
+            forName: NSPersistentCloudKitContainer.eventChangedNotification,
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let event = notification.userInfo?[
+                NSPersistentCloudKitContainer.eventNotificationUserInfoKey
+            ] as? NSPersistentCloudKitContainer.Event else { return }
+            // `queue: .main` guarantees this block already runs on the main thread,
+            // so we're on the main actor's executor. Extract the event's salient
+            // fields HERE (the non-Sendable `NSPersistentCloudKitContainer.Event`
+            // never crosses an isolation boundary) and fold from those.
+            //
+            // The one non-Sendable field, `error`, is reduced to a Sendable
+            // `SyncDegradation` immediately via the pure classifier, so only
+            // value types cross into the fold.
+            let isEnd = event.endDate != nil
+            let endDate = event.endDate
+            let succeeded = event.succeeded
+            let typeRaw = event.type.rawValue
+            let degradation: SyncDegradation? = (isEnd && !succeeded)
+                ? event.error.map(SyncHealth.classify)
+                : nil
+            let errorText = event.error.map { "\($0)" } ?? "nil"
+            MainActor.assumeIsolated {
+                self?.handleSyncEvent(
+                    typeRaw: typeRaw, isEnd: isEnd, endDate: endDate,
+                    succeeded: succeeded, degradation: degradation, errorText: errorText)
+            }
+        }
+    }
+
+    /// Fold one CloudKit phase event (already reduced to Sendable fields) into
+    /// `syncHealth`. See `observeSyncEvents` for the state machine; the transition
+    /// itself is the pure, unit-tested `SyncHealth.fold`.
+    private func handleSyncEvent(
+        typeRaw: Int, isEnd: Bool, endDate: Date?,
+        succeeded: Bool, degradation: SyncDegradation?, errorText: String
+    ) {
+        // Greppable phase trail in the unified log (HNDIAG SYNCEVENT ...).
+        let phase = isEnd ? "END" : "START"
+        Diag.log("HNDIAG SYNCEVENT type=\(typeRaw) \(phase) "
+            + "succeeded=\(succeeded) error=\(errorText)")
+
+        let result = SyncHealth.fold(
+            current: syncHealth,
+            lastSuccess: lastSuccessfulSync,
+            isEnd: isEnd,
+            succeeded: succeeded,
+            degradation: degradation,
+            endDate: endDate)
+        lastSuccessfulSync = result.lastSuccessfulSync
+        syncHealth = result.health
+    }
+
+    // MARK: Sync staleness backstop (F8)
+
+    /// A conservative, no-event backstop. CloudKit phase events are the PRIMARY
+    /// signal; this only covers the pathological "no event ever arrives" case.
+    ///
+    /// It deliberately does **not** hard-error on staleness — declaring a failure
+    /// from silence alone produces false alarms (a quiet store with nothing to sync
+    /// is perfectly healthy). Instead, every ~180s while the app is active, if
+    /// CloudKit is active, we're not mid-sync, and the last success is missing or
+    /// older than ~15 min, it just logs a breadcrumb. The UI keeps showing "last
+    /// synced <relative>" off `lastSuccessfulSync` regardless. Invalidated on deinit.
+    private func startSyncStalenessTimer() {
+        syncStalenessTimer.invalidate()
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: 180, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkSyncStaleness() }
+        }
+        // Survive run-loop modes where the default timer would be starved (e.g. a
+        // tracking loop), matching the app's other background timers' intent.
+        timer.tolerance = 30
+        syncStalenessTimer.timer = timer
+    }
+
+    private func checkSyncStaleness() {
+        guard NotesDataStore.isCloudKitActive else { return }
+        if case .syncing = syncHealth { return }
+        let staleAfter: TimeInterval = 15 * 60
+        let isStale = lastSuccessfulSync.map { Date().timeIntervalSince($0) > staleAfter } ?? true
+        guard isStale else { return }
+        // Breadcrumb only — never an error. Events remain the source of truth.
+        let last = lastSuccessfulSync.map { "\($0)" } ?? "never"
+        Diag.log("HNDIAG SYNCEVENT staleness-backstop lastSuccess=\(last) (no hard error)")
     }
 
     // MARK: Live mic capture — record APPENDS to the active draft
@@ -710,5 +1013,18 @@ public final class AppModel: ObservableObject {
         }
         settings.hasSeededDemo = true
         settings.save()
+    }
+}
+
+/// A tiny holder for the staleness `Timer` so `AppModel`'s nonisolated `deinit`
+/// can invalidate it under Swift 6 strict concurrency. `@unchecked Sendable` is
+/// sound here because the `timer` is only ever assigned/read on the main actor
+/// (in `startSyncStalenessTimer`) and `invalidate()` is safe to call from any
+/// thread.
+private final class TimerBox: @unchecked Sendable {
+    var timer: Timer?
+    func invalidate() {
+        timer?.invalidate()
+        timer = nil
     }
 }
