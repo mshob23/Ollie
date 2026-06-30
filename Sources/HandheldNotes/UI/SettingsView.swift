@@ -8,6 +8,24 @@ struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @Binding var isPresented: Bool
 
+    /// Reset-sync flow state. `confirmingReset` gates the destructive action behind
+    /// an explicit dialog; `resetResult` drives the follow-up alert.
+    @State private var confirmingReset = false
+    @State private var resetResult: ResetResult?
+
+    /// The outcome to surface after a `resetSync()` attempt — either "relaunch
+    /// needed" (success) or an error message (nothing was deleted).
+    private enum ResetResult: Identifiable {
+        case relaunchRequired
+        case failed(String)
+        var id: String {
+            switch self {
+            case .relaunchRequired: return "relaunch"
+            case .failed(let msg): return "failed-\(msg)"
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -17,6 +35,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     engineSection
                     captureSection
+                    syncSection
                     footer
                 }
                 .padding(.horizontal, 24)
@@ -26,6 +45,35 @@ struct SettingsView: View {
         }
         .frame(width: 500, height: 600)
         .background(WarmBackground())
+        .confirmationDialog(
+            "Reset iCloud sync?",
+            isPresented: $confirmingReset,
+            titleVisibility: .visible
+        ) {
+            Button("Back up & reset sync", role: .destructive) { performResetSync() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This backs up your notes, then rebuilds the local sync state from scratch. Your iCloud data is left untouched. Ollie must be relaunched afterward.")
+        }
+        .alert(item: $resetResult) { result in
+            switch result {
+            case .relaunchRequired:
+                return Alert(
+                    title: Text("Sync reset"),
+                    message: Text("Please quit and reopen Ollie."),
+                    primaryButton: .default(Text("Quit Ollie")) {
+                        NSApp.terminate(nil)
+                    },
+                    secondaryButton: .cancel(Text("Later"))
+                )
+            case .failed(let message):
+                return Alert(
+                    title: Text("Couldn't reset sync"),
+                    message: Text(message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
     }
 
     // MARK: Header
@@ -128,6 +176,161 @@ struct SettingsView: View {
             }
             .toggleStyle(.switch)
             .tint(.hcAccent)
+        }
+    }
+
+    // MARK: iCloud sync
+
+    /// A relative-time formatter for the "Last synced <time>" affordance. One shared
+    /// instance — building these is non-trivial and the format never changes.
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private var syncSection: some View {
+        SettingsSection(
+            eyebrow: "iCloud",
+            title: "Sync status",
+            blurb: "Whether your notes are syncing across your devices through iCloud. A silent failure is the worst kind, so the real state shows here."
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                syncStatusRow
+                Divider().overlay(Color.hcCardBorder.opacity(0.4))
+                syncNowButton
+                resetSyncButton
+            }
+        }
+    }
+
+    /// A coloured status row reflecting `model.syncHealth`: green when syncing,
+    /// amber when local-only, red when degraded (with the actionable message).
+    private var syncStatusRow: some View {
+        let (color, symbol, title, detail) = syncStatusContent
+        return HStack(alignment: .top, spacing: 11) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 20, alignment: .center)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.hcSecondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(color.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(color.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    /// Maps the current `SyncHealth` to (accent colour, SF Symbol, title, detail).
+    private var syncStatusContent: (Color, String, String, String?) {
+        switch model.syncHealth {
+        case .idle, .syncing:
+            return (.hcOk, "checkmark.icloud.fill", "Syncing with iCloud", lastSyncedDetail)
+        case .localOnly:
+            return (.hcAccent, "icloud.slash.fill",
+                    "Not syncing - local storage only",
+                    "Notes are saved on this Mac only. Sign in to iCloud to sync across devices.")
+        case .degraded(let degradation, _):
+            return (.syncDanger, "exclamationmark.icloud.fill",
+                    "Sync problem", degradation.userMessage)
+        }
+    }
+
+    /// The "Last synced <relative time>" secondary line for the healthy states,
+    /// derived from `model.lastSuccessfulSync` (nil until a phase has completed).
+    private var lastSyncedDetail: String? {
+        guard let last = model.lastSuccessfulSync else {
+            return "Waiting for the first sync to complete."
+        }
+        let rel = Self.relativeFormatter.localizedString(for: last, relativeTo: Date())
+        return "Last synced \(rel)."
+    }
+
+    private var syncNowButton: some View {
+        Button(action: { model.syncNow() }) {
+            syncActionLabel(
+                symbol: "arrow.triangle.2.circlepath",
+                tint: .hcAccent,
+                title: "Sync now",
+                subtitle: "Refreshes from the local store and re-exports your notes. iCloud syncs on its own schedule; this reconciles what's on disk."
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var resetSyncButton: some View {
+        Button(action: { confirmingReset = true }) {
+            syncActionLabel(
+                symbol: "trash.slash",
+                tint: .syncDanger,
+                title: "Reset sync...",
+                subtitle: "Backs up your notes, then rebuilds local sync state. Use only if sync is stuck. Requires a relaunch."
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Shared row layout for the two sync action buttons (icon + title + subtitle).
+    private func syncActionLabel(symbol: String, tint: Color, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 20, alignment: .center)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.hcPanel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// Run the destructive reset (only reached after the confirmation dialog) and
+    /// translate its result/throw into the follow-up alert.
+    private func performResetSync() {
+        do {
+            switch try model.resetSync() {
+            case .relaunchRequired:
+                resetResult = .relaunchRequired
+            }
+        } catch AppModel.ResetSyncError.backupFailed {
+            resetResult = .failed("Couldn't back up before reset - aborted, nothing was deleted.")
+        } catch {
+            resetResult = .failed("Reset failed - nothing was deleted. (\(error.localizedDescription))")
         }
     }
 
