@@ -242,6 +242,12 @@ struct SettingsView: View {
     /// Maps the current `SyncHealth` to (accent colour, SF Symbol, title, detail).
     private var syncStatusContent: (Color, String, String, String?) {
         switch model.syncHealth {
+        case .idle(lastSuccess: nil):
+            // No successful sync yet — stay NEUTRAL. A green checkmark here would
+            // falsely signal health (and could mask an undeployed-schema failure)
+            // before the first real sync event arrives.
+            return (.hcMutedText, "icloud", "Connecting to iCloud",
+                    "Waiting for the first sync to complete.")
         case .idle, .syncing:
             return (.hcOk, "checkmark.icloud.fill", "Syncing with iCloud", lastSyncedDetail)
         case .localOnly:
