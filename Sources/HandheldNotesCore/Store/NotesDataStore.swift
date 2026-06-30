@@ -89,11 +89,41 @@ public enum NotesDataStore {
         return try! ModelContainer(for: schema, configurations: [mem])
     }
 
+    /// The directory that holds the on-disk SwiftData store files (`default.store`
+    /// + its `-wal` / `-shm` companions). SwiftData, when handed a
+    /// `ModelConfiguration` with no explicit URL, writes them into the app's
+    /// Application Support directory under the default store name. `resetSync()`
+    /// needs this to delete the local store as part of the CLI-equivalent recovery.
+    ///
+    /// Derived from a throwaway `ModelConfiguration` so it tracks SwiftData's own
+    /// default-URL choice rather than hard-coding a path: `config.url` is the
+    /// `…/default.store` file URL; its parent directory is what we return. Returns
+    /// `nil` only if SwiftData yields no URL (it always does for an on-disk config).
+    public static func storeDirectory() -> URL? {
+        let schema = Schema([NoteEntity.self])
+        let config = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
+        return config.url.deletingLastPathComponent()
+    }
+
+    /// The on-disk store files SwiftData maintains for the default store: the main
+    /// SQLite database plus its write-ahead-log and shared-memory companions.
+    /// `resetSync()` deletes exactly these (and nothing else) to force SwiftData to
+    /// rebuild a clean local store on the next launch.
+    public static func storeFileURLs() -> [URL] {
+        guard let dir = storeDirectory() else { return [] }
+        return ["default.store", "default.store-wal", "default.store-shm"]
+            .map { dir.appendingPathComponent($0) }
+    }
+
     /// Record the CloudKit-vs-local outcome to the unified log (tagged `HNDIAG` so
     /// it's greppable via `log show --predicate 'eventMessage CONTAINS "HNDIAG"'`).
     /// Keep this: a future signing/entitlement/account regression silently drops the
     /// app to the local store, and this line is the fastest way to catch it.
+    ///
+    /// Routes through `Diag` (os.Logger) rather than `NSLog` — on this machine
+    /// `NSLog` output is NOT visible to `log show`, so the breadcrumb was being
+    /// lost. See `Diag` for the rationale.
     static func writeDiag(_ message: String) {
-        NSLog("HNDIAG %@", message)
+        Diag.log("HNDIAG \(message)")
     }
 }
