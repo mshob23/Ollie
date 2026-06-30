@@ -8,6 +8,15 @@ It reads `~/Ollie/ollie.jsonl`, which the **Ollie Mac app exports automatically*
 every change (Rung 3). Run the Mac app once to populate it. Override the path with the
 `OLLIE_CORPUS` environment variable.
 
+> **The corpus only refreshes while the Ollie Mac app is running.** The export is
+> driven by the app re-projecting its store; nothing updates `~/Ollie` when the app is
+> closed. So if the app has been quit for a while, the corpus can be stale. The Mac app
+> writes a sidecar `~/Ollie/.ollie.meta.json` (`exportedAt`, `noteCount`,
+> `schemaVersion`) after each successful export; `corpus_stats()` reads it and returns a
+> `staleness` block that **warns when the corpus is older than ~24h** (open the app to
+> refresh). The server degrades gracefully if the meta file is missing — it falls back
+> to the corpus file's modification time and never crashes.
+
 ## Tools
 
 | Tool | What it does |

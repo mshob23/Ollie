@@ -14,16 +14,39 @@ import Foundation
 /// CloudKit-synced corpus and is where the MCP server runs; iOS export (into the
 /// app's Files container) is a backlog item.
 public enum CorpusExporter {
-    /// The export root: `~/Ollie`. Visible and easy to point Obsidian / the MCP
-    /// server at.
+    /// Test-only override for the export root. When non-nil, `exportDirectory`
+    /// returns this instead of `~/Ollie`, so tests can redirect the export at a temp
+    /// dir (to assert success) or an unwritable path (to assert failure handling)
+    /// without ever touching the real corpus. `nonisolated(unsafe)` is acceptable
+    /// because it's set once at the top of a test, before the code under test runs,
+    /// and never mutated concurrently.
+    nonisolated(unsafe) public static var exportDirectoryOverride: URL?
+
+    /// The export root: `~/Ollie` (or `exportDirectoryOverride` in tests). Visible
+    /// and easy to point Obsidian / the MCP server at.
     public static var exportDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = exportDirectoryOverride { return override }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Ollie", isDirectory: true)
     }
 
-    /// Schedule an export off the main actor (best-effort). Call from anywhere.
+    /// The sidecar metadata file `~/Ollie/.ollie.meta.json`. Written after every
+    /// successful corpus export so external readers (the MCP server) can tell how
+    /// fresh the corpus is and how many notes it should contain.
+    public static var metaURL: URL {
+        exportDirectory.appendingPathComponent(".ollie.meta.json")
+    }
+
+    /// Schedule an export off the main actor (best-effort).
+    ///
+    /// **Priority `.default`, not `.utility`.** The export feeds the `~/Ollie` mirror
+    /// the MCP server and Obsidian read, so a user who just captured a note expects it
+    /// to show up there promptly. `.utility` could sit behind other background work;
+    /// default priority keeps the corpus fresh without contending with interactive UI.
+    /// (Spelled `.medium` — the non-deprecated name for `TaskPriority.default`; same
+    /// underlying value.)
     public static func exportInBackground(_ notes: [Note]) {
-        Task.detached(priority: .utility) { export(notes) }
+        Task.detached(priority: .medium) { export(notes) }
     }
 
     /// Mirror the corpus to disk. Safe on a background thread.
@@ -35,21 +58,61 @@ public enum CorpusExporter {
         let dir = exportDirectory
         let notesDir = dir.appendingPathComponent("notes", isDirectory: true)
         let fm = FileManager.default
-        guard (try? fm.createDirectory(at: notesDir, withIntermediateDirectories: true)) != nil
-        else { return }
+        do {
+            try fm.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        } catch {
+            // Can't even make the directory — log it (don't silently swallow) and bail.
+            Diag.log("HNDIAG export FAILED to create \(notesDir.path): \(error)")
+            return
+        }
 
         // 1) The whole corpus as JSONL (one compact record per line) — the LLM/MCP
-        //    source of truth.
-        try? jsonlString(for: notes).write(to: dir.appendingPathComponent("ollie.jsonl"),
-                                           atomically: true, encoding: .utf8)
+        //    source of truth. A failed write is LOGGED, not swallowed: a silently
+        //    stale corpus is the exact failure this whole stage exists to prevent.
+        let jsonlURL = dir.appendingPathComponent("ollie.jsonl")
+        var jsonlOK = false
+        do {
+            try jsonlString(for: notes).write(to: jsonlURL, atomically: true, encoding: .utf8)
+            jsonlOK = true
+        } catch {
+            Diag.log("HNDIAG export FAILED to write \(jsonlURL.path): \(error)")
+        }
 
         // 2) One Markdown file per note (frontmatter + body) for humans / Obsidian.
         for note in notes {
             let url = notesDir.appendingPathComponent("\(note.id.uuidString).md")
-            try? markdown(for: note).write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try markdown(for: note).write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                Diag.log("HNDIAG export FAILED to write \(url.lastPathComponent): \(error)")
+            }
         }
         // (A deleted note leaves a stale `.md`; pruning is a backlog nicety — the
         // JSONL the MCP reads is rewritten whole each time, so it's never stale.)
+
+        // 3) Only after a SUCCESSFUL JSONL write, refresh the staleness sidecar so a
+        //    reader can trust it. Writing meta after a failed corpus write would
+        //    falsely advertise a fresh export.
+        if jsonlOK { writeMeta(noteCount: notes.count) }
+    }
+
+    /// Write `~/Ollie/.ollie.meta.json` describing the just-completed export:
+    /// `{ "exportedAt": <ISO8601 now>, "noteCount": N, "schemaVersion": <current> }`.
+    /// The MCP server reads this to surface staleness ("corpus older than ~24h") and
+    /// to know the expected note count. Failures are logged, never swallowed.
+    private static func writeMeta(noteCount: Int) {
+        let meta: [String: Any] = [
+            "exportedAt": ISO8601DateFormatter().string(from: Date()),
+            "noteCount": noteCount,
+            "schemaVersion": Note.currentSchemaVersion,
+        ]
+        do {
+            let data = try JSONSerialization.data(
+                withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: metaURL, options: [.atomic])
+        } catch {
+            Diag.log("HNDIAG export FAILED to write \(metaURL.path): \(error)")
+        }
     }
 
     /// Write a one-off, timestamped JSONL snapshot of the corpus to
