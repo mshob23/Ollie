@@ -143,6 +143,15 @@ public final class AppModel: ObservableObject {
     /// updates this without also touching `syncHealth` must still notify the UI).
     @Published public private(set) var lastSuccessfulSync: Date?
 
+    /// Running count of CONSECUTIVE failed CloudKit phase events with no intervening
+    /// success — the debounce accumulator for the `.degraded` escalation. Lives here
+    /// (not in `SyncHealth`) so the fold stays a pure function: `handleSyncEvent`
+    /// feeds it into `SyncHealth.fold` and stores the count it returns. A success
+    /// resets it to 0. Escalation to `.degraded` only happens once it reaches
+    /// `SyncHealth.degradeFailureThreshold` (2), so a lone transient recoverable
+    /// CKError (1011) on launch can't false-alarm the schema banner. See `fold`.
+    private var consecutiveSyncFailures = 0
+
     /// Repeating staleness backstop (see `startSyncStalenessTimer`). Conservative:
     /// it never hard-errors, it only keeps the UI's "last synced" honest and logs a
     /// breadcrumb if events have gone quiet. Invalidated on deinit.
@@ -669,8 +678,14 @@ public final class AppModel: ObservableObject {
     ///     in-flight retry doesn't flap the UI back to "syncing" and hide the
     ///     problem).
     ///   - **END + succeeded** → record `lastSuccessfulSync` and go
-    ///     `.idle(lastSuccess:)`. A success CLEARS any prior `.degraded`.
-    ///   - **END + failed** → `.degraded(classify(error), since: now)`.
+    ///     `.idle(lastSuccess:)`. A success CLEARS any prior `.degraded` and resets
+    ///     the consecutive-failure debounce counter.
+    ///   - **END + failed** → increment the consecutive-failure counter; only
+    ///     escalate to `.degraded(classify(error), since: now)` on the 2nd
+    ///     consecutive failure (`SyncHealth.degradeFailureThreshold`). A lone failed
+    ///     event followed by a success stays healthy — this debounces the transient
+    ///     recoverable CKError (1011) NSPersistentCloudKitContainer fires on a cold
+    ///     launch, which would otherwise false-alarm the schema banner.
     ///
     /// A local-only store never gets a CloudKit container, so this observer simply
     /// never fires there and `syncHealth` stays `.localOnly`.
@@ -721,11 +736,13 @@ public final class AppModel: ObservableObject {
         let result = SyncHealth.fold(
             current: syncHealth,
             lastSuccess: lastSuccessfulSync,
+            consecutiveFailures: consecutiveSyncFailures,
             isEnd: isEnd,
             succeeded: succeeded,
             degradation: degradation,
             endDate: endDate)
         lastSuccessfulSync = result.lastSuccessfulSync
+        consecutiveSyncFailures = result.consecutiveFailures
         syncHealth = result.health
     }
 
