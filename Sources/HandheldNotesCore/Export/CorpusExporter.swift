@@ -24,10 +24,18 @@ public enum CorpusExporter {
 
     /// The export root: `~/Ollie` (or `exportDirectoryOverride` in tests). Visible
     /// and easy to point Obsidian / the MCP server at.
+    ///
+    /// The base dir is platform-aware: `homeDirectoryForCurrentUser` is macOS-only
+    /// (unavailable on iOS), so iOS falls back to the app's Documents container. macOS
+    /// behavior is unchanged. The test override, when set, wins on every platform.
     public static var exportDirectory: URL {
         if let override = exportDirectoryOverride { return override }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Ollie", isDirectory: true)
+        #if os(macOS)
+        let base = FileManager.default.homeDirectoryForCurrentUser
+        #else
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+        return base.appendingPathComponent("Ollie", isDirectory: true)
     }
 
     /// The sidecar metadata file `~/Ollie/.ollie.meta.json`. Written after every
