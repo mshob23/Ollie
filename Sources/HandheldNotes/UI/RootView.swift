@@ -8,6 +8,19 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
     @State private var showSettings = false
 
+    /// Tracks which "bad sync" state we last raised a banner for, so we only toast
+    /// on a *transition* into local-only / degraded — not on every fold event while
+    /// already parked there. `nil` = currently healthy (idle/syncing).
+    @State private var lastSurfacedSyncIssue: SyncIssueKind?
+
+    /// The coarse kind of a sync issue worth a banner. Deliberately ignores the
+    /// `.degraded(since:)` timestamp so a re-fold of the same degradation doesn't
+    /// re-spam — only a change of *kind* (or recovery) is a transition.
+    private enum SyncIssueKind: Equatable {
+        case localOnly
+        case degraded(SyncDegradation)
+    }
+
     var body: some View {
         ZStack {
             WarmBackground()
@@ -47,6 +60,37 @@ struct RootView: View {
                 .environmentObject(model)
         }
         .frame(minWidth: 880, minHeight: 560)
+        .onChange(of: model.syncHealth) { _, newValue in
+            surfaceSyncBannerIfNeeded(newValue)
+        }
+    }
+
+    /// Raise a transient banner only when sync *transitions* into a bad state.
+    /// Healthy states clear the latch so the next problem toasts again, but a
+    /// steady-state degradation never re-toasts (kept non-spammy).
+    private func surfaceSyncBannerIfNeeded(_ health: SyncHealth) {
+        let issue: SyncIssueKind?
+        switch health {
+        case .idle, .syncing:
+            issue = nil
+        case .localOnly:
+            issue = .localOnly
+        case .degraded(let degradation, _):
+            issue = .degraded(degradation)
+        }
+
+        // Only act on a change of issue kind (recovery resets the latch silently).
+        guard issue != lastSurfacedSyncIssue else { return }
+        lastSurfacedSyncIssue = issue
+
+        switch issue {
+        case .none:
+            break
+        case .localOnly:
+            model.banner = "Not syncing - local only"
+        case .degraded(let degradation):
+            model.banner = degradation.userMessage
+        }
     }
 }
 

@@ -36,6 +36,7 @@ extension Color {
     // Soft accent tint for chips / selection.
     public static let hcAccentSoft    = Color(red: 0.851, green: 0.467, blue: 0.341).opacity(0.16)
     public static let hcOk            = Color(red: 0.498, green: 0.694, blue: 0.510)    // calm green
+    public static let syncDanger      = Color(red: 0.851, green: 0.388, blue: 0.353)   // muted warm red for failures
 }
 
 extension Font {
