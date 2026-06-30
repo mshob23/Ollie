@@ -184,16 +184,32 @@ extension SyncHealth {
     }
 
     /// The outcome of folding one CloudKit phase event into sync state: the new
-    /// health, plus the (possibly updated) last-success timestamp the caller should
-    /// retain. A pure value so the fold is unit-testable without CloudKit.
+    /// health, the (possibly updated) last-success timestamp, and the running count
+    /// of CONSECUTIVE failed END events the caller should retain. A pure value so the
+    /// fold is unit-testable without CloudKit.
+    ///
+    /// `consecutiveFailures` is the debounce accumulator: it increments on each
+    /// failed END, resets to 0 on any success, and is unchanged by START events.
+    /// The caller stores it and feeds it back in on the next event.
     public struct Fold: Equatable, Sendable {
         public let health: SyncHealth
         public let lastSuccessfulSync: Date?
-        public init(health: SyncHealth, lastSuccessfulSync: Date?) {
+        public let consecutiveFailures: Int
+        public init(health: SyncHealth, lastSuccessfulSync: Date?, consecutiveFailures: Int) {
             self.health = health
             self.lastSuccessfulSync = lastSuccessfulSync
+            self.consecutiveFailures = consecutiveFailures
         }
     }
+
+    /// How many CONSECUTIVE failed sync events must be observed before escalating to
+    /// `.degraded`. A single failed event followed by a success keeps sync healthy —
+    /// this debounces the transient "RecoverableImportError" (a CKError-2 partialFailure
+    /// wrapping CKInternalErrorDomain 1011) that `NSPersistentCloudKitContainer` fires
+    /// once on a cold launch and recovers from ~1s later, which otherwise false-alarms
+    /// the "deploy your schema" banner. A genuine outage produces many consecutive
+    /// failures and still surfaces (after the 2nd).
+    public static let degradeFailureThreshold = 2
 
     /// Pure state-machine step for one CloudKit phase event, decoupled from
     /// `NSPersistentCloudKitContainer.Event` (which has no public initializer) so it
@@ -203,6 +219,8 @@ extension SyncHealth {
     /// - Parameters:
     ///   - current: the current `syncHealth`.
     ///   - lastSuccess: the retained `lastSuccessfulSync`.
+    ///   - consecutiveFailures: the retained running count of consecutive failed END
+    ///     events (the debounce accumulator the caller fed back from the prior fold).
     ///   - isEnd: `false` for a START event (`endDate == nil`), `true` for an END.
     ///   - succeeded: the event's `succeeded` (only meaningful on END).
     ///   - degradation: the already-classified cause of a failed END (apply
@@ -211,9 +229,18 @@ extension SyncHealth {
     ///     non-Sendable `Error` so it crosses actors cleanly.
     ///   - endDate: the event's `endDate` (the success timestamp on a succeeded END).
     ///   - now: injected clock for the `since:` on a degraded transition (testable).
+    ///
+    /// **Debounce.** A failed END does NOT immediately escalate to `.degraded`. It
+    /// increments `consecutiveFailures`; only once that reaches `degradeFailureThreshold`
+    /// (2) — i.e. the 2nd *consecutive* failure with no intervening success — does the
+    /// state go `.degraded`. A single failed event followed by a success keeps sync
+    /// healthy, and any success resets the counter to 0 and clears `.degraded`. This
+    /// stops a transient recoverable CKError (1011) on launch from false-alarming the
+    /// schema banner while still surfacing a persistent outage (many consecutive fails).
     public static func fold(
         current: SyncHealth,
         lastSuccess: Date?,
+        consecutiveFailures: Int,
         isEnd: Bool,
         succeeded: Bool,
         degradation: SyncDegradation?,
@@ -222,24 +249,42 @@ extension SyncHealth {
     ) -> Fold {
         if !isEnd {
             // START: advance to .syncing unless we're parked in .degraded (sticky
-            // until a phase actually succeeds).
+            // until a phase actually succeeds). The failure counter is untouched by
+            // START events (only an END that succeeds or fails moves it).
             if case .degraded = current {
-                return Fold(health: current, lastSuccessfulSync: lastSuccess)
+                return Fold(health: current, lastSuccessfulSync: lastSuccess,
+                            consecutiveFailures: consecutiveFailures)
             }
-            return Fold(health: .syncing, lastSuccessfulSync: lastSuccess)
+            return Fold(health: .syncing, lastSuccessfulSync: lastSuccess,
+                        consecutiveFailures: consecutiveFailures)
         }
 
         // END.
         if succeeded {
+            // A success resets the debounce accumulator and clears any degraded state.
             let when = endDate ?? now
-            return Fold(health: .idle(lastSuccess: when), lastSuccessfulSync: when)
+            return Fold(health: .idle(lastSuccess: when), lastSuccessfulSync: when,
+                        consecutiveFailures: 0)
         }
         if let degradation {
-            return Fold(health: .degraded(degradation, since: now),
-                        lastSuccessfulSync: lastSuccess)
+            // Failed END: count it. Only escalate to .degraded once we've seen
+            // `degradeFailureThreshold` consecutive failures with no success between —
+            // a lone transient blip (count 1) keeps the current health.
+            let failures = consecutiveFailures + 1
+            if failures >= degradeFailureThreshold {
+                return Fold(health: .degraded(degradation, since: now),
+                            lastSuccessfulSync: lastSuccess,
+                            consecutiveFailures: failures)
+            }
+            // Below threshold: don't flip the trust indicator yet. Preserve the
+            // current health (an in-flight .syncing or prior .idle stays put).
+            return Fold(health: current, lastSuccessfulSync: lastSuccess,
+                        consecutiveFailures: failures)
         }
-        // END with neither success nor a failure cause: leave state unchanged.
-        return Fold(health: current, lastSuccessfulSync: lastSuccess)
+        // END with neither success nor a failure cause: leave state and counter
+        // unchanged (this isn't a classified failure, so it doesn't debounce).
+        return Fold(health: current, lastSuccessfulSync: lastSuccess,
+                    consecutiveFailures: consecutiveFailures)
     }
 
     /// True if `error` (or its `underlyingError`) is a `CKInternalErrorDomain`
