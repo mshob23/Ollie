@@ -40,20 +40,8 @@ public enum CorpusExporter {
 
         // 1) The whole corpus as JSONL (one compact record per line) — the LLM/MCP
         //    source of truth.
-        let enc = JSONEncoder()
-        enc.dateEncodingStrategy = .iso8601
-        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]   // NOT prettyPrinted: one line each
-        var lines: [String] = []
-        lines.reserveCapacity(notes.count)
-        for note in notes {
-            if let data = try? enc.encode(ExportRecord(note)),
-               let line = String(data: data, encoding: .utf8) {
-                lines.append(line)
-            }
-        }
-        let jsonl = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
-        try? jsonl.write(to: dir.appendingPathComponent("ollie.jsonl"),
-                         atomically: true, encoding: .utf8)
+        try? jsonlString(for: notes).write(to: dir.appendingPathComponent("ollie.jsonl"),
+                                           atomically: true, encoding: .utf8)
 
         // 2) One Markdown file per note (frontmatter + body) for humans / Obsidian.
         for note in notes {
@@ -62,6 +50,35 @@ public enum CorpusExporter {
         }
         // (A deleted note leaves a stale `.md`; pruning is a backlog nicety — the
         // JSONL the MCP reads is rewritten whole each time, so it's never stale.)
+    }
+
+    /// Write a one-off, timestamped JSONL snapshot of the corpus to
+    /// `~/Ollie/backups/ollie-backup-<stamp>.jsonl` and return its URL.
+    ///
+    /// Unlike `export(_:)` — which rewrites the live `ollie.jsonl` mirror in place —
+    /// this lands in a dedicated file that nothing else overwrites, so it survives a
+    /// subsequent empty export (e.g. the reload right after `--wipe-all-notes`). Use it
+    /// as a safety net immediately before a destructive operation. Best-effort: returns
+    /// `nil` if the directory or file can't be written.
+    @discardableResult
+    public static func backup(_ notes: [Note]) -> URL? {
+        let fm = FileManager.default
+        let dir = exportDirectory.appendingPathComponent("backups", isDirectory: true)
+        guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil
+        else { return nil }
+
+        // Filesystem-safe local-time stamp (`yyyyMMdd-HHmmss`). Built locally rather
+        // than as a shared static — DateFormatter isn't Sendable.
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let url = dir.appendingPathComponent("ollie-backup-\(stamp.string(from: Date())).jsonl")
+        do {
+            try jsonlString(for: notes).write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     // MARK: Shapes
@@ -95,6 +112,23 @@ public enum CorpusExporter {
             durationSeconds = n.durationSeconds
             hasAudio = n.hasAudio
         }
+    }
+
+    /// Encode notes as JSONL (one compact `ExportRecord` per line, trailing newline).
+    /// Shared by the live `ollie.jsonl` mirror (`export`) and the timestamped `backup`.
+    private static func jsonlString(for notes: [Note]) -> String {
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]   // NOT prettyPrinted: one line each
+        var lines: [String] = []
+        lines.reserveCapacity(notes.count)
+        for note in notes {
+            if let data = try? enc.encode(ExportRecord(note)),
+               let line = String(data: data, encoding: .utf8) {
+                lines.append(line)
+            }
+        }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
     }
 
     private static func markdown(for note: Note) -> String {
