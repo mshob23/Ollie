@@ -136,7 +136,12 @@ public final class AppModel: ObservableObject {
     /// Timestamp of the most recent successful import/export phase, or `nil` if
     /// none has completed this run. Drives a "last synced …" UI affordance and the
     /// staleness backstop.
-    public private(set) var lastSuccessfulSync: Date?
+    ///
+    /// `@Published` so the "Last synced" line re-renders on its OWN mutation rather
+    /// than relying on the coincidental adjacency to the `@Published syncHealth`
+    /// write in `handleSyncEvent` (the staleness path and any future writer that
+    /// updates this without also touching `syncHealth` must still notify the UI).
+    @Published public private(set) var lastSuccessfulSync: Date?
 
     /// Repeating staleness backstop (see `startSyncStalenessTimer`). Conservative:
     /// it never hard-errors, it only keeps the UI's "last synced" honest and logs a
@@ -519,7 +524,10 @@ public final class AppModel: ObservableObject {
     /// `lastSuccessfulSync` (which tracks CloudKit phase *success*): this is just
     /// "when did the user last ask us to re-reconcile", surfaced next to the manual
     /// control so a tap gives visible feedback even though there's nothing to pull.
-    public private(set) var lastManualSync: Date?
+    ///
+    /// `@Published` so the "Last reconciled …" line under the Sync-now button
+    /// re-renders the moment the user taps it.
+    @Published public private(set) var lastManualSync: Date?
 
     /// Manual "sync now" lever.
     ///
