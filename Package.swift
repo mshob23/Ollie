@@ -38,7 +38,12 @@ let package = Package(
         ),
         .testTarget(
             name: "HandheldNotesCoreTests",
-            dependencies: ["HandheldNotesCore"]
+            dependencies: ["HandheldNotesCore"],
+            resources: [
+                // The committed golden schema fingerprint (F5 release gate). Bundled
+                // so SchemaGoldenTests can read it via Bundle.module at runtime.
+                .copy("Resources/schema.golden")
+            ]
         )
     ]
 )

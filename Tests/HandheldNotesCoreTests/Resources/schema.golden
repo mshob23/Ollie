@@ -1,0 +1,6 @@
+# Golden schema fingerprint hash (F5 release gate). SHA256 of the deterministic,
+# sorted SwiftData Schema([NoteEntity.self]) fingerprint. Regenerate when NoteEntity
+# changes — SchemaGoldenTests prints the new hash + fingerprint on failure — AND
+# deploy the schema to CloudKit Production before release. See
+# Tests/HandheldNotesCoreTests/SchemaGoldenTests.swift and RELEASE.md.
+a6bd27053d1e45379136d4a3be0f040739b402ac7215cb15dfd5b3df2356854e

@@ -4,6 +4,14 @@ A runbook for when notes stop syncing between devices. Written after a multi-hou
 June 2026 outage where Mac↔iPhone sync was dead in **both** directions. The lesson:
 **don't guess — trace the data path hop by hop and get visibility at each hop.**
 
+> 🩺 **First step for ANY sync incident: run `Scripts/diagnose-sync.sh`.** It's a
+> read-only, one-shot health dump that gathers the signals below in a single pass —
+> the unified-log `HNDIAG` tail (`subsystem == "com.mohammadshobaki.handheldnotes"`,
+> now visible because diagnostics moved to `os.Logger`), the `~/Ollie/ollie.jsonl`
+> corpus + its `.ollie.meta.json` freshness sidecar (is the corpus stale vs
+> `exportedAt`?), the local `~/Library/Application Support/default.store*`, and the
+> iCloud account + container id. Start there, *then* trace the hops below.
+
 ## The full path a note travels (Mac → phone)
 
 | # | Stage | Where the data sits | How to SEE it | 
