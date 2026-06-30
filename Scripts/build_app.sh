@@ -20,6 +20,33 @@ EXECUTABLE="$BUILD_DIR/${BUILD_CONFIG}/HandheldNotes"
 # the entitlements file MUST match the profile (mismatch = AMFI "error 163" at launch).
 HC_SIGN="${HC_SIGN:-dev}"
 if [[ "$HC_SIGN" == "release" ]]; then
+  # Release-time schema-deploy ACK gate (F5). The June 2026 sync outage was caused
+  # by shipping a build whose @Model had drifted WITHOUT running the manual CloudKit
+  # Dashboard "Deploy Schema Changes to Production" step — Production rejected every
+  # write (internal error 1011). A green SchemaGoldenTests run proves the code's
+  # schema == the last-committed golden, but it cannot prove that golden was actually
+  # deployed to Production. So the Developer-ID / RELEASE signing path REFUSES to
+  # proceed unless the human asserts the deploy happened by setting SCHEMA_DEPLOYED=1.
+  # Dev builds (HC_SIGN=dev) never reach here and are unaffected.
+  if [[ "${SCHEMA_DEPLOYED:-}" != "1" ]]; then
+    cat >&2 <<'ACKMSG'
+ERROR: refusing to build a RELEASE (Developer-ID) bundle without the schema-deploy ack.
+
+  The CloudKit *Production* schema is NOT auto-created — it must be deployed by hand:
+    CloudKit Dashboard → container iCloud.com.mohammadshobaki.handheldnotes
+      → Deploy Schema Changes… → Deploy to Production.
+  (A "– Modified" badge on Record Types / Indexes means there are undeployed changes.)
+
+  Before this incident's class of bug can recur, do the release checklist (RELEASE.md):
+    1. swift test            # green, incl. SchemaGoldenTests (the golden gate)
+    2. Deploy the schema to PRODUCTION in the CloudKit Dashboard (step above)
+    3. Re-run with the ack set:   SCHEMA_DEPLOYED=1 HC_SIGN=release ./Scripts/build_app.sh
+
+  This gate only guards the RELEASE/Developer-ID path; dev builds are unaffected.
+ACKMSG
+    exit 1
+  fi
+  echo "SCHEMA_DEPLOYED=1 acknowledged — proceeding with the RELEASE (Developer-ID) build."
   ENTITLEMENTS="${ENTITLEMENTS:-$ROOT_DIR/HandheldNotes-release.entitlements}"
   PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/HandheldNotes.provisionprofile}"
   DEFAULT_IDENTITY="Developer ID Application: Mohammad Shobaki (2J5S7H2LTB)"
