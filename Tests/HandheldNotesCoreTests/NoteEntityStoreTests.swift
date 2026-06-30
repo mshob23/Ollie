@@ -14,7 +14,6 @@ final class NoteEntityStoreTests: XCTestCase {
     func testNoteEntityRoundTripPreservesFields() throws {
         let original = Note(
             id: UUID(),
-            title: "Round trip",
             transcript: "Body text with detail.",
             createdAt: Date(timeIntervalSince1970: 1_000_000),
             updatedAt: Date(timeIntervalSince1970: 1_000_500),
@@ -28,8 +27,10 @@ final class NoteEntityStoreTests: XCTestCase {
         let back = Note(entity: entity)
 
         XCTAssertEqual(back.id, original.id)
-        XCTAssertEqual(back.title, original.title)
         XCTAssertEqual(back.transcript, original.transcript)
+        // The headline is derived from the transcript, not stored, so it must
+        // survive the round-trip identically (proving the transcript did).
+        XCTAssertEqual(back.derivedTitle, original.derivedTitle)
         XCTAssertEqual(back.createdAt, original.createdAt)
         XCTAssertEqual(back.updatedAt, original.updatedAt)
         XCTAssertEqual(back.source, original.source)
@@ -54,16 +55,15 @@ final class NoteEntityStoreTests: XCTestCase {
         let context = ModelContext(NotesDataStore.makeContainerForTesting())
         let id = UUID()
 
-        let first = Note(id: id, title: "First", transcript: "v1", source: .computer)
+        let first = Note(id: id, transcript: "v1", source: .computer)
         upsert(first, in: context)
 
         // A second device imports the same note (same id) with a later edit.
-        let second = Note(id: id, title: "Edited", transcript: "v2", source: .computer)
+        let second = Note(id: id, transcript: "v2", source: .computer)
         upsert(second, in: context)
 
         let all = try context.fetch(FetchDescriptor<NoteEntity>())
         XCTAssertEqual(all.count, 1, "same id must not duplicate")
-        XCTAssertEqual(all.first?.title, "Edited")
         XCTAssertEqual(all.first?.transcript, "v2")
     }
 
@@ -117,7 +117,6 @@ final class AppModelRefreshTests: XCTestCase {
         let externalContext = ModelContext(model.modelContainerForTesting)
         let entity = NoteEntity(note: Note(
             id: remoteID,
-            title: "Synced from another device",
             transcript: "Arrived over iCloud.",
             source: .phone))
         externalContext.insert(entity)
@@ -128,8 +127,8 @@ final class AppModelRefreshTests: XCTestCase {
         model.refresh()
         XCTAssertTrue(model.notes.contains { $0.id == remoteID },
                       "refresh() must surface a row written by another context/device")
-        XCTAssertEqual(model.notes.first { $0.id == remoteID }?.title,
-                       "Synced from another device")
+        XCTAssertEqual(model.notes.first { $0.id == remoteID }?.transcript,
+                       "Arrived over iCloud.")
     }
 
     /// A normal local insert lands in `notes`, and a delete removes it — the
@@ -138,7 +137,7 @@ final class AppModelRefreshTests: XCTestCase {
     func testLocalInsertAndDeleteReflectInNotes() throws {
         let model = AppModel(inMemoryStore: true)
 
-        let note = model.composeNote(title: "Local note", transcript: "Typed here.")
+        let note = model.composeNote(transcript: "Typed here.")
         XCTAssertTrue(model.notes.contains { $0.id == note.id },
                       "a locally composed note must appear in notes")
 
