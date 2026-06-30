@@ -65,7 +65,14 @@ struct RootView: View {
         }
     }
 
-    /// Raise a transient banner only when sync *transitions* into a bad state.
+    /// Raise a transient GLOBAL banner only when sync *transitions* into a real
+    /// failure — `.degraded`. We deliberately do NOT global-toast `.localOnly`: it's
+    /// a steady, non-error state already shown durably in the Settings sync row, and
+    /// `model.banner` is the shared, no-auto-dismiss channel that also carries
+    /// errors — a transient sync toast parked there can mask or clobber a real error
+    /// banner. So `.localOnly` only updates the latch (keeping the
+    /// transition/recovery bookkeeping honest) without ever toasting.
+    ///
     /// Healthy states clear the latch so the next problem toasts again, but a
     /// steady-state degradation never re-toasts (kept non-spammy).
     private func surfaceSyncBannerIfNeeded(_ health: SyncHealth) {
@@ -84,10 +91,11 @@ struct RootView: View {
         lastSurfacedSyncIssue = issue
 
         switch issue {
-        case .none:
+        case .none, .localOnly:
+            // Recovery (.none) and the steady .localOnly state both stay silent on
+            // the global banner — only the latch above is updated. .localOnly is
+            // surfaced durably in Settings instead.
             break
-        case .localOnly:
-            model.banner = "Not syncing - local only"
         case .degraded(let degradation):
             model.banner = degradation.userMessage
         }

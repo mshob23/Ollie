@@ -265,15 +265,35 @@ struct SettingsView: View {
     }
 
     private var syncNowButton: some View {
-        Button(action: { model.syncNow() }) {
-            syncActionLabel(
-                symbol: "arrow.triangle.2.circlepath",
-                tint: .hcAccent,
-                title: "Sync now",
-                subtitle: "Refreshes from the local store and re-exports your notes. iCloud syncs on its own schedule; this reconciles what's on disk."
-            )
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: { model.syncNow() }) {
+                syncActionLabel(
+                    symbol: "arrow.triangle.2.circlepath",
+                    tint: .hcAccent,
+                    title: "Sync now",
+                    subtitle: "Refreshes from the local store and re-exports your notes. iCloud syncs on its own schedule; this reconciles what's on disk."
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Manual-sync feedback: tapping "Sync now" reconciles local state with
+            // nothing visible to pull, so echo WHEN it last ran to confirm the tap
+            // registered. Derived from `model.lastManualSync` (nil until first tap).
+            if let detail = lastReconciledDetail {
+                Label(detail, systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.hcMutedText)
+                    .padding(.leading, 14)
+            }
         }
-        .buttonStyle(.plain)
+    }
+
+    /// The "Last reconciled <relative time>" line under the Sync-now button, derived
+    /// from `model.lastManualSync` (nil until the user taps "Sync now" at least once).
+    private var lastReconciledDetail: String? {
+        guard let last = model.lastManualSync else { return nil }
+        let rel = Self.relativeFormatter.localizedString(for: last, relativeTo: Date())
+        return "Last reconciled \(rel)."
     }
 
     private var resetSyncButton: some View {
@@ -329,6 +349,8 @@ struct SettingsView: View {
             }
         } catch AppModel.ResetSyncError.backupFailed {
             resetResult = .failed("Couldn't back up before reset - aborted, nothing was deleted.")
+        } catch AppModel.ResetSyncError.storeDirectoryUnavailable {
+            resetResult = .failed("Couldn't locate the local store - nothing was deleted.")
         } catch {
             resetResult = .failed("Reset failed - nothing was deleted. (\(error.localizedDescription))")
         }
