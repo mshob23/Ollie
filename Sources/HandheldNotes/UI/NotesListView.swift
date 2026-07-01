@@ -87,23 +87,37 @@ struct NotesListView: View {
         .hcPanel(fill: .hcPanel, radius: 10)
     }
 
+    // A `List` (not a ScrollView) so rows get native trackpad `.swipeActions` — the
+    // same swipe language as the iPhone list. Row chrome is stripped (no separators,
+    // clear backgrounds) so the card look is unchanged.
     private var list: some View {
-        ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(model.filteredNotes) { note in
-                    NoteRow(note: note, isSelected: note.id == model.selectedNoteID)
-                        .onTapGesture { model.selectedNoteID = note.id }
-                        .contextMenu {
-                            Button(note.isFavorite ? "Unfavorite" : "Favorite") {
-                                model.toggleFavorite(note.id)
-                            }
-                            Button("Delete", role: .destructive) { model.delete(note.id) }
+        List {
+            ForEach(model.filteredNotes) { note in
+                NoteRow(note: note, isSelected: note.id == model.selectedNoteID)
+                    .onTapGesture { model.selectedNoteID = note.id }
+                    .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) { model.delete(note.id) } label: {
+                            Label("Delete", systemImage: "trash")
                         }
-                }
+                        Button { model.toggleFavorite(note.id) } label: {
+                            Label(note.isFavorite ? "Unfavorite" : "Favorite",
+                                  systemImage: note.isFavorite ? "star.slash" : "star")
+                        }
+                        .tint(.hcAccent)
+                    }
+                    .contextMenu {
+                        Button(note.isFavorite ? "Unfavorite" : "Favorite") {
+                            model.toggleFavorite(note.id)
+                        }
+                        Button("Delete", role: .destructive) { model.delete(note.id) }
+                    }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 16)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     private var emptyState: some View {

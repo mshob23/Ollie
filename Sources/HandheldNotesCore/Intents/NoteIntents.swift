@@ -7,9 +7,13 @@ import Foundation
 public struct FindNotesIntent: AppIntent {
     public static let title: LocalizedStringResource = "Find Notes"
     public static let description = IntentDescription(
-        "Search your Ollie notes by what they say or where they were taken.")
+        "Search your Ollie notes by what they say or where they were taken. Returns the matching notes so you can open one, copy a transcript, or chain them into another action.",
+        categoryName: "Notes",
+        searchKeywords: ["note", "notes", "voice", "memo", "transcript", "search", "find"])
 
-    @Parameter(title: "Search")
+    // The spoken prompt matters: without it, invoking via Siri with no query just
+    // stalls. With it, "Find Ollie notes" becomes a conversation.
+    @Parameter(title: "Search", requestValueDialog: "What should I look for in your notes?")
     public var query: String
 
     public init() {}
@@ -39,9 +43,12 @@ public struct FindNotesIntent: AppIntent {
 /// Save a new text note to the corpus, e.g. "Add an Ollie note saying buy milk".
 public struct SaveNoteIntent: AppIntent {
     public static let title: LocalizedStringResource = "Save Note"
-    public static let description = IntentDescription("Save a new text note to Ollie.")
+    public static let description = IntentDescription(
+        "Save a new text note straight into Ollie — no need to open the app. Say the note and it's captured.",
+        categoryName: "Notes",
+        searchKeywords: ["note", "notes", "save", "add", "capture", "remember", "jot"])
 
-    @Parameter(title: "Text")
+    @Parameter(title: "Text", requestValueDialog: "What should the note say?")
     public var text: String
 
     public init() {}
@@ -52,11 +59,12 @@ public struct SaveNoteIntent: AppIntent {
     }
 
     @MainActor
-    public func perform() async throws -> some IntentResult & ReturnsValue<NoteAppEntity> {
+    public func perform() async throws -> some IntentResult & ReturnsValue<NoteAppEntity> & ProvidesDialog {
         guard let entity = NoteIntentStore.save(text: text) else {
             throw NoteIntentError.emptyText
         }
-        return .result(value: entity)
+        // Speak/print a confirmation so Siri closes the loop instead of going silent.
+        return .result(value: entity, dialog: "Saved to Ollie.")
     }
 }
 
