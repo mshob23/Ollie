@@ -230,6 +230,8 @@ private struct TranscriptEditor: View {
     let note: Note
     @State private var draft: String = ""
     @FocusState private var focused: Bool
+    /// Debounced autosave while typing (see `commitIfDirty`).
+    @State private var autosave: Task<Void, Never>?
 
     private var liveWordCount: Int {
         draft.split { $0 == " " || $0.isNewline }.count
@@ -244,7 +246,7 @@ private struct TranscriptEditor: View {
                     .foregroundStyle(Color.hcMutedText)
                 Spacer()
                 if focused {
-                    Text("Editing — click away to save")
+                    Text("Editing — saves automatically")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(Color.hcMutedText)
                         .transition(.opacity)
@@ -269,11 +271,36 @@ private struct TranscriptEditor: View {
         }
         .onAppear { draft = note.transcript }
         .onChange(of: note.id) { _, _ in draft = note.transcript; focused = false }
+        // Commit on every path out of an edit. Focus loss alone was NOT enough:
+        // clicking "dead space" on macOS often leaves the editor focused, selecting
+        // another note tears this view down (it's re-keyed by `.id(note.id)`) without
+        // ever blurring, and quitting the app never blurs either — all of which
+        // silently dropped the draft (and, since nothing was saved, nothing synced).
         .onChange(of: focused) { _, isFocused in
-            if !isFocused, draft != note.transcript {
-                model.updateTranscript(draft, for: note.id)
+            if !isFocused { commitIfDirty() }
+        }
+        .onChange(of: draft) { _, _ in
+            // Debounced autosave: a beat after the typing pauses, persist. This is
+            // what makes the draft durable even if no blur ever happens.
+            autosave?.cancel()
+            autosave = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
+                commitIfDirty()
             }
         }
+        .onDisappear { autosave?.cancel(); commitIfDirty() }   // note switch / window close
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.willResignActiveNotification)) { _ in
+            commitIfDirty()                                    // ⌘-tab away / quit
+        }
+    }
+
+    /// Persist the draft iff it differs from the stored transcript. Cheap to call
+    /// from multiple exits; `updateTranscript` saves + re-exports (and thus syncs).
+    private func commitIfDirty() {
+        guard draft != note.transcript else { return }
+        model.updateTranscript(draft, for: note.id)
     }
 }
 
