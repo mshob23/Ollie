@@ -53,17 +53,41 @@ public enum CorpusExporter {
     /// default priority keeps the corpus fresh without contending with interactive UI.
     /// (Spelled `.medium` — the non-deprecated name for `TaskPriority.default`; same
     /// underlying value.)
-    public static func exportInBackground(_ notes: [Note]) {
-        Task.detached(priority: .medium) { export(notes) }
+    public static func exportInBackground(_ notes: [Note], allowEmpty: Bool = false) {
+        Task.detached(priority: .medium) { export(notes, allowEmpty: allowEmpty) }
     }
 
     /// Mirror the corpus to disk. Safe on a background thread.
-    public static func export(_ notes: [Note]) {
+    ///
+    /// - Parameter allowEmpty: pass `true` ONLY for a genuine wipe (`deleteAllNotes`).
+    ///   By default a zero-note export is REFUSED when a non-empty corpus already
+    ///   exists on disk (see the guard below).
+    public static func export(_ notes: [Note], allowEmpty: Bool = false) {
         // De-dup by id first — CloudKit mirroring can briefly surface duplicate-id
         // rows, and the corpus an LLM reads shouldn't contain the same note twice.
         var seen = Set<UUID>()
         let notes = notes.filter { seen.insert($0.id).inserted }
         let dir = exportDirectory
+        let jsonlURL = dir.appendingPathComponent("ollie.jsonl")
+
+        // ── SAFETY GUARD: never destroy a good corpus with a transient empty read ──
+        // Verified failure (July 2026): after the Mac slept, an NSPersistentCloudKit-
+        // Container import failed on wake ("file couldn't be opened"), the model
+        // projected 0 notes, and this exporter overwrote a healthy 25-note
+        // `ollie.jsonl` with an empty file — the MCP/Obsidian corpus vanished though
+        // the data was intact in the store + iCloud. So: refuse to write an empty
+        // corpus over a non-empty one unless a caller explicitly allows it (a real
+        // wipe). `reloadNotes`'s fetch-failure guard is the first line of defense;
+        // this is the second, in case a readable-but-momentarily-empty store slips
+        // through. A genuine wipe passes `allowEmpty: true` after backing up.
+        if notes.isEmpty && !allowEmpty {
+            let existing = (try? Data(contentsOf: jsonlURL)) ?? Data()
+            if !existing.isEmpty {
+                Diag.log("HNDIAG export SKIPPED: refused to overwrite a non-empty corpus with 0 notes (transient empty projection?). Corpus preserved.")
+                return
+            }
+        }
+
         let notesDir = dir.appendingPathComponent("notes", isDirectory: true)
         let fm = FileManager.default
         do {
@@ -77,10 +101,14 @@ public enum CorpusExporter {
         // 1) The whole corpus as JSONL (one compact record per line) — the LLM/MCP
         //    source of truth. A failed write is LOGGED, not swallowed: a silently
         //    stale corpus is the exact failure this whole stage exists to prevent.
-        let jsonlURL = dir.appendingPathComponent("ollie.jsonl")
+        //    (`jsonlURL` computed above, before the empty-corpus guard.)
         var jsonlOK = false
+        // `written` is the count ACTUALLY serialized (a record that fails to encode is
+        // dropped), so `meta.noteCount` matches the JSONL line count exactly — a reader
+        // that compares them never sees a phantom mismatch.
+        let (jsonl, written) = jsonlString(for: notes)
         do {
-            try jsonlString(for: notes).write(to: jsonlURL, atomically: true, encoding: .utf8)
+            try jsonl.write(to: jsonlURL, atomically: true, encoding: .utf8)
             jsonlOK = true
         } catch {
             Diag.log("HNDIAG export FAILED to write \(jsonlURL.path): \(error)")
@@ -95,13 +123,22 @@ public enum CorpusExporter {
                 Diag.log("HNDIAG export FAILED to write \(url.lastPathComponent): \(error)")
             }
         }
-        // (A deleted note leaves a stale `.md`; pruning is a backlog nicety — the
-        // JSONL the MCP reads is rewritten whole each time, so it's never stale.)
+
+        // 2b) Prune orphaned `.md` files — a deleted note used to leave its Markdown
+        //     behind forever, so Obsidian/a human browsing `notes/` saw resurrected
+        //     notes and the directory grew unbounded. Remove any `.md` whose id isn't
+        //     in the current set. Best-effort; the JSONL the MCP reads is already whole.
+        let liveNames = Set(notes.map { "\($0.id.uuidString).md" })
+        if let existing = try? fm.contentsOfDirectory(atPath: notesDir.path) {
+            for name in existing where name.hasSuffix(".md") && !liveNames.contains(name) {
+                try? fm.removeItem(at: notesDir.appendingPathComponent(name))
+            }
+        }
 
         // 3) Only after a SUCCESSFUL JSONL write, refresh the staleness sidecar so a
         //    reader can trust it. Writing meta after a failed corpus write would
         //    falsely advertise a fresh export.
-        if jsonlOK { writeMeta(noteCount: notes.count) }
+        if jsonlOK { writeMeta(noteCount: written) }
     }
 
     /// Write `~/Ollie/.ollie.meta.json` describing the just-completed export:
@@ -145,7 +182,7 @@ public enum CorpusExporter {
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let url = dir.appendingPathComponent("ollie-backup-\(stamp.string(from: Date())).jsonl")
         do {
-            try jsonlString(for: notes).write(to: url, atomically: true, encoding: .utf8)
+            try jsonlString(for: notes).text.write(to: url, atomically: true, encoding: .utf8)
             return url
         } catch {
             return nil
@@ -169,6 +206,10 @@ public enum CorpusExporter {
         let longitude: Double?
         let durationSeconds: Double?
         let hasAudio: Bool
+        /// Only present (and true) when the transcript is a failure placeholder, not
+        /// real content — so an LLM reading the corpus doesn't treat `[Transcription
+        /// failed: …]` as something the user said. Omitted for healthy notes.
+        let transcriptionFailed: Bool?
 
         init(_ n: Note) {
             id = n.id.uuidString
@@ -182,12 +223,16 @@ public enum CorpusExporter {
             longitude = n.location?.longitude
             durationSeconds = n.durationSeconds
             hasAudio = n.hasAudio
+            transcriptionFailed = n.transcriptionFailed ? true : nil
         }
     }
 
     /// Encode notes as JSONL (one compact `ExportRecord` per line, trailing newline).
     /// Shared by the live `ollie.jsonl` mirror (`export`) and the timestamped `backup`.
-    private static func jsonlString(for notes: [Note]) -> String {
+    /// Returns the text AND the count actually written, so `meta.noteCount` can reflect
+    /// the real line count rather than the input count (a record that fails to encode
+    /// is silently dropped from the text — the two must not disagree).
+    private static func jsonlString(for notes: [Note]) -> (text: String, written: Int) {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]   // NOT prettyPrinted: one line each
@@ -199,7 +244,8 @@ public enum CorpusExporter {
                 lines.append(line)
             }
         }
-        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        let text = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        return (text, lines.count)
     }
 
     private static func markdown(for note: Note) -> String {

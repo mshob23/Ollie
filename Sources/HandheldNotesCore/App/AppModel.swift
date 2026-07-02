@@ -246,6 +246,7 @@ public final class AppModel: ObservableObject {
         // and arm the no-event staleness backstop.
         observeSyncEvents()
         startSyncStalenessTimer()
+        observeWakeResync()
 
         registerHotKey()
     }
@@ -350,6 +351,12 @@ public final class AppModel: ObservableObject {
         SpotlightIndexer.removeAll()
         selectedNoteID = nil
         saveAndReload()
+        #if os(macOS)
+        // A GENUINE wipe: force-clear the corpus (bypass the empty-export guard, which
+        // otherwise refuses to overwrite a non-empty corpus with 0 notes). Safe here —
+        // we snapshotted to ~/Ollie/backups above, so the wipe stays recoverable.
+        CorpusExporter.exportInBackground(notes, allowEmpty: true)
+        #endif
         // The record deletions above mirror out via CloudKit as ordinary per-record
         // deletes — peers go empty as those propagate. We deliberately DO NOT delete
         // the CloudKit zone: that is the operation that previously wedged sync.
@@ -441,7 +448,19 @@ public final class AppModel: ObservableObject {
         let descriptor = FetchDescriptor<NoteEntity>(
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         let readContext = ModelContext(modelContainer)
-        let entities = (try? readContext.fetch(descriptor)) ?? []
+        let entities: [NoteEntity]
+        do {
+            entities = try readContext.fetch(descriptor)
+        } catch {
+            // A FETCH FAILURE is NOT "the user has zero notes." The post-sleep
+            // NSPersistentCloudKitContainer wedge ("file couldn't be opened", July
+            // 2026) makes the store momentarily unreadable; treating that as an
+            // empty corpus is what blanked the UI and wiped the ~/Ollie export.
+            // Keep the current projection and let the wake-resync retry re-read once
+            // the store settles — never clobber good state with a transient failure.
+            Diag.log("HNDIAG reloadNotes fetch FAILED — keeping current \(notes.count)-note projection: \(error)")
+            return
+        }
         notes = entities.map(Note.init(entity:))
         // Keep system Spotlight in sync with the live projection (best-effort, async).
         SpotlightIndexer.index(notes)
@@ -529,6 +548,34 @@ public final class AppModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: .NSPersistentStoreRemoteChange,
             object: nil, queue: .main, using: refresh)
+    }
+
+    /// After the Mac wakes from sleep, re-project the store a few times with backoff.
+    ///
+    /// **Why (verified July 2026).** An `NSPersistentCloudKitContainer` import that
+    /// is in flight when the Mac sleeps can finish on wake with "file couldn't be
+    /// opened" (Cocoa 256), leaving the store handle momentarily unreadable and the
+    /// model projected empty — with nothing re-triggering a read once the store
+    /// settles, so the corpus stayed at 0 until a manual relaunch. On wake we retry
+    /// `reloadNotes()` with backoff: the first read may still fail (kept harmless by
+    /// the fetch-failure guard in `reloadNotes` + the empty-corpus guard in
+    /// `CorpusExporter`), and a later retry succeeds once NSPCC recovers, so the
+    /// notes reappear on their own. macOS-only (iOS apps are suspended, not "woken").
+    private func observeWakeResync() {
+        #if os(macOS)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            Diag.log("HNDIAG wake: re-projecting notes after sleep")
+            Task { @MainActor [weak self] in
+                for delay: Duration in [.milliseconds(750), .seconds(3), .seconds(8)] {
+                    try? await Task.sleep(for: delay)
+                    guard let self else { return }
+                    self.reloadNotes()
+                }
+            }
+        }
+        #endif
     }
 
     /// Public manual re-projection: re-fetch the store and refresh the observable
