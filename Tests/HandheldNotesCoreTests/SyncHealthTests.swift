@@ -38,6 +38,20 @@ final class SyncHealthTests: XCTestCase {
         XCTAssertEqual(SyncHealth.classify(CKError(.quotaExceeded)), .quota)
     }
 
+    /// Transient zone/response errors are network-class (retryable), never a schema alarm.
+    func testZoneBusyAndServerResponseLostClassifyAsNetwork() {
+        XCTAssertEqual(SyncHealth.classify(CKError(.zoneBusy)), .network)
+        XCTAssertEqual(SyncHealth.classify(CKError(.serverResponseLost)), .network)
+    }
+
+    /// Zone-deleted-elsewhere / expired-token are recoverable-by-resync — surfaced as
+    /// calm `.reconciling`, not a raw error dump and not a red "sync problem".
+    func testZoneRecoveryErrorsClassifyAsReconciling() {
+        XCTAssertEqual(SyncHealth.classify(CKError(.zoneNotFound)), .reconciling)
+        XCTAssertEqual(SyncHealth.classify(CKError(.userDeletedZone)), .reconciling)
+        XCTAssertEqual(SyncHealth.classify(CKError(.changeTokenExpired)), .reconciling)
+    }
+
     /// A direct `.serverRejectedRequest` → schema-not-deployed.
     func testServerRejectedRequestClassifiesAsSchemaNotDeployed() {
         XCTAssertEqual(SyncHealth.classify(CKError(.serverRejectedRequest)), .schemaNotDeployed)
