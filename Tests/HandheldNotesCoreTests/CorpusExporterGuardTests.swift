@@ -88,7 +88,19 @@ final class CorpusExporterGuardTests: XCTestCase {
                       "a failed-transcription note must be flagged so an LLM ignores the placeholder")
         // A healthy note carries no such flag.
         CorpusExporter.export([note("real content", engine: "AppleSpeech")], allowEmpty: true)
-        // (second export replaces; just assert the flag is absent for the healthy note)
         XCTAssertFalse(jsonl().contains("transcriptionFailed"))
+    }
+
+    /// The BOTH-shapes check: the "unavailable" placeholder (engineUsed=="demo") must
+    /// also be caught, but a genuine demo note (real text, engineUsed=="demo") must NOT.
+    func testTranscriptionFailedCatchesUnavailablePlaceholderButNotRealDemo() {
+        let unavailable = note("[Transcription unavailable here — audio captured (19.3s) and saved. …]", engine: "demo")
+        XCTAssertTrue(unavailable.transcriptionFailed,
+                      "the 'unavailable' placeholder must be recoverable")
+        let realDemo = note("Welcome to Ollie — this is a sample note.", engine: "demo")
+        XCTAssertFalse(realDemo.transcriptionFailed,
+                       "a genuine demo note (real text) must not be flagged as failed")
+        let healthy = note("A perfectly normal transcript.", engine: "AppleSpeech")
+        XCTAssertFalse(healthy.transcriptionFailed)
     }
 }
