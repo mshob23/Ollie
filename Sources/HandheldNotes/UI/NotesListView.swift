@@ -5,6 +5,10 @@ import SwiftUI
 /// (newest first). This is the spine of the notes-first layout.
 struct NotesListView: View {
     @EnvironmentObject var model: AppModel
+    /// Brief visual feedback for the refresh button: the icon spins one turn and the
+    /// button disables while a refresh runs. `refreshSpin` accumulates rotation.
+    @State private var isRefreshing = false
+    @State private var refreshSpin = 0.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -49,12 +53,14 @@ struct NotesListView: View {
                 // sized to sit cleanly beside the brand mark. (The Mac list is a
                 // ScrollView, not a List, so a header button fits better than
                 // .refreshable's pull gesture.)
-                Button(action: { model.refresh() }) {
+                Button(action: refreshWithFeedback) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.hcMutedText)
+                        .foregroundStyle(isRefreshing ? Color.hcAccent : Color.hcMutedText)
+                        .rotationEffect(.degrees(refreshSpin))
                 }
                 .buttonStyle(.plain)
+                .disabled(isRefreshing)
                 .help("Refresh notes")
                 .accessibilityLabel("Refresh notes")
             }
@@ -62,6 +68,20 @@ struct NotesListView: View {
         .padding(.horizontal, 16)
         .padding(.top, 22)
         .padding(.bottom, 16)
+    }
+
+    /// Refresh, with a brief satisfying spin. The icon turns one full rotation and the
+    /// button disables until the refresh completes AND a short minimum has elapsed —
+    /// so even an instantaneous re-projection reads as "something happened".
+    private func refreshWithFeedback() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        withAnimation(.easeInOut(duration: 0.5)) { refreshSpin += 360 }
+        Task { @MainActor in
+            model.refresh()                              // runs to completion (sync today)
+            try? await Task.sleep(for: .milliseconds(450))   // satisfying minimum
+            isRefreshing = false
+        }
     }
 
     private var searchField: some View {
