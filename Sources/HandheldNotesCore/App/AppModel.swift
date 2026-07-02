@@ -300,6 +300,45 @@ public final class AppModel: ObservableObject {
         saveAndReload()
     }
 
+    /// True while a `retranscribe` is running for the given note (drives the UI's
+    /// spinner / disabled state). A `Set` so several could run, though the UI runs one.
+    @Published public private(set) var retranscribing: Set<Note.ID> = []
+
+    /// Re-run transcription on a note's PRESERVED audio and replace its transcript.
+    ///
+    /// The ingest pipeline keeps the recording even when Apple Speech fails (the note
+    /// body becomes a `[Transcription failed: …]` placeholder, `engineUsed == "error"`
+    /// → `Note.transcriptionFailed`), so a failed take is always recoverable later —
+    /// e.g. once the on-device speech model finishes downloading, or on a device
+    /// where it's available. Reads the audio via `audioURL(for:)` (materializing a
+    /// synced blob if needed), transcribes with the current engine, and on success
+    /// writes the real text + clears the failure sentinel. Best-effort: a still-failing
+    /// re-run surfaces a banner and leaves the note as-is.
+    public func retranscribe(_ id: Note.ID) async {
+        guard let note = notes.first(where: { $0.id == id }) else { return }
+        guard let url = audioURL(for: note) else {
+            banner = "No audio to re-transcribe for this note."
+            return
+        }
+        retranscribing.insert(id)
+        defer { retranscribing.remove(id) }
+        do {
+            let result = try await TranscriptionService(engine: settings.engine).transcribe(url: url)
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                banner = "Still couldn't make out any speech in that recording."
+                return
+            }
+            guard let entity = entity(for: id) else { return }
+            entity.transcript = text
+            entity.engineUsed = result.engineUsed   // clears the "error" sentinel
+            entity.updatedAt = Date()
+            saveAndReload()
+        } catch {
+            banner = "Re-transcribe failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+        }
+    }
+
     public func toggleFavorite(_ id: Note.ID) {
         guard let entity = entity(for: id) else { return }
         entity.isFavorite.toggle()

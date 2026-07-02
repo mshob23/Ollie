@@ -25,6 +25,9 @@ struct NoteDetailView: View {
                 SourceBanner(source: note.source)
                 NoteHeader(note: note)
                 AudioPlayerView(url: model.audioURL(for: note))
+                if note.transcriptionFailed {
+                    RetranscribeBanner(note: note)
+                }
                 TranscriptEditor(note: note)
             }
             .padding(28)
@@ -48,6 +51,62 @@ struct NoteDetailView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Color.hcMutedText)
         }
+    }
+}
+
+// MARK: - Re-transcribe banner (shown when a note's transcription failed)
+
+/// When Apple Speech failed on capture, the audio was still kept — so offer a
+/// one-tap re-run. Appears only for `note.transcriptionFailed`; disappears once a
+/// re-transcribe succeeds (the sentinel clears).
+private struct RetranscribeBanner: View {
+    @EnvironmentObject var model: AppModel
+    let note: Note
+
+    private var running: Bool { model.retranscribing.contains(note.id) }
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "waveform.badge.exclamationmark")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.hcAccent)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Transcription didn't come through")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                Text("The recording was kept — try transcribing it again.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.hcSecondaryText)
+            }
+            Spacer(minLength: 8)
+            Button(action: { Task { await model.retranscribe(note.id) } }) {
+                HStack(spacing: 6) {
+                    if running {
+                        ProgressView().controlSize(.small)
+                        Text("Re-transcribing…")
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Re-transcribe")
+                    }
+                }
+                .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.hcAccent)
+            .disabled(running)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.hcAccent.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.hcAccent.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 
@@ -271,6 +330,12 @@ private struct TranscriptEditor: View {
         }
         .onAppear { draft = note.transcript }
         .onChange(of: note.id) { _, _ in draft = note.transcript; focused = false }
+        // Adopt an EXTERNAL transcript change (a re-transcribe, or a sync from
+        // another device) while this note stays open — but never clobber an edit in
+        // progress (only when unfocused and the stored text actually differs).
+        .onChange(of: note.transcript) { _, newValue in
+            if !focused, newValue != draft { draft = newValue }
+        }
         // Commit on every path out of an edit. Focus loss alone was NOT enough:
         // clicking "dead space" on macOS often leaves the editor focused, selecting
         // another note tears this view down (it's re-keyed by `.id(note.id)`) without

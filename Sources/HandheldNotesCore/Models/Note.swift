@@ -146,12 +146,18 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
 
     public var hasAudio: Bool { audioFileName != nil }
 
-    /// The transcription sentinel written by the ingest pipeline when Apple Speech
-    /// threw or returned nothing (`engineUsed == "error"`, body = `[Transcription
-    /// failed: …]`). The audio is still preserved, so such a note can be
-    /// re-transcribed later — the UI uses this to offer that, and the corpus export
-    /// flags it so an LLM doesn't treat the placeholder as real content.
-    public var transcriptionFailed: Bool { engineUsed == "error" }
+    /// True when this note's body is a transcription-failure placeholder, so the UI
+    /// can offer a re-transcribe and the corpus export can flag it (an LLM shouldn't
+    /// treat the placeholder as real content). The audio is always preserved, so a
+    /// failed take is recoverable later. Catches BOTH pipeline failure shapes:
+    ///   • `engineUsed == "error"` + `[Transcription failed: …]` (Apple Speech threw)
+    ///   • `[Transcription unavailable here — …]` (engine unavailable / no model yet —
+    ///     `engineUsed == "demo"`, which is ALSO used by real demo notes, so we match
+    ///     on the placeholder body, not the engine, to avoid flagging genuine demos).
+    /// A prefix match on "[Transcription " covers both without false-flagging content.
+    public var transcriptionFailed: Bool {
+        engineUsed == "error" || transcript.hasPrefix("[Transcription ")
+    }
 
     public var wordCount: Int {
         transcript.split { $0 == " " || $0.isNewline }.count
