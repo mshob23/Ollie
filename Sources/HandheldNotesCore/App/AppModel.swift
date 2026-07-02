@@ -150,7 +150,19 @@ public final class AppModel: ObservableObject {
     /// resets it to 0. Escalation to `.degraded` only happens once it reaches
     /// `SyncHealth.degradeFailureThreshold` (2), so a lone transient recoverable
     /// CKError (1011) on launch can't false-alarm the schema banner. See `fold`.
-    private var consecutiveSyncFailures = 0
+    ///
+    /// **PERSISTED across launches** (UserDefaults). The July 2026 outage went
+    /// unreported for ~24h because this counter was in-memory: the user's sessions
+    /// were brief (open app → one failed export → close), so every launch reset the
+    /// count to 0 and the 2-failure threshold was structurally unreachable. With
+    /// persistence, failure #1 in one session + failure #2 in the next correctly
+    /// escalates. A success still resets to 0, so the transient-launch-blip
+    /// debounce behavior is unchanged.
+    private var consecutiveSyncFailures: Int {
+        get { UserDefaults.standard.integer(forKey: Self.syncFailuresDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.syncFailuresDefaultsKey) }
+    }
+    private static let syncFailuresDefaultsKey = "hcConsecutiveSyncFailures"
 
     /// Repeating staleness backstop (see `startSyncStalenessTimer`). Conservative:
     /// it never hard-errors, it only keeps the UI's "last synced" honest and logs a

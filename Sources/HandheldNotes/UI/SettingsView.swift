@@ -197,11 +197,41 @@ struct SettingsView: View {
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 syncStatusRow
+                deviceFreshnessRows
                 Divider().overlay(Color.hcCardBorder.opacity(0.4))
                 syncNowButton
                 resetSyncButton
             }
         }
+    }
+
+    /// "Last note from iPhone / Watch" rows — a human-readable smoke alarm for the
+    /// failure the status row can't see: THIS Mac's sync being healthy while another
+    /// device silently fails to export (the July 2026 outage: the Mac imported
+    /// green-but-empty for a day). Derived purely from notes already in the store —
+    /// no new sync machinery. Sources that have never produced a note are omitted.
+    private var deviceFreshnessRows: some View {
+        let sources: [(NoteSource, String, String)] = [
+            (.phone, "iphone", "iPhone"),
+            (.watch, "applewatch", "Watch"),
+        ]
+        return VStack(alignment: .leading, spacing: 5) {
+            ForEach(sources, id: \.1) { source, symbol, label in
+                if let latest = model.notes.filter({ $0.source == source })
+                    .map(\.createdAt).max() {
+                    HStack(spacing: 7) {
+                        Image(systemName: symbol)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(Color.hcMutedText)
+                            .frame(width: 14)
+                        Text("Last note from \(label): \(Self.relativeFormatter.localizedString(for: latest, relativeTo: Date()))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.hcSecondaryText)
+                    }
+                }
+            }
+        }
+        .padding(.leading, 14)
     }
 
     /// A coloured status row reflecting `model.syncHealth`: green when syncing,
