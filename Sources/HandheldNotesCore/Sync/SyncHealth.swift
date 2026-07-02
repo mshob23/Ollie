@@ -40,6 +40,10 @@ public enum SyncDegradation: Equatable, Sendable {
     case network
     /// The user's iCloud storage is full.
     case quota
+    /// A recoverable state that resolves itself by re-syncing: the CloudKit zone was
+    /// deleted from another device (NSPCC recreates it), or the change token expired
+    /// (a full resync catches up). Not an error the user must act on — informational.
+    case reconciling
     /// Anything we don't recognize; carries the underlying description verbatim.
     case unknown(String)
 
@@ -55,6 +59,8 @@ public enum SyncDegradation: Equatable, Sendable {
             return "Sync paused - waiting for network."
         case .quota:
             return "Not syncing - iCloud storage full."
+        case .reconciling:
+            return "Reconciling with iCloud - your notes are catching up."
         case .unknown(let description):
             return description
         }
@@ -100,11 +106,20 @@ extension SyncHealth {
         case .networkUnavailable,
              .networkFailure,
              .serviceUnavailable,
-             .requestRateLimited:
+             .requestRateLimited,
+             .zoneBusy,           // server briefly busy on this zone — retry
+             .serverResponseLost: // response dropped in flight — retry
             return .network
 
         case .quotaExceeded:
             return .quota
+
+        // Recoverable-by-resync: informational, not a call to action. The zone was
+        // deleted elsewhere (NSPCC recreates it) or our change token aged out.
+        case .zoneNotFound,
+             .userDeletedZone,
+             .changeTokenExpired:
+            return .reconciling
 
         case .serverRejectedRequest:
             return .schemaNotDeployed

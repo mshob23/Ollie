@@ -284,6 +284,10 @@ struct SettingsView: View {
             return (.hcAccent, "icloud.slash.fill",
                     "Not syncing - local storage only",
                     "Notes are saved on this Mac only. Sign in to iCloud to sync across devices.")
+        case .degraded(.reconciling, _):
+            // Recoverable, self-healing — show as calm info, not an alarming red.
+            return (.hcAccent, "arrow.triangle.2.circlepath.icloud",
+                    "Reconciling with iCloud", SyncDegradation.reconciling.userMessage)
         case .degraded(let degradation, _):
             return (.syncDanger, "exclamationmark.icloud.fill",
                     "Sync problem", degradation.userMessage)
