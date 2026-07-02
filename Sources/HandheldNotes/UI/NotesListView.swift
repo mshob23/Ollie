@@ -93,7 +93,10 @@ struct NotesListView: View {
     private var list: some View {
         List {
             ForEach(model.filteredNotes) { note in
-                NoteRow(note: note, isSelected: note.id == model.selectedNoteID)
+                NoteRow(note: note,
+                        isSelected: note.id == model.selectedNoteID,
+                        onFavorite: { model.toggleFavorite(note.id) },
+                        onDelete: { model.delete(note.id) })
                     .onTapGesture { model.selectedNoteID = note.id }
                     .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
                     .listRowSeparator(.hidden)
@@ -142,10 +145,16 @@ struct NotesListView: View {
     }
 }
 
-/// One row in the notes list.
+/// One row in the notes list. Hovering reveals quick actions (favorite / delete) —
+/// the macOS-native stand-in for the iPhone's row swipe, since SwiftUI's
+/// `.swipeActions` doesn't render on macOS in this layout (kept declared on the row
+/// anyway in case a future macOS honors it).
 struct NoteRow: View {
     let note: Note
     let isSelected: Bool
+    var onFavorite: () -> Void = {}
+    var onDelete: () -> Void = {}
+    @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -157,7 +166,7 @@ struct NoteRow: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                if note.isFavorite {
+                if note.isFavorite && !hovering {
                     Image(systemName: "star.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(Color.hcAccent)
@@ -192,13 +201,45 @@ struct NoteRow: View {
         .padding(.vertical, 11)
         .background(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(isSelected ? Color.hcAccentSoft : Color.clear)
+                .fill(isSelected ? Color.hcAccentSoft : (hovering ? Color.hcPanel : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(isSelected ? Color.hcAccent.opacity(0.45) : Color.clear, lineWidth: 1)
         )
+        .overlay(alignment: .topTrailing) {
+            if hovering { hoverActions.padding(6) }
+        }
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+    }
+
+    /// Quick actions that fade in on hover: favorite toggle + delete.
+    private var hoverActions: some View {
+        HStack(spacing: 4) {
+            Button(action: onFavorite) {
+                Image(systemName: note.isFavorite ? "star.slash" : "star")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.hcAccent)
+                    .frame(width: 22, height: 20)
+            }
+            .buttonStyle(.plain)
+            .help(note.isFavorite ? "Remove from favorites" : "Mark as favorite")
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .frame(width: 22, height: 20)
+            }
+            .buttonStyle(.plain)
+            .help("Delete this note")
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 1)
+        .background(Capsule().fill(Color.hcPanelRaised))
+        .overlay(Capsule().stroke(Color.hcCardBorder, lineWidth: 1))
     }
 
     private var sourceTint: Color {
