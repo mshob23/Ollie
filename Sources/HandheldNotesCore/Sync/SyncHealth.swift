@@ -109,6 +109,13 @@ extension SyncHealth {
         case .serverRejectedRequest:
             return .schemaNotDeployed
 
+        case .invalidArguments where isProductionSchemaRejection(ckError):
+            // The July 2026 signature: CKError 12/2006 with a server message like
+            // "Cannot create or modify field 'CD_x' in record 'CD_y' in production
+            // schema" — a field CoreData+CloudKit materialized lazily (e.g. the
+            // `_ckAsset` twin of a binary attribute) that Production doesn't have.
+            return .schemaNotDeployed
+
         case .partialFailure:
             // A partial failure is only a schema/config signal if at least one of
             // its per-item errors is itself a server/internal rejection. If the
@@ -167,6 +174,8 @@ extension SyncHealth {
             switch ck.code {
             case .serverRejectedRequest:
                 return .schemaNotDeployed
+            case .invalidArguments where isProductionSchemaRejection(ck):
+                return .schemaNotDeployed   // per-item 12/2006 "…in production schema"
             case .networkUnavailable, .networkFailure,
                  .serviceUnavailable, .requestRateLimited:
                 return .network
@@ -285,6 +294,24 @@ extension SyncHealth {
         // unchanged (this isn't a classified failure, so it doesn't debounce).
         return Fold(health: current, lastSuccessfulSync: lastSuccess,
                     consecutiveFailures: consecutiveFailures)
+    }
+
+    /// True if `error` is a CloudKit "Invalid Arguments" (12) whose text carries the
+    /// server's schema-rejection message — the July 2026 outage signature:
+    /// `server message = "Cannot create or modify field 'CD_x' in record 'CD_y' in
+    /// production schema"`. Deliberately CONSERVATIVE: `invalidArguments` alone is
+    /// NOT enough (it has non-schema causes); the message must name the schema
+    /// rejection. The server text lands in the error's description/userInfo strings,
+    /// so we scan those.
+    private static func isProductionSchemaRejection(_ error: Error) -> Bool {
+        let ns = error as NSError
+        guard ns.domain == CKError.errorDomain,
+              ns.code == CKError.invalidArguments.rawValue else { return false }
+        var haystack = [ns.localizedDescription]
+        haystack.append(contentsOf: ns.userInfo.values.compactMap { $0 as? String })
+        let text = haystack.joined(separator: " ")
+        return text.localizedCaseInsensitiveContains("in production schema")
+            || text.localizedCaseInsensitiveContains("Cannot create or modify field")
     }
 
     /// True if `error` (or its `underlyingError`) is a `CKInternalErrorDomain`

@@ -28,6 +28,22 @@ if [[ "$HC_SIGN" == "release" ]]; then
   # deployed to Production. So the Developer-ID / RELEASE signing path REFUSES to
   # proceed unless the human asserts the deploy happened by setting SCHEMA_DEPLOYED=1.
   # Dev builds (HC_SIGN=dev) never reach here and are unaffected.
+  # AUTOMATED check first (July 2026 upgrade): verify-prod-schema.sh asks Apple's
+  # server for the PRODUCTION schema via cktool and diffs it against
+  # expected-ck-fields.txt. Exit 0 = verified (no manual ack needed); exit 1 =
+  # fields missing (HARD FAIL — even SCHEMA_DEPLOYED=1 can't override a machine-
+  # verified drift); exit 2 = cktool not configured (fall back to the manual ack).
+  set +e
+  "$ROOT_DIR/Scripts/verify-prod-schema.sh"
+  SCHEMA_CHECK=$?
+  set -e
+  if [[ "$SCHEMA_CHECK" == "1" ]]; then
+    echo "ERROR: Production CloudKit schema is missing fields (see above). Deploy it, then rebuild." >&2
+    exit 1
+  elif [[ "$SCHEMA_CHECK" == "0" ]]; then
+    SCHEMA_DEPLOYED=1   # machine-verified — supersedes the manual ack
+  fi
+
   if [[ "${SCHEMA_DEPLOYED:-}" != "1" ]]; then
     cat >&2 <<'ACKMSG'
 ERROR: refusing to build a RELEASE (Developer-ID) bundle without the schema-deploy ack.

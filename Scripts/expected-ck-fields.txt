@@ -1,0 +1,29 @@
+# Every CloudKit field the app can EVER write to CD_NoteEntity — the source of
+# truth for the release-time Production-schema check (verify-prod-schema.sh) and
+# the CKFieldCoverageTests unit test (which derives this list from the live
+# NoteEntity model, so drift between the model and this file fails `swift test`).
+#
+# RULES (learned from two production outages — see docs/cloudkit-sync-troubleshooting.md):
+#  - every stored attribute `x` on NoteEntity appears here as CD_x
+#  - every Data-typed attribute ALSO needs its lazily-materialized CKAsset twin
+#    CD_x_ckAsset (CoreData+CloudKit switches from inline bytes to an Asset when a
+#    value crosses the size threshold — Development auto-creates the field at that
+#    moment; Production REJECTS it and the whole export batch wedges, silently)
+#  - after editing this file: add the field(s) in the CloudKit Dashboard's
+#    Development schema, then Deploy Schema Changes to Production
+CD_audioData
+CD_audioData_ckAsset
+CD_audioFileName
+CD_createdAt
+CD_durationSeconds
+CD_engineUsed
+CD_id
+CD_isFavorite
+CD_kindRaw
+CD_latitude
+CD_longitude
+CD_placeLabel
+CD_schemaVersion
+CD_sourceRaw
+CD_transcript
+CD_updatedAt
