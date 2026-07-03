@@ -56,6 +56,11 @@ struct QuickPadView: View {
         .padding(14)
         .frame(width: 420)
         .background(Color.hcBackground)
-        .onAppear { focused = true }
+        // Focus the field once the panel is actually key. Setting it directly in
+        // `.onAppear` can fire before the NSPanel becomes key (so first-responder
+        // doesn't take) — a next-runloop hop lands after the window is up.
+        .onAppear {
+            DispatchQueue.main.async { focused = true }
+        }
     }
 }
