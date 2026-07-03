@@ -254,11 +254,14 @@ private struct DraftField: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if model.draft.transcript.isEmpty {
+                // Match the editor's font AND its glyph origin so the placeholder
+                // sits exactly where typed text (and the insertion cursor) appear —
+                // the editor's own ~5pt text-container inset is the alignment target.
                 Text("Your draft will appear here as you talk. Space / Newline / Backspace edit it; Send (⌘↩) concludes it into a note.")
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(Color.hcMutedText)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 8)
+                    .padding(.leading, 5)
+                    .padding(.top, 1)
                     .allowsHitTesting(false)
             }
             TextEditor(text: Binding(
