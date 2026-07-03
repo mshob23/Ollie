@@ -24,13 +24,50 @@ struct AppleSpeechTranscriber: Transcribing {
         let inputSize = (inputAttrs?[.size] as? Int) ?? 0
         guard inputSize > 44 else { throw TranscriptionError.emptyRecording }
 
-        let text: String
-        if #available(macOS 26, iOS 26, *) {
-            text = try await Self.transcribeWithSpeechAnalyzer(url: url)
-        } else {
-            text = try await Self.transcribeWithSFSpeechRecognizer(url: url)
+        // Bound the whole transcription. On-device speech is faster than real-time,
+        // but the SpeechAnalyzer pipeline (and the older SF task) can HANG with no
+        // built-in timeout — which leaves the UI stuck on "Transcribing…" forever,
+        // recoverable only by force-quitting (observed on macOS 26, July 2026). Cap it
+        // generously (scaled to clip length so long legit clips aren't cut short) and
+        // throw on expiry; the caller turns a throw into a saved placeholder with
+        // preserved audio, which the Re-transcribe button can retry later.
+        let clipSeconds = (try? AudioInfo.duration(of: url)) ?? 0
+        let budget = max(60.0, clipSeconds * 4)
+
+        let text = try await Self.withTimeout(seconds: budget) {
+            if #available(macOS 26, iOS 26, *) {
+                return try await Self.transcribeWithSpeechAnalyzer(url: url)
+            } else {
+                return try await Self.transcribeWithSFSpeechRecognizer(url: url)
+            }
         }
         return TranscriptionResult(text: text, engineUsed: TranscriptionEngine.appleSpeech.displayName)
+    }
+
+    /// Run `operation`, but fail with a timeout error after `seconds` — and, crucially,
+    /// RETURN even if `operation` ignores cancellation. A task group would await all
+    /// its children at scope exit, so a truly-hung child would still block; instead we
+    /// race two tasks into a single-resume continuation and let the loser leak (it's
+    /// `cancel()`ed best-effort). The stuck transcription is a rare edge; not blocking
+    /// the UI on it is the point.
+    private static func withTimeout<T: Sendable>(
+        seconds: Double,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let box = ResumeOnce<T>()
+        return try await withCheckedThrowingContinuation { continuation in
+            box.store(continuation)
+            let work = Task {
+                do { box.resume(.success(try await operation())) }
+                catch { box.resume(.failure(error)) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                box.resume(.failure(
+                    TranscriptionError.engineFailed("transcription timed out after \(Int(seconds))s")))
+                work.cancel()
+            }
+        }
     }
 
     // MARK: - macOS 26+: SpeechAnalyzer
