@@ -8,13 +8,16 @@ import SwiftUI
 /// presence, the global Quick Capture hotkeys, and the AppKit interop all live in
 /// one place and the window reliably shows on launch for screenshots.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     // Inject the macOS Carbon hotkey manager as the core's CaptureHotKeyController
     // so the platform-agnostic AppModel can drive Quick Capture without Carbon.
     private let model = AppModel(captureHotKeys: { handler in HotKeyManager(callback: handler) })
     private var statusItem: NSStatusItem?
     private var quickPadPanel: NSPanel?
+    /// The app that was frontmost when the quick pad opened, so focus can return
+    /// there when it closes (works across apps).
+    private var quickPadPreviousApp: NSRunningApplication?
     private let overlay = QuickCaptureOverlayController()
     private var lastRecordingState: RecordingState = .idle
     private var cancellables: Set<AnyCancellable> = []
@@ -230,30 +233,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Show (or re-show) the floating quick-note pad. Fresh content each time.
     private func showQuickPad() {
         quickPadPanel?.close()
+        // Remember who was frontmost (the app the user was typing in) so focus can
+        // return there on close — unless that's already us.
+        if quickPadPreviousApp == nil {
+            let front = NSWorkspace.shared.frontmostApplication
+            if front?.bundleIdentifier != Bundle.main.bundleIdentifier {
+                quickPadPreviousApp = front
+            }
+        }
         let content = QuickPadView(
             onSave: { [weak self] text in
                 self?.model.saveQuickTextNote(text)
                 self?.quickPadPanel?.close()
-                self?.quickPadPanel = nil
             },
             onCancel: { [weak self] in
                 self?.quickPadPanel?.close()
-                self?.quickPadPanel = nil
             })
         let hosting = NSHostingController(rootView: content)
         let panel = NSPanel(contentViewController: hosting)
-        panel.title = "Quick note"
         panel.styleMask = [.titled, .closable, .fullSizeContentView]
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
         panel.level = .floating
+        panel.becomesKeyOnlyIfNeeded = false
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.backgroundColor = NSColor(red: 0.122, green: 0.118, blue: 0.114, alpha: 1)
         panel.isReleasedWhenClosed = false
+        panel.delegate = self   // windowWillClose → restore previous app (covers every close path)
         panel.center()
         quickPadPanel = panel
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// Every quick-pad close path (Save, Discard, esc, the window's close button)
+    /// funnels through here: drop our reference and hand focus back to whatever app
+    /// the user was in when the pad opened.
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as AnyObject) === quickPadPanel else { return }
+        quickPadPanel = nil
+        if let previous = quickPadPreviousApp {
+            quickPadPreviousApp = nil
+            previous.activate()
+        }
     }
 
     private func setupMainMenu() {
