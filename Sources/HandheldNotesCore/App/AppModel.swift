@@ -46,6 +46,11 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     /// point of quick capture is zero interaction.
     public var confirmQuickCaptureBeforeSaving: Bool = false
 
+    /// The input device to record from. `nil` = follow the current system-default
+    /// microphone (the default). A stored `localizedName` overrides it; if that
+    /// device is missing at record time, capture falls back to the system default.
+    public var microphoneName: String? = nil
+
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
@@ -80,6 +85,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         toggleDictationShortcut = try Self.decodeShortcut(c, .toggleDictationShortcut, fallback: fresh.toggleDictationShortcut)
         quickPadShortcut = try Self.decodeShortcut(c, .quickPadShortcut, fallback: fresh.quickPadShortcut)
         confirmQuickCaptureBeforeSaving = try c.decodeIfPresent(Bool.self, forKey: .confirmQuickCaptureBeforeSaving) ?? fresh.confirmQuickCaptureBeforeSaving
+        microphoneName = try c.decodeIfPresent(String.self, forKey: .microphoneName)
     }
 
     private static func decodeShortcut(
@@ -96,7 +102,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         case transcriptionEngineID, hasSeededDemo, didImportLegacyJSON,
              syncAudioOverICloud, geotagEnabled,
              holdToDictateShortcut, toggleDictationShortcut, quickPadShortcut,
-             confirmQuickCaptureBeforeSaving
+             confirmQuickCaptureBeforeSaving, microphoneName
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -110,6 +116,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         try c.encode(toggleDictationShortcut, forKey: .toggleDictationShortcut)
         try c.encode(quickPadShortcut, forKey: .quickPadShortcut)
         try c.encode(confirmQuickCaptureBeforeSaving, forKey: .confirmQuickCaptureBeforeSaving)
+        try c.encodeIfPresent(microphoneName, forKey: .microphoneName)
     }
 
     public static func load() -> NotesSettings {
@@ -945,6 +952,7 @@ public final class AppModel: ObservableObject {
     public func startRecording() async {
         guard !isRecording, !isTranscribing else { return }
         do {
+            mic.preferredMicrophoneName = settings.microphoneName
             captureURL = try await mic.start()
             captureMode = .draft
             recordingState = .recording
@@ -1028,6 +1036,7 @@ public final class AppModel: ObservableObject {
     public func startQuickCapture() async {
         guard !isRecording, !isTranscribing, pendingQuickCapture == nil else { return }
         do {
+            mic.preferredMicrophoneName = settings.microphoneName
             captureURL = try await mic.start()
             captureMode = .quick
             quickCaptureStartedAt = Date()
@@ -1133,6 +1142,12 @@ public final class AppModel: ObservableObject {
         #else
         return .phone
         #endif
+    }
+
+    /// Input devices available to record from — for the Settings mic picker. Empty
+    /// where device selection doesn't apply (iOS/watchOS follow the system route).
+    public static func availableMicrophones() -> [String] {
+        MicCaptureService.availableInputDevices()
     }
 
     // MARK: Draft editing (mirrors the device's RIGHT / BOTTOM buttons)
