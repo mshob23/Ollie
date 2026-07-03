@@ -44,18 +44,25 @@ struct CaptureBar: View {
 
     // MARK: Live capture — compact when idle, expands while drafting
 
-    /// A draft is "active" once it has content or a recording/transcription runs.
+    /// True while the mic/transcriber is busy FOR THE DRAFT flow. A Quick Capture
+    /// (the global-shortcut auto-save path) must NOT expand the draft composer —
+    /// its text never lands there; the status line + menu-bar mic are its feedback.
+    private var draftCaptureBusy: Bool {
+        (model.isRecording || model.isTranscribing) && model.captureMode == .draft
+    }
+
+    /// A draft is "active" once it has content or a draft recording/transcription runs.
     private var isDrafting: Bool {
-        !model.draft.isEmpty || model.isRecording || model.isTranscribing
+        !model.draft.isEmpty || draftCaptureBusy
     }
     private var expanded: Bool { isDrafting || composing }
 
     /// True when it's safe to collapse the composer back to the slim idle row:
     /// the draft holds no real content and nothing is actively recording or
-    /// transcribing. We *never* collapse over real content — `isDrafting` keeps
-    /// the bar expanded in that case regardless of `composing`.
+    /// transcribing for it. We *never* collapse over real content — `isDrafting`
+    /// keeps the bar expanded in that case regardless of `composing`.
     private var canCollapse: Bool {
-        model.draft.isEmpty && !model.isRecording && !model.isTranscribing
+        model.draft.isEmpty && !draftCaptureBusy
     }
 
     /// Collapse the (empty) composer back to compact. No-op when there's content
@@ -90,7 +97,7 @@ struct CaptureBar: View {
             Button(action: { composing = true }) {
                 VStack(alignment: .leading, spacing: 2) {
                     Eyebrow(text: "Draft")
-                    Text("Hold F16 to talk — or click to start typing a note.")
+                    Text("Click to type a note — or use your Quick Capture key to dictate one from anywhere.")
                         .font(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(Color.hcSecondaryText)
                 }
@@ -113,7 +120,7 @@ struct CaptureBar: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
                         Eyebrow(text: "Draft")
-                        Text("· hold F16 to talk, keep going, then Send")
+                        Text("· click the mic to talk, keep going, then Send")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(Color.hcMutedText)
                         if model.draft.appendCount > 0 {
@@ -205,11 +212,15 @@ struct CaptureBar: View {
     private var isBusyTranscribing: Bool { model.isTranscribing }
 
     private var statusText: String {
+        let quick = model.captureMode == .quick
         switch model.recordingState {
         case .idle:
-            return model.draft.isEmpty ? "Ready — hold F16 to start a draft" : "Draft in progress — keep talking, or Send to save"
-        case .recording:    return "Recording… release F16 or press stop (appends to draft)"
-        case .transcribing: return "Transcribing… appending to your draft"
+            return model.draft.isEmpty ? "Ready" : "Draft in progress — keep talking, or Send to save"
+        case .recording:
+            return quick ? "Recording… release (or tap) your key to save"
+                         : "Recording… press stop to append to the draft"
+        case .transcribing:
+            return quick ? "Transcribing… saving your note" : "Transcribing… appending to your draft"
         case .error(let m): return m
         }
     }

@@ -3,45 +3,51 @@ import Carbon
 import Foundation
 import HandheldNotesCore
 
-/// Registers the global **F16** hotkey and reports both press and release, so the
-/// app can implement push-to-talk (hold F16 to record, release to stop) exactly
-/// as the handheld's D3 button emits it. Adapted from the old app's
-/// HotKeyManager, narrowed to the single key this app needs.
+/// Registers the user's Quick Capture global shortcuts and reports press/release
+/// per action, so the app can implement hold-to-dictate (press = record, release =
+/// save), toggle dictation, and the quick-pad popup from anywhere in macOS.
 ///
-/// Carbon's `RegisterEventHotKey` is the primary path (no Accessibility
-/// permission required); an `NSEvent` monitor is kept as a fallback. A short
-/// per-edge debounce collapses the duplicate when both paths see one event.
+/// Carbon's `RegisterEventHotKey` is the primary path (no Accessibility permission
+/// required) — one registration per bound action, distinguished by the
+/// `EventHotKeyID` carried in the event. An `NSEvent` monitor pair is kept as a
+/// fallback; a short per-edge debounce collapses the duplicate when both paths see
+/// one event.
 ///
-/// macOS-only (Carbon). It satisfies the core's `PushToTalkController` protocol so
-/// the platform-agnostic `AppModel` can drive push-to-talk without importing
-/// Carbon. Both Carbon's app-event-target handler and the `NSEvent` monitors fire
-/// on the main thread, so the call sites bridge onto the main actor (which this
-/// `@MainActor` class is isolated to) via `MainActor.assumeIsolated`.
+/// macOS-only (Carbon). It satisfies the core's `CaptureHotKeyController` protocol
+/// so the platform-agnostic `AppModel` can drive capture without importing Carbon.
+/// Both Carbon's app-event-target handler and the `NSEvent` monitors fire on the
+/// main thread, so call sites bridge onto the main actor via `MainActor.assumeIsolated`.
 @MainActor
-final class HotKeyManager: PushToTalkController {
-    /// Called with `true` on press, `false` on release.
-    private let callback: @MainActor (Bool) -> Void
-    private var hotKeyRef: EventHotKeyRef?
+final class HotKeyManager: CaptureHotKeyController {
+    /// Called with the bound action and `true` on press / `false` on release.
+    private let callback: @MainActor (CaptureHotKeyAction, Bool) -> Void
+
+    /// Stable Carbon ids per action (the id rides inside the event).
+    private static let actionIDs: [CaptureHotKeyAction: UInt32] = [
+        .holdToDictate: 1, .toggleDictation: 2, .quickPad: 3,
+    ]
+
+    private var bindings: [CaptureHotKeyAction: KeyShortcut] = [:]
+    private var hotKeyRefs: [EventHotKeyRef] = []
     private var eventHandlerRef: EventHandlerRef?
     private var localMonitor: Any?
     private var globalMonitor: Any?
-    private var lastFire: [Bool: Date] = [:]
+    private var lastFire: [String: Date] = [:]   // "<action>-<pressed>" → time
 
-    init(callback: @escaping @MainActor (Bool) -> Void) {
+    init(callback: @escaping @MainActor (CaptureHotKeyAction, Bool) -> Void) {
         self.callback = callback
     }
 
     // No `deinit`: this `@MainActor` type's stored Carbon/NSEvent refs are
     // non-Sendable and can't be touched from a nonisolated deinit under Swift 6.
-    // The app owns a single instance for its whole lifetime (the OS reclaims the
-    // process-global hot-key and event monitors on exit), so explicit teardown is
-    // only ever needed via `unregister()` (called at the top of `register()`).
+    // The app owns a single instance for its whole lifetime.
 
-    /// Returns true if Carbon claimed the key (the NSEvent fallback covers it
-    /// otherwise, e.g. when the app isn't focused but the monitor still fires).
-    @discardableResult
-    func register() -> Bool {
+    /// Replace ALL current registrations with `bindings` (the settings change path
+    /// simply calls this again).
+    func apply(bindings: [CaptureHotKeyAction: KeyShortcut]) {
         unregister()
+        self.bindings = bindings
+        guard !bindings.isEmpty else { return }
 
         let eventTypes = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
@@ -50,64 +56,89 @@ final class HotKeyManager: PushToTalkController {
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let handler: EventHandlerUPP = { _, eventRef, userData in
             guard let userData, let eventRef else { return noErr }
+            var hotKeyID = EventHotKeyID()
+            let status = GetEventParameter(
+                eventRef, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+            guard status == noErr else { return noErr }
             let pressed = GetEventKind(eventRef) == UInt32(kEventHotKeyPressed)
             let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
             // Carbon delivers this on the main run-loop thread.
-            MainActor.assumeIsolated { manager.fire(pressed: pressed) }
+            MainActor.assumeIsolated { manager.fire(id: hotKeyID.id, pressed: pressed) }
             return noErr
         }
-
-        let installStatus = InstallEventHandler(
-            GetApplicationEventTarget(), handler,
-            numericCast(eventTypes.count), eventTypes, selfPtr, &eventHandlerRef)
-
-        installFallbackMonitor()
-
-        guard installStatus == noErr else { return false }
+        InstallEventHandler(GetApplicationEventTarget(), handler,
+                            numericCast(eventTypes.count), eventTypes, selfPtr, &eventHandlerRef)
 
         let signature = OSType(UInt32(UInt8(ascii: "H")) << 24 | UInt32(UInt8(ascii: "N")) << 16
             | UInt32(UInt8(ascii: "O")) << 8 | UInt32(UInt8(ascii: "T")))
-        let hotKeyID = EventHotKeyID(signature: signature, id: 1)
-        var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(UInt32(kVK_F16), 0, hotKeyID,
-                                         GetApplicationEventTarget(), 0, &ref)
-        if status == noErr, let ref {
-            hotKeyRef = ref
-            return true
+        for (action, shortcut) in bindings {
+            guard let id = Self.actionIDs[action] else { continue }
+            var ref: EventHotKeyRef?
+            let status = RegisterEventHotKey(
+                shortcut.keyCode, shortcut.carbonModifiers,
+                EventHotKeyID(signature: signature, id: id),
+                GetApplicationEventTarget(), 0, &ref)
+            if status == noErr, let ref { hotKeyRefs.append(ref) }
         }
-        return false
+
+        installFallbackMonitors()
     }
 
-    func unregister() {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef); self.hotKeyRef = nil }
+    private func unregister() {
+        for ref in hotKeyRefs { UnregisterEventHotKey(ref) }
+        hotKeyRefs.removeAll()
         if let eventHandlerRef { RemoveEventHandler(eventHandlerRef); self.eventHandlerRef = nil }
         if let localMonitor { NSEvent.removeMonitor(localMonitor); self.localMonitor = nil }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
     }
 
-    private func installFallbackMonitor() {
-        // NSEvent monitor callbacks are delivered on the main thread.
+    // MARK: NSEvent fallback (covers edge cases where Carbon didn't claim the key)
+
+    private func installFallbackMonitors() {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown && event.isARepeat { return event }
-            guard UInt32(event.keyCode) == UInt32(kVK_F16) else { return event }
-            MainActor.assumeIsolated { self.fire(pressed: event.type == .keyDown) }
-            return nil
+            var consumed = false
+            MainActor.assumeIsolated { consumed = self.handleMonitorEvent(event) }
+            return consumed ? nil : event
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self else { return }
             if event.type == .keyDown && event.isARepeat { return }
-            guard UInt32(event.keyCode) == UInt32(kVK_F16) else { return }
-            MainActor.assumeIsolated { self.fire(pressed: event.type == .keyDown) }
+            MainActor.assumeIsolated { _ = self.handleMonitorEvent(event) }
         }
     }
 
-    /// Invoked (on the main thread) from Carbon's app-event-target handler and the
-    /// NSEvent monitors. Per-edge debounce, then the @MainActor push-to-talk handler.
-    private func fire(pressed: Bool) {
+    /// Match a monitored key event against the bindings; fire and report consumption.
+    private func handleMonitorEvent(_ event: NSEvent) -> Bool {
+        let mods = Self.carbonModifiers(from: event.modifierFlags)
+        for (action, shortcut) in bindings
+        where shortcut.keyCode == UInt32(event.keyCode) && shortcut.carbonModifiers == mods {
+            guard let id = Self.actionIDs[action] else { continue }
+            fire(id: id, pressed: event.type == .keyDown)
+            return true
+        }
+        return false
+    }
+
+    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+        var mods: UInt32 = 0
+        if flags.contains(.command) { mods |= UInt32(cmdKey) }
+        if flags.contains(.option)  { mods |= UInt32(optionKey) }
+        if flags.contains(.control) { mods |= UInt32(controlKey) }
+        if flags.contains(.shift)   { mods |= UInt32(shiftKey) }
+        return mods
+    }
+
+    /// Invoked (on the main thread) from Carbon's handler and the NSEvent monitors.
+    /// Per-action-per-edge debounce, then the @MainActor capture handler.
+    private func fire(id: UInt32, pressed: Bool) {
+        guard let action = Self.actionIDs.first(where: { $0.value == id })?.key else { return }
+        let key = "\(action.rawValue)-\(pressed)"
         let now = Date()
-        if let last = lastFire[pressed], now.timeIntervalSince(last) <= 0.04 { return }
-        lastFire[pressed] = now
-        callback(pressed)
+        if let last = lastFire[key], now.timeIntervalSince(last) <= 0.04 { return }
+        lastFire[key] = now
+        callback(action, pressed)
     }
 }

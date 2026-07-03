@@ -6,20 +6,8 @@ import Foundation
 import SwiftData
 import SwiftUI
 
-/// Drives the global push-to-talk hotkey (press → record, release → stop). The
-/// concrete implementation is platform-specific (macOS uses Carbon, which lives
-/// in the app target), so `AppModel` depends only on this protocol and the app
-/// injects a factory. iOS has no global hotkey, so it simply passes `nil`.
-///
-/// `@MainActor` because the only implementation (macOS Carbon `HotKeyManager`)
-/// touches main-thread state, and `AppModel` (also `@MainActor`) owns it.
-@MainActor
-public protocol PushToTalkController: AnyObject {
-    /// Begin listening for the hotkey. Returns whether the primary registration
-    /// succeeded (a fallback path may still cover it). Safe to ignore.
-    @discardableResult
-    func register() -> Bool
-}
+// The global-hotkey seam is `CaptureHotKeyController` (see KeyShortcut.swift):
+// the Mac app injects a Carbon-backed implementation; iOS passes nil.
 
 /// App-wide settings persisted as JSON next to the notes.
 public struct NotesSettings: Codable, Equatable, Sendable {
@@ -44,8 +32,31 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     /// off, no location is ever requested or stored.
     public var geotagEnabled: Bool = false
 
+    // MARK: Quick Capture (macOS global shortcuts)
+
+    /// Hold to dictate: press = record, release = transcribe + save. Default F16
+    /// (the historical push-to-talk key). `nil` = unassigned.
+    public var holdToDictateShortcut: KeyShortcut? = KeyShortcut(keyCode: 106, display: "F16")
+    /// Toggle dictation: tap = start, tap again = stop + save. Default F15.
+    public var toggleDictationShortcut: KeyShortcut? = KeyShortcut(keyCode: 113, display: "F15")
+    /// Quick note pad: pop up a small text pad (⇧↩ saves). Default F14.
+    public var quickPadShortcut: KeyShortcut? = KeyShortcut(keyCode: 107, display: "F14")
+    /// When ON, a finished quick capture shows a Save/Discard confirmation (↩ saves,
+    /// ⇥ then ␣ discards) instead of saving immediately. Default OFF — the whole
+    /// point of quick capture is zero interaction.
+    public var confirmQuickCaptureBeforeSaving: Bool = false
+
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
+    }
+
+    /// The current Quick Capture hotkey bindings (assigned shortcuts only).
+    public var captureHotKeyBindings: [CaptureHotKeyAction: KeyShortcut] {
+        var b: [CaptureHotKeyAction: KeyShortcut] = [:]
+        b[.holdToDictate] = holdToDictateShortcut
+        b[.toggleDictation] = toggleDictationShortcut
+        b[.quickPad] = quickPadShortcut
+        return b
     }
 
     public init() {}
@@ -61,6 +72,44 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         didImportLegacyJSON = try c.decodeIfPresent(Bool.self, forKey: .didImportLegacyJSON) ?? fresh.didImportLegacyJSON
         syncAudioOverICloud = try c.decodeIfPresent(Bool.self, forKey: .syncAudioOverICloud) ?? fresh.syncAudioOverICloud
         geotagEnabled = try c.decodeIfPresent(Bool.self, forKey: .geotagEnabled) ?? fresh.geotagEnabled
+        // Quick Capture: `decodeIfPresent` alone can't distinguish "older settings
+        // file" (→ default binding) from "user explicitly cleared" — so shortcuts
+        // are stored as an OPTIONAL-inside-a-marker: the key absent → default; the
+        // key present-but-null → cleared. `decodeNil` handles the null case.
+        holdToDictateShortcut = try Self.decodeShortcut(c, .holdToDictateShortcut, fallback: fresh.holdToDictateShortcut)
+        toggleDictationShortcut = try Self.decodeShortcut(c, .toggleDictationShortcut, fallback: fresh.toggleDictationShortcut)
+        quickPadShortcut = try Self.decodeShortcut(c, .quickPadShortcut, fallback: fresh.quickPadShortcut)
+        confirmQuickCaptureBeforeSaving = try c.decodeIfPresent(Bool.self, forKey: .confirmQuickCaptureBeforeSaving) ?? fresh.confirmQuickCaptureBeforeSaving
+    }
+
+    private static func decodeShortcut(
+        _ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys, fallback: KeyShortcut?
+    ) throws -> KeyShortcut? {
+        guard c.contains(key) else { return fallback }          // older file → default
+        if try c.decodeNil(forKey: key) { return nil }          // explicitly cleared
+        return try c.decode(KeyShortcut.self, forKey: key)
+    }
+
+    /// Explicit keys so cleared shortcuts encode as literal `null` (see
+    /// `decodeShortcut`); `JSONEncoder` would otherwise omit nil optionals.
+    private enum CodingKeys: String, CodingKey {
+        case transcriptionEngineID, hasSeededDemo, didImportLegacyJSON,
+             syncAudioOverICloud, geotagEnabled,
+             holdToDictateShortcut, toggleDictationShortcut, quickPadShortcut,
+             confirmQuickCaptureBeforeSaving
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(transcriptionEngineID, forKey: .transcriptionEngineID)
+        try c.encode(hasSeededDemo, forKey: .hasSeededDemo)
+        try c.encode(didImportLegacyJSON, forKey: .didImportLegacyJSON)
+        try c.encode(syncAudioOverICloud, forKey: .syncAudioOverICloud)
+        try c.encode(geotagEnabled, forKey: .geotagEnabled)
+        try c.encode(holdToDictateShortcut, forKey: .holdToDictateShortcut)      // nil → null
+        try c.encode(toggleDictationShortcut, forKey: .toggleDictationShortcut)
+        try c.encode(quickPadShortcut, forKey: .quickPadShortcut)
+        try c.encode(confirmQuickCaptureBeforeSaving, forKey: .confirmQuickCaptureBeforeSaving)
     }
 
     public static func load() -> NotesSettings {
@@ -115,6 +164,9 @@ public final class AppModel: ObservableObject {
             if oldValue != settings { settings.save() }
             if oldValue.transcriptionEngineID != settings.transcriptionEngineID {
                 rebuildPipeline()
+            }
+            if oldValue.captureHotKeyBindings != settings.captureHotKeyBindings {
+                applyHotKeyBindings()   // re-register the global shortcuts live
             }
         }
     }
@@ -176,8 +228,8 @@ public final class AppModel: ObservableObject {
 
     // Services.
     private let mic = MicCaptureService()
-    private var hotKey: PushToTalkController?
-    private let pushToTalkFactory: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)?
+    private var hotKey: CaptureHotKeyController?
+    private let captureHotKeyFactory: ((@escaping @MainActor (CaptureHotKeyAction, Bool) -> Void) -> CaptureHotKeyController)?
     private var pipeline: NotesPipeline
     private var micLevelTimer: Timer?
     private var captureURL: URL?
@@ -202,18 +254,19 @@ public final class AppModel: ObservableObject {
     public var isCloudSyncActive: Bool { NotesDataStore.isCloudKitActive }
 
     /// - Parameters:
-    ///   - pushToTalk: factory that builds the platform hotkey controller from a
-    ///     press/release handler. Pass `nil` on platforms with no global hotkey
-    ///     (e.g. iOS); the macOS app injects one wrapping its Carbon `HotKeyManager`.
+    ///   - captureHotKeys: factory that builds the platform global-hotkey controller
+    ///     from an (action, pressed) handler. Pass `nil` on platforms with no global
+    ///     hotkeys (e.g. iOS); the macOS app injects one wrapping its Carbon
+    ///     `HotKeyManager`.
     ///   - inMemoryStore: use an in-memory SwiftData store (tests only).
     public init(
-        pushToTalk: ((@escaping @MainActor (Bool) -> Void) -> PushToTalkController)? = nil,
+        captureHotKeys: ((@escaping @MainActor (CaptureHotKeyAction, Bool) -> Void) -> CaptureHotKeyController)? = nil,
         inMemoryStore: Bool = false
     ) {
         let loaded = NotesSettings.load()
         self.settings = loaded
         self.pipeline = NotesPipeline(engine: loaded.engine)
-        self.pushToTalkFactory = pushToTalk
+        self.captureHotKeyFactory = captureHotKeys
 
         // Stand up the SwiftData store (CloudKit-preferred, local fallback). Production
         // uses the process-wide SHARED container so background-launched App Intents read
@@ -893,6 +946,7 @@ public final class AppModel: ObservableObject {
         guard !isRecording, !isTranscribing else { return }
         do {
             captureURL = try await mic.start()
+            captureMode = .draft
             recordingState = .recording
             startMicLevelPolling()
         } catch {
@@ -903,7 +957,7 @@ public final class AppModel: ObservableObject {
 
     /// Stop the mic, transcribe, and APPEND the result to the active draft.
     public func stopRecordingAndAppend() async {
-        guard isRecording else { return }
+        guard isRecording, captureMode == .draft else { return }
         stopMicLevelPolling()
         let url: URL
         do {
@@ -935,6 +989,150 @@ public final class AppModel: ObservableObject {
         stopMicLevelPolling()
         mic.cancel()
         recordingState = .idle
+    }
+
+    // MARK: Quick Capture — dictate → transcribe → save, zero interaction
+    //
+    // The global-shortcut path (hold-to-dictate / toggle). Unlike the draft flow,
+    // a finished quick capture SAVES ITSELF: release the key and the note lands in
+    // the corpus, transcribed behind the scenes. Failure can't lose anything — a
+    // failed/timed-out transcription saves the audio with a placeholder that the
+    // Re-transcribe banner recovers. With `confirmQuickCaptureBeforeSaving` ON, a
+    // Save/Discard confirmation (↩ / ⇥␣) is interposed instead.
+
+    /// Which flow the live mic capture belongs to: the in-app draft (append +
+    /// explicit conclude) or a quick capture (auto-save on stop).
+    public enum CaptureMode: Equatable, Sendable { case draft, quick }
+    @Published public private(set) var captureMode: CaptureMode = .draft
+
+    /// A finished quick capture awaiting the user's Save/Discard choice (only when
+    /// `confirmQuickCaptureBeforeSaving` is on). The Mac app observes this and
+    /// presents the confirmation.
+    public struct PendingQuickCapture: Equatable, Sendable {
+        public let noteID: UUID
+        public let text: String
+        public let storedAudioName: String
+        public let durationSeconds: Double?
+        public let engineUsed: String?
+    }
+    @Published public var pendingQuickCapture: PendingQuickCapture?
+
+    /// Incremented when the quick-pad shortcut fires; the Mac app observes it and
+    /// pops the pad. A count (not a Bool) so back-to-back requests all signal.
+    @Published public var quickPadRequestCount = 0
+
+    /// Ignore accidental taps: a hold shorter than this saves nothing.
+    private static let quickCaptureMinimumSeconds = 0.5
+    private var quickCaptureStartedAt: Date?
+
+    public func startQuickCapture() async {
+        guard !isRecording, !isTranscribing, pendingQuickCapture == nil else { return }
+        do {
+            captureURL = try await mic.start()
+            captureMode = .quick
+            quickCaptureStartedAt = Date()
+            recordingState = .recording
+            startMicLevelPolling()
+        } catch {
+            banner = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            recordingState = .error(banner ?? "recording failed")
+        }
+    }
+
+    /// Tap-to-start / tap-to-stop entry point (the toggle shortcut + menu bar).
+    public func toggleQuickCapture() async {
+        if isRecording {
+            // Only stop a capture the QUICK flow owns — never yank a draft recording.
+            guard captureMode == .quick else { return }
+            await stopQuickCaptureAndSave()
+        } else {
+            await startQuickCapture()
+        }
+    }
+
+    public func stopQuickCaptureAndSave() async {
+        guard isRecording, captureMode == .quick else { return }
+        stopMicLevelPolling()
+        let url: URL
+        do {
+            url = try mic.stop()
+        } catch {
+            recordingState = .idle
+            banner = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Accidental tap: sub-half-second hold → discard silently, no junk note.
+        if let started = quickCaptureStartedAt,
+           Date().timeIntervalSince(started) < Self.quickCaptureMinimumSeconds {
+            recordingState = .idle
+            return
+        }
+        quickCaptureStartedAt = nil
+
+        recordingState = .transcribing
+        let noteID = UUID()
+        do {
+            // Imports the audio into the store FIRST (capture can't be lost), then
+            // transcribes — a throw inside is already turned into placeholder text.
+            let clip = try await pipeline.transcribeClip(audioURL: url, noteID: noteID)
+            recordingState = .idle
+            let pending = PendingQuickCapture(
+                noteID: noteID, text: clip.text, storedAudioName: clip.storedAudioName,
+                durationSeconds: clip.durationSeconds, engineUsed: clip.engineUsed)
+            if settings.confirmQuickCaptureBeforeSaving {
+                pendingQuickCapture = pending    // the app presents Save/Discard
+            } else {
+                save(quickCapture: pending)      // the default: it just saves
+            }
+        } catch {
+            // transcribeClip only throws if the AUDIO IMPORT failed — nothing stored.
+            recordingState = .idle
+            banner = "Couldn't save the capture: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+        }
+    }
+
+    /// Resolve a confirmation: save the pending capture or discard it (with its audio).
+    public func resolveQuickCapture(save shouldSave: Bool) {
+        guard let pending = pendingQuickCapture else { return }
+        pendingQuickCapture = nil
+        if shouldSave {
+            save(quickCapture: pending)
+        } else {
+            NotesStore.deleteAudio(named: pending.storedAudioName)
+        }
+    }
+
+    private func save(quickCapture pending: PendingQuickCapture) {
+        let note = Note(
+            id: pending.noteID,
+            transcript: pending.text,
+            kind: .voice,
+            source: Self.localCaptureSource,
+            audioFileName: pending.storedAudioName,
+            durationSeconds: pending.durationSeconds,
+            engineUsed: pending.engineUsed)
+        insert(note, select: false)   // discreet: don't yank the UI's selection
+        stampLocationIfEnabled(for: note)
+    }
+
+    /// Save a typed quick-pad note (the ⇧↩ path). Whitespace-only is a no-op.
+    public func saveQuickTextNote(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let note = Note(transcript: trimmed, kind: .text, source: Self.localCaptureSource)
+        insert(note, select: false)
+        stampLocationIfEnabled(for: note)
+    }
+
+    /// What a note captured directly on THIS device is tagged as.
+    private static var localCaptureSource: NoteSource {
+        #if os(macOS)
+        return .computer
+        #else
+        return .phone
+        #endif
     }
 
     // MARK: Draft editing (mirrors the device's RIGHT / BOTTOM buttons)
@@ -1010,15 +1208,30 @@ public final class AppModel: ObservableObject {
     // MARK: Hotkey
 
     private func registerHotKey() {
-        // Press = start recording, release = stop + transcribe (push-to-talk).
-        // No factory (e.g. iOS) → no global hotkey; the UI record button still works.
-        guard let pushToTalkFactory else { return }
-        hotKey = pushToTalkFactory { [weak self] pressed in
+        // Quick Capture global shortcuts (macOS). No factory (e.g. iOS) → none;
+        // the in-app UI still records into the draft.
+        guard let captureHotKeyFactory else { return }
+        hotKey = captureHotKeyFactory { [weak self] action, pressed in
             guard let self else { return }
-            if pressed { Task { await self.startRecording() } }
-            else { Task { await self.stopRecordingAndAppend() } }
+            switch action {
+            case .holdToDictate:
+                if pressed { Task { await self.startQuickCapture() } }
+                else { Task { await self.stopQuickCaptureAndSave() } }
+            case .toggleDictation:
+                guard pressed else { return }   // act on press; ignore the release
+                Task { await self.toggleQuickCapture() }
+            case .quickPad:
+                guard pressed else { return }
+                self.quickPadRequestCount += 1
+            }
         }
-        hotKey?.register()
+        applyHotKeyBindings()
+    }
+
+    /// (Re)register the current shortcut assignments — called at init and whenever
+    /// a shortcut setting changes.
+    private func applyHotKeyBindings() {
+        hotKey?.apply(bindings: settings.captureHotKeyBindings)
     }
 
     // MARK: Pipeline rebuild on engine change
