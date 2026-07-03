@@ -1,32 +1,22 @@
 import Foundation
 
-/// Which speech-to-text engine turns a recording into a transcript. Stored by
-/// raw value; unknown values fall back to `.appleSpeech` (the zero-install path).
+/// Which speech-to-text engine turns a recording into a transcript. Ollie uses
+/// Apple's on-device Speech exclusively (the Mac's built-in models are plenty) —
+/// this single-case enum is kept only so the persisted `transcriptionEngineID`
+/// setting and the `TranscriptionService(engine:)` seam stay stable. (An older
+/// settings file that stored "whisper" decodes to `.appleSpeech` via the
+/// unknown-value fallback in `NotesSettings.engine`.)
 public enum TranscriptionEngine: String, CaseIterable, Sendable, Codable {
     case appleSpeech
-    case whisper
 
-    public var displayName: String {
-        switch self {
-        case .appleSpeech: return "Apple Speech"
-        case .whisper:     return "whisper.cpp"
-        }
-    }
-
-    public var subtitle: String {
-        switch self {
-        case .appleSpeech: return "On-device, no setup. Best on macOS 26+."
-        case .whisper:     return "Local whisper-cli + ffmpeg (Homebrew)."
-        }
-    }
+    public var displayName: String { "Apple Speech" }
+    public var subtitle: String { "On-device, private, no setup." }
 }
 
-/// Errors surfaced from any transcription path. Mirrors the old app's taxonomy
-/// so messages stay familiar.
+/// Errors surfaced from the transcription path.
 public enum TranscriptionError: Error, LocalizedError {
     case emptyRecording
     case noResult
-    case missingTool(String)
     case appleSpeechUnavailable(String)
     case engineFailed(String)
 
@@ -36,8 +26,6 @@ public enum TranscriptionError: Error, LocalizedError {
             return "The recording was empty — no audio to transcribe."
         case .noResult:
             return "No transcript was produced."
-        case .missingTool(let path):
-            return "Missing transcription tool: \(path)"
         case .appleSpeechUnavailable(let message):
             return "Apple Speech unavailable: \(message)"
         case .engineFailed(let message):
@@ -57,48 +45,38 @@ public struct TranscriptionResult: Sendable {
     }
 }
 
-/// Anything that can turn an audio file into text. Two real implementations
-/// (Apple Speech, whisper.cpp) plus the ability to swap in a stub for tests.
+/// Anything that can turn an audio file into text (Apple Speech, or a test stub).
 protocol Transcribing: Sendable {
     func transcribe(url: URL) async throws -> TranscriptionResult
 }
 
-/// Dispatches to the chosen engine, with a safety net: whisper falls back to
-/// Apple Speech if its CLI/model aren't installed, and Apple Speech falls back
-/// to a clearly-labelled placeholder transcript so a note still gets saved even
-/// on a machine with neither path available (keeps the demo unbreakable).
+/// On-device transcription via Apple Speech, with a safety net: if Apple Speech
+/// throws (no on-device model yet, asset trouble), it falls back to a clearly-
+/// labelled placeholder transcript so a note is always saved — and the preserved
+/// audio can be re-run later via Re-transcribe.
 public struct TranscriptionService: Sendable {
     public var engine: TranscriptionEngine
 
     private let apple = AppleSpeechTranscriber()
-    private let whisper = WhisperCppTranscriber()
 
     public init(engine: TranscriptionEngine = .appleSpeech) {
         self.engine = engine
     }
 
     public func transcribe(url: URL) async throws -> TranscriptionResult {
-        switch engine {
-        case .appleSpeech:
-            return try await appleOrStub(url: url)
-        case .whisper:
-            if whisper.isAvailable {
-                do { return try await whisper.transcribe(url: url) }
-                catch { return try await appleOrStub(url: url) }
-            }
-            return try await appleOrStub(url: url)
-        }
+        return try await appleOrStub(url: url)
     }
 
-    /// Apple Speech, or — if it throws (older OS, asset trouble) — a placeholder
-    /// transcript so the pipeline always yields a saveable note in the demo.
+    /// Apple Speech, or — if it throws (no on-device model yet, asset trouble) — a
+    /// placeholder transcript so the pipeline always yields a saveable note. The
+    /// audio is preserved, so such a note is recoverable via Re-transcribe.
     private func appleOrStub(url: URL) async throws -> TranscriptionResult {
         do {
             return try await apple.transcribe(url: url)
         } catch {
             let seconds = (try? AudioInfo.duration(of: url)) ?? 0
             #if os(macOS)
-            let hint = "Install whisper-cli/ffmpeg or run on macOS 26+ to get a real transcript."
+            let hint = "A real transcript is produced on-device — this Mac has no speech model available yet."
             #else
             let hint = "A real transcript is produced on-device — the Simulator just has no speech models."
             #endif

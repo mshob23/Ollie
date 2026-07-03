@@ -64,7 +64,7 @@ enum DemoSeed {
             createdAt: ago(420),
             source: .computer,
             durationSeconds: 16.1,
-            engineUsed: "whisper.cpp"))
+            engineUsed: "Apple Speech"))
 
         // 4) A short idea.
         notes.append(Note(
