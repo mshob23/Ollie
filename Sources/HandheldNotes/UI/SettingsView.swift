@@ -34,6 +34,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     engineSection
+                    quickCaptureSection
                     captureSection
                     syncSection
                     footer
@@ -157,6 +158,63 @@ struct SettingsView: View {
     }
 
     // MARK: Capture (geotag)
+
+    // MARK: Quick Capture
+
+    private var quickCaptureSection: some View {
+        SettingsSection(
+            eyebrow: "Quick Capture",
+            title: "Global shortcuts",
+            blurb: "Capture a note from anywhere in macOS — dictate and it saves itself, transcribed behind the scenes. Click a field, then press the combo you want (esc cancels, delete clears)."
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                shortcutRow(
+                    title: "Hold to dictate",
+                    subtitle: "Press and hold: record. Release: transcribe + save.",
+                    binding: $model.settings.holdToDictateShortcut)
+                shortcutRow(
+                    title: "Toggle dictation",
+                    subtitle: "Tap to start, tap again to stop + save. For longer thoughts.",
+                    binding: $model.settings.toggleDictationShortcut)
+                shortcutRow(
+                    title: "Quick note pad",
+                    subtitle: "Pops a small pad to type into — ⇧↩ saves, esc discards.",
+                    binding: $model.settings.quickPadShortcut)
+
+                Divider().overlay(Color.hcCardBorder.opacity(0.4))
+
+                Toggle(isOn: $model.settings.confirmQuickCaptureBeforeSaving) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ask before saving")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(Color.hcPrimaryText)
+                        Text("Show a Save/Discard confirmation after each dictated capture (↩ saves). Off = it just saves.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.hcSecondaryText)
+                    }
+                }
+                .toggleStyle(.switch)
+                .tint(.hcAccent)
+            }
+        }
+    }
+
+    private func shortcutRow(
+        title: String, subtitle: String, binding: Binding<KeyShortcut?>
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color.hcSecondaryText)
+            }
+            Spacer(minLength: 8)
+            ShortcutRecorderField(shortcut: binding)
+        }
+    }
 
     private var captureSection: some View {
         SettingsSection(
