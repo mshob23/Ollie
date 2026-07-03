@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel(captureHotKeys: { handler in HotKeyManager(callback: handler) })
     private var statusItem: NSStatusItem?
     private var quickPadPanel: NSPanel?
+    private let overlay = QuickCaptureOverlayController()
+    private var lastRecordingState: RecordingState = .idle
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -103,10 +105,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeQuickCapture() {
-        // Icon + menu title track the capture state.
+        // Icon + menu title track the capture state; the floating overlay follows
+        // QUICK captures only (the in-app draft flow has the capture bar).
         model.$recordingState
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateStatusIcon() }
+            .sink { [weak self] state in
+                guard let self else { return }
+                self.updateStatusIcon()
+                self.updateOverlay(for: state)
+            }
+            .store(in: &cancellables)
+
+        // Live mic level → the overlay's listening meter.
+        model.$micLevel
+            .receive(on: RunLoop.main)
+            .sink { [weak self] level in self?.overlay.update(level: level) }
             .store(in: &cancellables)
 
         // "Ask before saving": a finished quick capture awaits Save/Discard.
@@ -122,6 +135,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.showQuickPad() }
             .store(in: &cancellables)
+    }
+
+    /// Drive the floating overlay from the quick-capture lifecycle:
+    /// recording → listening meter; transcribing → breathing dome; done → a brief
+    /// "Saved to Ollie" flash (unless the confirm dialog is taking over).
+    private func updateOverlay(for state: RecordingState) {
+        defer { lastRecordingState = state }
+        guard model.captureMode == .quick else {
+            // A DRAFT capture (in-app) never shows the overlay; make sure a stale
+            // quick overlay isn't lingering when the draft flow starts.
+            if case .recording = state { overlay.hide() }
+            return
+        }
+        switch state {
+        case .recording:
+            overlay.show(mode: .recording)
+        case .transcribing:
+            overlay.show(mode: .transcribing)
+        case .idle:
+            switch lastRecordingState {
+            case .transcribing where model.pendingQuickCapture == nil:
+                // Finished and auto-saved (failures save a recoverable placeholder,
+                // so "saved" is honest either way).
+                overlay.flashResult(success: true, message: "Saved to Ollie")
+            case .recording:
+                // Stopped without transcribing = sub-0.5s accidental tap (discarded)
+                // or a mic error — just slip away.
+                overlay.hide()
+            default:
+                overlay.hide()
+            }
+        case .error:
+            overlay.hide()
+        }
     }
 
     private func updateStatusIcon() {
@@ -176,6 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         discard.keyEquivalent = "\u{1b}"                       // esc also discards
         let save = alert.runModal() == .alertFirstButtonReturn
         model.resolveQuickCapture(save: save)
+        overlay.flashResult(success: save,
+                            message: save ? "Saved to Ollie" : "Discarded")
     }
 
     /// Show (or re-show) the floating quick-note pad. Fresh content each time.
