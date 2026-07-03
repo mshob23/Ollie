@@ -1,9 +1,8 @@
 import HandheldNotesCore
 import SwiftUI
 
-/// The settings sheet. One thing to decide: **which transcription engine** turns
-/// recordings into text. Grouped into a calm well so the choice reads clearly —
-/// the notes are the product, but this knob matters.
+/// The settings sheet: the microphone to record from, Quick Capture shortcuts,
+/// geotagging, and iCloud sync — each grouped into a calm well.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @Binding var isPresented: Bool
@@ -12,6 +11,8 @@ struct SettingsView: View {
     /// an explicit dialog; `resetResult` drives the follow-up alert.
     @State private var confirmingReset = false
     @State private var resetResult: ResetResult?
+    /// Snapshot of available input devices, refreshed when Settings appears.
+    @State private var availableMicsState: [String] = []
 
     /// The outcome to surface after a `resetSync()` attempt — either "relaunch
     /// needed" (success) or an error message (nothing was deleted).
@@ -33,12 +34,13 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    engineSection
+                    micSection
                     quickCaptureSection
                     captureSection
                     syncSection
                     footer
                 }
+                .onAppear { availableMicsState = AppModel.availableMicrophones() }
                 .padding(.horizontal, 24)
                 .padding(.top, 22)
                 .padding(.bottom, 24)
@@ -103,59 +105,50 @@ struct SettingsView: View {
         .padding(.bottom, 18)
     }
 
-    // MARK: Transcription engine
+    // MARK: Microphone
 
-    private var engineSection: some View {
+    /// A sentinel for the "System default" picker row (a Picker tag can't be nil).
+    private static let systemDefaultMic = "\u{0}systemDefault"
+
+    private var micSelection: Binding<String> {
+        Binding(
+            get: { model.settings.microphoneName ?? Self.systemDefaultMic },
+            set: { model.settings.microphoneName = ($0 == Self.systemDefaultMic) ? nil : $0 })
+    }
+
+    private var micSection: some View {
         SettingsSection(
             eyebrow: "Speech-to-text",
-            title: "Transcription engine",
-            blurb: "Which engine turns a recording into a transcript. Everything runs on-device — audio is never sent off the machine."
+            title: "Microphone",
+            blurb: "Recordings transcribe on-device with Apple Speech — private, no setup. Choose which mic to record from, or follow your Mac's current default."
         ) {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(TranscriptionEngine.allCases, id: \.self) { engine in
-                    engineRow(engine)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Input device", selection: micSelection) {
+                    Text("System default").tag(Self.systemDefaultMic)
+                    Divider()
+                    ForEach(availableMics, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
                 }
-                Text("whisper.cpp uses your local whisper-cli + ffmpeg if installed; otherwise the app falls back to Apple Speech automatically, so a note always gets saved.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.hcMutedText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(.hcAccent)
+
+                // If a previously-picked mic is unplugged, say so — capture will
+                // fall back to the system default until it's reconnected or changed.
+                if let chosen = model.settings.microphoneName, !availableMics.contains(chosen) {
+                    Label("“\(chosen)” isn't connected — recording uses the system default until it's back.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.hcMutedText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
 
-    private func engineRow(_ engine: TranscriptionEngine) -> some View {
-        let selected = model.settings.engine == engine
-        return Button(action: {
-            model.settings.transcriptionEngineID = engine.rawValue
-        }) {
-            HStack(spacing: 12) {
-                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 16))
-                    .foregroundStyle(selected ? Color.hcAccent : Color.hcMutedText)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(engine.displayName)
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundStyle(Color.hcPrimaryText)
-                    Text(engine.subtitle)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.hcSecondaryText)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(selected ? Color.hcAccentSoft : Color.hcPanel)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(selected ? Color.hcAccent.opacity(0.4) : Color.hcCardBorder.opacity(0.6), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
+    /// Live device list, refreshed each time Settings appears (see `.onAppear`).
+    private var availableMics: [String] { availableMicsState }
 
     // MARK: Capture (geotag)
 
