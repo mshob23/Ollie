@@ -123,16 +123,7 @@ struct SettingsView: View {
             blurb: "Recordings transcribe on-device with Apple Speech — private, no setup. Choose which mic to record from, or follow your Mac's current default."
         ) {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Input device", selection: micSelection) {
-                    Text("System default").tag(Self.systemDefaultMic)
-                    Divider()
-                    ForEach(availableMics, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(.hcAccent)
+                DarkPopupPicker(items: micItems, selection: micSelection)
 
                 // If a previously-picked mic is unplugged, say so — capture will
                 // fall back to the system default until it's reconnected or changed.
@@ -149,6 +140,13 @@ struct SettingsView: View {
 
     /// Live device list, refreshed each time Settings appears (see `.onAppear`).
     private var availableMics: [String] { availableMicsState }
+
+    /// Dropdown rows: "System default" (the nil sentinel) followed by each live
+    /// input device.
+    private var micItems: [DarkPopupPicker.Item] {
+        [DarkPopupPicker.Item(id: Self.systemDefaultMic, label: "System default")]
+            + availableMics.map { DarkPopupPicker.Item(id: $0, label: $0) }
+    }
 
     // MARK: Capture (geotag)
 
@@ -464,6 +462,102 @@ struct SettingsView: View {
 }
 
 // MARK: - A titled settings group (eyebrow + heading + blurb + content well)
+
+/// A dark-legible dropdown, drawn entirely in SwiftUI.
+///
+/// Why not a native `Picker(.menu)`? Its popup menu always tracks the *system*
+/// appearance — on a light-mode Mac it pops light and low-contrast against our
+/// dark panel, and no override reaches it (verified: `.preferredColorScheme(.dark)`,
+/// `NSApp.appearance = .darkAqua`, and forcing the sheet window's appearance all
+/// leave the menu light). Because this control draws its own rows with explicit
+/// `hcPrimaryText`/`hcPanel` colors, it stays legible regardless of the system
+/// setting and matches the app's design.
+struct DarkPopupPicker: View {
+    struct Item: Identifiable, Equatable { let id: String; let label: String }
+
+    let items: [Item]
+    @Binding var selection: String
+    @State private var open = false
+
+    private var currentLabel: String {
+        items.first { $0.id == selection }?.label ?? items.first?.label ?? ""
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 8) {
+                Text(currentLabel)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.hcPrimaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.hcSecondaryText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.hcPanel)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(items) { item in
+                    Button {
+                        selection = item.id
+                        open = false
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Color.hcAccent)
+                                .opacity(item.id == selection ? 1 : 0)
+                            Text(item.label)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.hcPrimaryText)
+                                .lineLimit(1)
+                            Spacer(minLength: 16)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(DropdownRowButtonStyle())
+                }
+            }
+            .padding(.vertical, 6)
+            .frame(minWidth: 260)
+            // Opaque fill covers the popover's system-appearance material so the
+            // rows read on our dark panel, not a light macOS backing.
+            .background(Color.hcPanel)
+        }
+    }
+}
+
+/// Row style for `DarkPopupPicker`: a soft accent wash on hover/press so the
+/// hovered option is obvious without a jarring system-blue highlight.
+private struct DropdownRowButtonStyle: ButtonStyle {
+    @State private var hovering = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                (hovering || configuration.isPressed)
+                    ? Color.hcAccent.opacity(0.18)
+                    : Color.clear
+            )
+            .onHover { hovering = $0 }
+    }
+}
 
 private struct SettingsSection<Content: View>: View {
     let eyebrow: String
