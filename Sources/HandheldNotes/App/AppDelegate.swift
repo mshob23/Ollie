@@ -24,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // Ollie is dark-only. Pin the whole app to darkAqua so AppKit surfaces
+        // that aren't our own custom-colored SwiftUI views — alerts, the status
+        // menu, the quick-pad panel — render dark on a light-mode Mac instead of
+        // tracking the system's light appearance. (Note: SwiftUI's MenuPickerStyle
+        // popup menu ignores even this and always tracks the system appearance,
+        // which is why the mic picker in SettingsView is a custom SwiftUI dropdown
+        // rather than a native Picker.)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         setupMainMenu()
         setupStatusItem()
         observeQuickCapture()
