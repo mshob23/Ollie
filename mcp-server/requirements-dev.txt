@@ -1,0 +1,4 @@
+# Dev-only dependencies for the Ollie MCP server (not needed to run it).
+# Install alongside the runtime deps:  pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.0
