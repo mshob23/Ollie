@@ -202,6 +202,12 @@ struct ViewDetailPane: View {
     /// selection changes (via `.id(selectedViewName)` on the content).
     @State private var shownRevisionID: UUID?
 
+    /// The interaction brain for the currently-*displayed* revision (Views v2 spec §4).
+    /// Rebuilt whenever the shown view/revision changes (committing the previous one at
+    /// that boundary first), so the supersession boundary — the revision's `createdAt` —
+    /// always matches what's on screen. `nil` until a view is shown.
+    @State private var interaction: ViewInteractionModel?
+
     private var revisions: [AgentViewRevision] {
         guard let name = selectedViewName else { return [] }
         return model.revisions(forView: name)
@@ -229,13 +235,21 @@ struct ViewDetailPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Boundary commits (Views v2 spec §4): switching the displayed view/revision
+        // settles the outgoing model first (rebuilding it for the new one), and leaving
+        // the pane entirely flushes the last one. Keyed on the shown revision id so a
+        // "time machine" jump to an older revision also re-anchors the supersession
+        // boundary (`createdAt`) to what's now on screen.
+        .onChange(of: shown?.id) { _, _ in rebuildInteraction() }
+        .onAppear { rebuildInteraction() }
+        .onDisappear { interaction?.commitNow() }
     }
 
     private func content(name: String, shown: AgentViewRevision) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 headerBlock(name: name, shown: shown)
-                MarkdownLite(shown.body, onOpenNote: onOpenNote)
+                MarkdownLite(shown.body, onOpenNote: onOpenNote, checklist: checklistHook)
                 if revisions.count > 1 {
                     earlierRevisions(shown: shown)
                 }
@@ -243,6 +257,33 @@ struct ViewDetailPane: View {
             .padding(28)
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The interaction hook fed into `MarkdownLite` (spec §5). A checklist glyph
+    /// reflects the model's three-layer `resolved(...)`; a tap flips `pending` and
+    /// restarts the settle timer via `toggle(...)`. Nil-safe: before the model exists
+    /// (or if it's rebuilding) the glyph falls back to the body default and taps no-op.
+    private var checklistHook: ChecklistHook {
+        ChecklistHook(
+            resolved: { blockId, bodyChecked in
+                interaction?.resolved(blockId: blockId, bodyChecked: bodyChecked) ?? bodyChecked
+            },
+            onToggle: { blockId, text in
+                interaction?.toggle(blockId: blockId, blockText: text)
+            })
+    }
+
+    /// Commit the outgoing interaction model (a view/revision switch is a settle
+    /// boundary — spec §4) and build a fresh one anchored to the now-shown revision, so
+    /// its supersession boundary (`createdAt`) matches what's on screen. No shown
+    /// revision → tear the model down (and commit it first).
+    private func rebuildInteraction() {
+        interaction?.commitNow()
+        if let shown {
+            interaction = model.interactionModel(for: shown)
+        } else {
+            interaction = nil
         }
     }
 

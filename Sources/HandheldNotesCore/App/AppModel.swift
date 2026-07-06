@@ -545,6 +545,33 @@ public final class AppModel: ObservableObject {
         agentViews.revisions(forView: name)
     }
 
+    /// Build the ``ViewInteractionModel`` for a **displayed** view revision (Views v2
+    /// spec §4) — the write-path brain a pane owns while showing that revision and
+    /// wires into `MarkdownLite`'s `ChecklistHook`. It reads/writes interaction state
+    /// through an `AgentLayerStore` over the app's write context (the same context all
+    /// other mutations use), stamps the surface (`"mac"` | `"ios"`), and — via
+    /// `onCommit` — re-projects after a settle that actually wrote, so a toggle
+    /// refreshes the published snapshots and, on macOS, `interactions.jsonl`. The
+    /// commit's own `ModelContext.save()` has already landed by then, so `onCommit`
+    /// only needs to re-read (no second save).
+    ///
+    /// One model per *displayed revision*: the pane rebuilds it when the shown view or
+    /// revision changes (so the supersession boundary — the revision's `createdAt` —
+    /// stays correct), committing the old one at that boundary first.
+    public func interactionModel(for revision: AgentViewRevision) -> ViewInteractionModel {
+        #if os(macOS)
+        let surface = "mac"
+        #else
+        let surface = "ios"
+        #endif
+        return ViewInteractionModel(
+            store: AgentLayerStore(context: modelContext),
+            viewName: revision.viewName,
+            revision: revision,
+            surface: surface,
+            onCommit: { [weak self] in self?.reloadNotes() })
+    }
+
     /// The view name the user has pinned to the top of the Views feed, or `nil`.
     /// Backed by the per-device `NotesSettings.pinnedViewName`.
     public var pinnedViewName: String? { settings.pinnedViewName }

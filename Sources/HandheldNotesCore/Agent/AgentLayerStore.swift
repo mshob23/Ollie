@@ -196,6 +196,28 @@ public struct AgentLayerStore {
     /// `updatedAt` is updated in place and the losers are pruned opportunistically
     /// (users may delete anything — spec §6).
     public func setInteraction(_ value: ViewInteraction) {
+        upsertInteraction(value)
+        try? context.save()
+    }
+
+    /// Batch upsert of interaction state — the ``ViewInteractionModel`` settle path
+    /// (Views v2 spec §4). Upserts every entry by `(viewName, blockId)` (same in-code
+    /// key + duplicate-loser pruning as ``setInteraction(_:)``) and then **saves the
+    /// `ModelContext` exactly once** for the whole batch, however many boxes changed —
+    /// "one transactional save per settle" (spec §4). An empty batch is a no-op (no
+    /// save), so a settle with nothing to write touches nothing.
+    public func setInteractions(_ values: [ViewInteraction]) {
+        guard !values.isEmpty else { return }
+        for value in values { upsertInteraction(value) }
+        try? context.save()
+    }
+
+    /// The shared upsert-by-`(viewName, blockId)` body used by both the singular
+    /// user-path ``setInteraction(_:)`` (saves) and the batch ``setInteractions(_:)``
+    /// (one save for the whole batch). **Does not save** — the caller owns the
+    /// transaction boundary. Mechanical sanitization (caps) happens here: `blockText`
+    /// is truncated (a snapshot, not rejected), `blockId`/`value`/`kind` are clamped.
+    private func upsertInteraction(_ value: ViewInteraction) {
         let key = value.viewName
         let block = value.blockId
         var d = FetchDescriptor<InteractionStateEntity>(
@@ -231,7 +253,6 @@ public struct AgentLayerStore {
                 surface: value.surface,
                 updatedAt: value.updatedAt))
         }
-        try? context.save()
     }
 
     /// User hard-delete of a tag (contract §0: users may delete anything). Removes
