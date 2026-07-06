@@ -266,18 +266,102 @@ For the full deferred list see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) �
 
 ## 9. Running the agent loop (operational)
 
-*Filled in by Milestone 6; summarized here so the contract stays the one place to look.*
-
 The **agent runner** is a launchd-scheduled headless Claude session on the Mac that periodically tags
-new notes, fulfills request-notes, and refreshes standing views. Reserved details:
+new notes, fulfills request-notes, and refreshes standing views. It is the fourth door in §1 wearing
+the `claude-runner` `agentId` and going through the `inbox` `via` like any other external agent — it
+writes nothing the MCP write tools couldn't; it just runs unattended on a timer. Three scripts under
+`Scripts/`:
 
-- **Run once manually:** `./Scripts/ollie-agent-run.sh` (guards: Mac app running, corpus fresh,
-  no run already alive). Logs land in `~/Ollie/agent-runs/<timestamp>.log`.
-- **The prompt** is `Scripts/ollie-runbook.md` — short and directive: honor `get_instructions()`,
-  tag new notes (reuse the vocabulary before inventing), handle request-notes, refresh "Open loops"
-  and "This week", append durable memory sparingly. **Never edits notes** (it can't); never asks
-  questions.
-- **Schedule / cadence:** `Scripts/install-agent-runner.sh` writes + loads
-  `~/Library/LaunchAgents/com.mohammadshobaki.ollie.agent-runner.plist` (`StartInterval` 14400 = 4 h).
-  The `ollie` MCP server + its tool allowlist live in `~/.claude/settings.local.json`; the new write
-  tools (`mcp__ollie__tag_note`, etc.) must be allowlisted there so the headless run never prompts.
+| Script | Role |
+|---|---|
+| `ollie-agent-run.sh` | One pass of the loop. Guards, then invokes headless Claude with the runbook. |
+| `ollie-runbook.md` | The prompt — the 6-step directive the run follows. |
+| `install-agent-runner.sh` | Writes + loads the launchd job that calls the runner on a schedule. |
+
+### Run it once, by hand
+
+```bash
+./Scripts/ollie-agent-run.sh
+```
+
+The **Ollie Mac app must be open** — it is the only store writer, so it is what applies the ops the
+run queues and what keeps the corpus fresh. The runner checks three guards before doing anything:
+
+1. **No run already alive** — a pidfile (`~/Ollie/.agent-run.pid`) whose PID is still running means a
+   prior pass is in flight; the run **skips** (exit 0) so passes never overlap.
+2. **Mac app running** — detected by bundle id `com.mohammadshobaki.handheldnotes`. If it's closed the
+   run **exits quietly** (exit 0) — the normal "not now" case; nothing to work on or apply against.
+3. **Corpus fresh** — `~/Ollie/.ollie.meta.json`'s `exportedAt` must be < 24 h old. A stale corpus
+   means the app hasn't re-exported recently; the run **stops** (exit 1) rather than tag stale data.
+
+**Exit codes:** `0` = ran, or a guard said "not now" (app closed / another run alive); `1` = a hard
+stop (stale corpus, missing runbook, or the Claude invocation failed).
+
+**Logs** land in `~/Ollie/agent-runs/<timestamp>.log` (one per invoking run; the header records the
+model, `agentId`, `since`, and corpus age). Logs older than **30 days** are pruned on each run;
+`launchd.log` is never pruned.
+
+**State:** `~/Ollie/.agent-state.json` holds `{"lastRunAt":"<ISO8601 UTC>"}`, written only on a
+successful run and fed into the prompt so step 3 works `list_notes(since=lastRunAt)` — the run only
+looks at notes since it last succeeded. A failed run does **not** advance it, so the next run re-covers
+the same window.
+
+### The prompt
+
+`Scripts/ollie-runbook.md` is short and directive — honor `get_instructions()`; verify the corpus is
+fresh; tag new notes (reuse the vocabulary before inventing); handle request-notes (`request:open` →
+read-only work → `publish_view` an answer citing the notes → `request:done`); refresh the standing
+views **"Open loops"** and **"This week"**; append durable memory sparingly. It **never edits notes**
+(it can't) and **never asks questions** (no one is watching). The runner substitutes the literal token
+`{{LAST_RUN_AT}}` in it with the state value (or `never` on a first run).
+
+### Cadence + model knobs
+
+- **Cadence** is the launchd `StartInterval` — **14400 s (4 h)** by default. Change it by editing
+  `StartInterval` in the installed plist (or re-running the installer with `START_INTERVAL=<seconds>`),
+  then reload: `launchctl bootout gui/$(id -u)/com.mohammadshobaki.ollie.agent-runner ;
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mohammadshobaki.ollie.agent-runner.plist`.
+- **Model** defaults to `opus`; override per-run with `CLAUDE_MODEL=<model> ./Scripts/ollie-agent-run.sh`,
+  or persist it for the scheduled job by adding it to the plist's `EnvironmentVariables`.
+- Other env knobs the runner honors: `CLAUDE_BIN` (the Claude binary, default `claude` — the tests
+  point it at a stub), `OLLIE_DIR`, `RUNBOOK`, `MAX_CORPUS_AGE_HOURS` (default 24),
+  `LOG_RETENTION_DAYS` (default 30). The op writer's `agentId` is forced to `claude-runner`.
+
+### Install the schedule
+
+```bash
+./Scripts/install-agent-runner.sh          # writes the plist + bootstraps the job
+PRINT_ONLY=1 ./Scripts/install-agent-runner.sh   # dry run: print the plist + commands, install nothing
+```
+
+It writes `~/Library/LaunchAgents/com.mohammadshobaki.ollie.agent-runner.plist` (`StartInterval` 14400,
+`RunAtLoad` false so nothing fires at login, stdout/err → `~/Ollie/agent-runs/launchd.log`) and
+bootstraps it into your GUI launchd domain. Run once immediately to test:
+`launchctl kickstart -k gui/$(id -u)/com.mohammadshobaki.ollie.agent-runner`. Uninstall:
+`launchctl bootout gui/$(id -u)/com.mohammadshobaki.ollie.agent-runner ; rm ~/Library/LaunchAgents/com.mohammadshobaki.ollie.agent-runner.plist`.
+
+### Allowlist the write tools (required for headless)
+
+The `ollie` MCP server + its tool allowlist live in `~/.claude/settings.local.json`. An interactive
+Claude session prompts before each write tool; a **headless run has no one to answer the prompt and
+would stall**, so the write tools must be allowlisted there before the runner (or the launchd job) can
+work. Add them to `permissions.allow`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__ollie__tag_note",
+      "mcp__ollie__untag_note",
+      "mcp__ollie__append_memory",
+      "mcp__ollie__retire_memory",
+      "mcp__ollie__publish_view"
+    ]
+  }
+}
+```
+
+(Or allow the whole server with `"mcp__ollie__*"`, which also covers the read tools the runbook uses.)
+These are *your* notes on *your* machine and every op is attributed and reversible (untag, retire, or
+delete in the app), so broad approval is reasonable — but it's opt-in by design. The scripts do **not**
+edit `~/.claude/` for you; do this once by hand.
