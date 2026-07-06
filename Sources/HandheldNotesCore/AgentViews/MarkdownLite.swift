@@ -1,4 +1,9 @@
 import SwiftUI
+import CryptoKit
+#if os(iOS)
+import UIKit   // UIImpactFeedbackGenerator (iOS-only haptic; guarded so Core still
+               // compiles for macOS/watchOS, where the checklist haptic is a no-op).
+#endif
 
 // MARK: - MarkdownLite
 //
@@ -70,6 +75,43 @@ enum MarkdownBlock: Equatable {
         /// nil = a plain bullet; non-nil = a checklist item with its checked state.
         var checked: Bool?
         var text: String
+        /// The content-derived interaction id for a **checklist** item
+        /// (`cl1:<hash16>:<occ>`, spec §3) — nil for a plain bullet (no interaction).
+        /// Annotated by ``MarkdownLite/blocks(from:)`` because computing the `<occ>`
+        /// ordinal needs the whole document's checklist items in order. It is the join
+        /// key against `InteractionStateEntity`; agents never recompute the hash (the
+        /// export/MCP surfaces carry the snapshotted text instead). Defaults to nil so
+        /// the memberwise init stays source-compatible with call sites that don't set it.
+        var blockId: String? = nil
+    }
+}
+
+/// An optional interaction hook that turns display-only checklist glyphs into tappable
+/// checkboxes (Views v2, spec §5). When a ``MarkdownLite`` is built **with** one, each
+/// checklist item's glyph reflects ``resolved`` (the three-layer resolved state — spec
+/// §1) instead of the body default, and tapping the glyph+label row calls ``onToggle``.
+/// When it is **nil** (the default) the renderer is exactly the v1 display-only surface
+/// — the watch/feed previews stay untouched.
+///
+/// The hook is intentionally value-level plumbing only: the durable write path
+/// (debounce, coalesce, one save per settle) lives in `ViewInteractionModel`, which the
+/// panes own and wire into these two closures. `MarkdownLite` stays dumb.
+public struct ChecklistHook {
+    /// The resolved checked-state for a block, given the body default baked into the
+    /// revision markdown. Layers pending → overlay(-iff-newer) → `bodyChecked` (spec §1)
+    /// are resolved by the caller (`ViewInteractionModel`); the renderer just displays it.
+    public var resolved: (_ blockId: String, _ bodyChecked: Bool) -> Bool
+    /// Called when the user taps a checklist row. `text` is the classifier-captured item
+    /// text (the snapshot stored as `blockText`); the caller flips its pending value and
+    /// restarts the settle timer.
+    public var onToggle: (_ blockId: String, _ text: String) -> Void
+
+    public init(
+        resolved: @escaping (_ blockId: String, _ bodyChecked: Bool) -> Bool,
+        onToggle: @escaping (_ blockId: String, _ text: String) -> Void
+    ) {
+        self.resolved = resolved
+        self.onToggle = onToggle
     }
 }
 
@@ -78,14 +120,26 @@ enum MarkdownBlock: Equatable {
 public struct MarkdownLite: View {
     private let source: String
     private let onOpenNote: (UUID) -> Void
+    /// nil ⇒ exactly v1 display-only glyphs (every existing call site). Non-nil ⇒
+    /// checklist items become interactive (glyph reflects `resolved`, row taps toggle).
+    private let checklist: ChecklistHook?
 
     /// - Parameters:
     ///   - source: the view body (markdown in the §6 dialect).
     ///   - onOpenNote: called with the note id when the reader taps an
     ///     `ollie://note/<uuid>` citation. The host routes it to the note detail.
-    public init(_ source: String, onOpenNote: @escaping (UUID) -> Void) {
+    ///   - checklist: optional interaction hook (spec §5). **Defaults to nil**, which is
+    ///     byte-for-byte the v1 display-only rendering — no existing call site changes.
+    ///     Pass one to make checklist boxes tappable (Views panes do; feed/watch previews
+    ///     don't).
+    public init(
+        _ source: String,
+        onOpenNote: @escaping (UUID) -> Void,
+        checklist: ChecklistHook? = nil
+    ) {
         self.source = source
         self.onOpenNote = onOpenNote
+        self.checklist = checklist
     }
 
     public var body: some View {
@@ -144,28 +198,80 @@ public struct MarkdownLite: View {
 
     @ViewBuilder
     private func listItemView(_ item: MarkdownBlock.ListItem) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // Checklist glyph (display-only) or a plain bullet dot.
-            if let checked = item.checked {
-                Image(systemName: checked ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(checked ? Color.hcAccent : Color.hcSecondaryText)
-            } else {
-                Text("•")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.hcAccent)
+        // Interactive iff a hook is present AND this is a checklist item (has a blockId).
+        // Otherwise it's the v1 display-only row (plain bullet, or a checklist with no
+        // hook — the feed/watch previews).
+        if let hook = checklist, let blockId = item.blockId, let bodyChecked = item.checked {
+            interactiveChecklistRow(item, hook: hook, blockId: blockId, bodyChecked: bodyChecked)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                // Checklist glyph (display-only) or a plain bullet dot.
+                if let checked = item.checked {
+                    Image(systemName: checked ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(checked ? Color.hcAccent : Color.hcSecondaryText)
+                } else {
+                    Text("•")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.hcAccent)
+                }
+                listItemLabel(item.text)
+                Spacer(minLength: 0)
             }
-            Text(inlineAttributed(item.text))
-                .font(.system(size: 15))
-                .foregroundStyle(Color.hcPrimaryText)
-                .lineSpacing(4)
-                .tint(.hcAccent)
-                .fixedSize(horizontal: false, vertical: true)
-                // No .textSelection here: on macOS a selectable Text is AppKit-backed and
-                // routes link clicks through NSWorkspace, bypassing the SwiftUI openURL
-                // handler above — which silently breaks ollie://note citation taps.
+        }
+    }
+
+    /// A tappable checklist row (spec §5): the glyph reflects the caller's resolved
+    /// state, the whole glyph+label row is a hit target, tapping calls `onToggle`, the
+    /// glyph change is animated, and iOS fires a light haptic. Everything else (the label
+    /// styling, the no-`.textSelection` rule for link-bearing Text) matches the v1 row.
+    @ViewBuilder
+    private func interactiveChecklistRow(
+        _ item: MarkdownBlock.ListItem,
+        hook: ChecklistHook,
+        blockId: String,
+        bodyChecked: Bool
+    ) -> some View {
+        let checked = hook.resolved(blockId, bodyChecked)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: checked ? "checkmark.square.fill" : "square")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(checked ? Color.hcAccent : Color.hcSecondaryText)
+                .animation(.snappy(duration: 0.18), value: checked)
+            listItemLabel(item.text)
             Spacer(minLength: 0)
         }
+        // The whole row (glyph + label + trailing space) is the hit target. `.contentShape`
+        // makes the Spacer region tappable too. Use a plain tap gesture rather than a
+        // Button so the label's inline `ollie://` links keep routing through the openURL
+        // handler instead of being swallowed by a button's own hit testing.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Self.checklistHaptic()
+            hook.onToggle(blockId, item.text)
+        }
+    }
+
+    /// The shared label styling for a list item — identical for display-only and
+    /// interactive rows. **No `.textSelection`**: on macOS a selectable Text is
+    /// AppKit-backed and routes link clicks through NSWorkspace, bypassing the SwiftUI
+    /// openURL handler above — which silently breaks `ollie://note` citation taps.
+    private func listItemLabel(_ text: String) -> some View {
+        Text(inlineAttributed(text))
+            .font(.system(size: 15))
+            .foregroundStyle(Color.hcPrimaryText)
+            .lineSpacing(4)
+            .tint(.hcAccent)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A light selection haptic on tap — iOS only. Platform-guarded so the file still
+    /// compiles for macOS (and watchOS, though the hook is never wired there): AppKit has
+    /// no `UIImpactFeedbackGenerator`, so on every non-iOS platform this is a no-op.
+    private static func checklistHaptic() {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
     }
 
     private func codeBlockView(info: String, code: String) -> some View {
@@ -302,6 +408,11 @@ public struct MarkdownLite: View {
         var blocks: [MarkdownBlock] = []
         var pendingList: [MarkdownBlock.ListItem] = []
 
+        // Document-order occurrence counter per hash16, so `<occ>` is assigned across
+        // the WHOLE body (spec §3) — not reset per list. Two identical checklist items
+        // anywhere in the body get occ 0, 1, … in the order they appear.
+        var occByHash: [String: Int] = [:]
+
         func flushList() {
             if !pendingList.isEmpty {
                 blocks.append(.list(pendingList))
@@ -336,10 +447,17 @@ public struct MarkdownLite: View {
                 blocks.append(.heading(level: level, text: text))
 
             case let .checklist(checked, text):
-                pendingList.append(.init(checked: checked, text: text))
+                // Annotate with the content-derived blockId (spec §3). The hash is over
+                // the classifier-captured text (this exact `text`); `occ` is the running
+                // document-order ordinal among items sharing that hash.
+                let hash = Self.hash16(ofChecklistText: text)
+                let occ = occByHash[hash, default: 0]
+                occByHash[hash] = occ + 1
+                pendingList.append(.init(checked: checked, text: text,
+                                         blockId: "cl1:\(hash):\(occ)"))
 
             case let .bullet(text):
-                pendingList.append(.init(checked: nil, text: text))
+                pendingList.append(.init(checked: nil, text: text, blockId: nil))
 
             case .blank:
                 flushList()   // a blank ends any open list / paragraph run
@@ -352,6 +470,29 @@ public struct MarkdownLite: View {
         }
         flushList()
         return blocks
+    }
+
+    // MARK: - blockId derivation (content-addressed checklist ids — spec §3)
+
+    /// The `<hash16>` component of a checklist item's `blockId` (`cl1:<hash16>:<occ>`):
+    /// the first **16 lowercase hex chars** of SHA-256 over the **UTF-8 bytes of the
+    /// item text exactly as ``classify(line:)`` captures it** (post-marker, trimmed,
+    /// raw inline markdown — *not* rendered text). Pure and platform-shared (CryptoKit
+    /// exists on macOS 10.15+/iOS 13+, well within Core's floor), so the same text
+    /// yields the same id on Mac and iPhone — the ids agree by construction (spec §3).
+    ///
+    /// Reword ⇒ different bytes ⇒ different hash ⇒ the old interaction state detaches and
+    /// the item falls back to the body default (fails safe). This is an internal join
+    /// key; agents never recompute it (the export/MCP surfaces carry `blockText`).
+    static func hash16(ofChecklistText text: String) -> String {
+        let digest = SHA256.hash(data: Data(text.utf8))
+        // Lowercase hex; take the first 16 characters (= first 8 bytes).
+        var hex = ""
+        hex.reserveCapacity(16)
+        for byte in digest.prefix(8) {
+            hex += String(format: "%02x", byte)
+        }
+        return hex
     }
 
     // MARK: - ollie://note/<uuid> citation parsing
