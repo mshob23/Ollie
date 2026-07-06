@@ -85,7 +85,9 @@ final class NoteEntityStoreTests: XCTestCase {
 // target doesn't need to reach into the @MainActor production factory.
 extension NotesDataStore {
     static func makeContainerForTesting() -> ModelContainer {
-        let schema = Schema([NoteEntity.self])
+        // Mirror the production container: the FULL synced schema (notes + agent
+        // layer), so tests exercise the same store shape the app ships.
+        let schema = Schema(modelTypes)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try! ModelContainer(for: schema, configurations: [config])
     }

@@ -1,29 +1,45 @@
-# Every CloudKit field the app can EVER write to CD_NoteEntity — the source of
-# truth for the release-time Production-schema check (verify-prod-schema.sh) and
-# the CKFieldCoverageTests unit test (which derives this list from the live
-# NoteEntity model, so drift between the model and this file fails `swift test`).
+# Every CloudKit field the app can EVER write across all synced record types — the
+# source of truth for the release-time Production-schema check (verify-prod-schema.sh)
+# and the CKFieldCoverageTests unit test (which derives this list from the live
+# SwiftData models, so drift between the models and this file fails `swift test`).
+#
+# Record types the container mirrors: CD_NoteEntity (notes ground truth) plus the
+# agent layer — CD_TagEntity, CD_MemoryEntity, CD_ViewRevisionEntity,
+# CD_InstructionsEntity. Field names below are the flat union across those types
+# (CloudKit prefixes stored fields CD_<name>; shared names like CD_id / CD_createdAt
+# / CD_agentId recur across types and are listed once). verify-prod-schema.sh greps
+# each name against the exported Production schema.
 #
 # RULES (learned from two production outages — see docs/cloudkit-sync-troubleshooting.md):
-#  - every stored attribute `x` on NoteEntity appears here as CD_x
+#  - every stored attribute `x` on any synced model appears here as CD_x
 #  - every Data-typed attribute ALSO needs its lazily-materialized CKAsset twin
 #    CD_x_ckAsset (CoreData+CloudKit switches from inline bytes to an Asset when a
 #    value crosses the size threshold — Development auto-creates the field at that
 #    moment; Production REJECTS it and the whole export batch wedges, silently)
 #  - after editing this file: add the field(s) in the CloudKit Dashboard's
 #    Development schema, then Deploy Schema Changes to Production
+CD_agentId
 CD_audioData
 CD_audioData_ckAsset
 CD_audioFileName
+CD_body
 CD_createdAt
 CD_durationSeconds
 CD_engineUsed
 CD_id
 CD_isFavorite
+CD_isRestricted
 CD_kindRaw
 CD_latitude
 CD_longitude
+CD_noteId
 CD_placeLabel
+CD_retired
+CD_retiredAt
 CD_schemaVersion
 CD_sourceRaw
+CD_tag
+CD_text
 CD_transcript
 CD_updatedAt
+CD_viewName

@@ -21,6 +21,21 @@ public enum NotesDataStore {
     /// container the user creates in the Developer portal.
     public static let cloudKitContainerID = "iCloud.com.mohammadshobaki.handheldnotes"
 
+    /// The full set of `@Model` types the synced store mirrors: the notes ground
+    /// truth plus the agent layer (tags, memory, view revisions, instructions). This
+    /// is the SINGLE source of truth for the schema — the container factory, the
+    /// store-URL derivation, and the tests all build `Schema` from this so a new
+    /// entity is added in exactly one place. Any change here shifts the golden
+    /// fingerprint (`SchemaGoldenTests`) by design; regenerate it and deploy the
+    /// CloudKit Production schema before release (see RELEASE.md).
+    public static let modelTypes: [any PersistentModel.Type] = [
+        NoteEntity.self,
+        TagEntity.self,
+        MemoryEntity.self,
+        ViewRevisionEntity.self,
+        InstructionsEntity.self,
+    ]
+
     /// True if the live container ended up CloudKit-backed (vs. the local
     /// fallback). Surfaced for diagnostics / a Settings indicator; never gates
     /// behavior — the app works identically either way. `@MainActor` because it's
@@ -39,7 +54,7 @@ public enum NotesDataStore {
     /// degrades to a local-only store if that can't be constructed. `inMemory`
     /// is for tests.
     @MainActor public static func makeContainer(inMemory: Bool = false) -> ModelContainer {
-        let schema = Schema([NoteEntity.self])
+        let schema = Schema(modelTypes)
 
         if inMemory {
             let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
@@ -100,7 +115,7 @@ public enum NotesDataStore {
     /// `…/default.store` file URL; its parent directory is what we return. Returns
     /// `nil` only if SwiftData yields no URL (it always does for an on-disk config).
     public static func storeDirectory() -> URL? {
-        let schema = Schema([NoteEntity.self])
+        let schema = Schema(modelTypes)
         let config = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
         return config.url.deletingLastPathComponent()
     }

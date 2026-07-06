@@ -62,7 +62,7 @@ public struct PlaceStamp: Codable, Hashable, Sendable {
 /// title.
 public struct Note: Identifiable, Codable, Hashable, Sendable {
     /// Bump when the record's shape changes in a way a future migration branches on.
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public let id: UUID
     public var transcript: String
@@ -80,6 +80,11 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
     public var durationSeconds: Double?
     public var engineUsed: String?
     public var isFavorite: Bool
+    /// The gate flag. When true, this note is *restricted*: it and everything derived
+    /// from it never leave the device boundary — the export gate omits it (and its
+    /// tags) from `~/Ollie/` and prunes any previously-exported copy. Default false.
+    /// See `docs/agent-contract.md` §5.
+    public var isRestricted: Bool
     /// The record-shape version this note was written with (see
     /// ``currentSchemaVersion``); lets future migrations reason about old rows.
     public var schemaVersion: Int
@@ -96,6 +101,7 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
         durationSeconds: Double? = nil,
         engineUsed: String? = nil,
         isFavorite: Bool = false,
+        isRestricted: Bool = false,
         schemaVersion: Int = Note.currentSchemaVersion
     ) {
         self.id = id
@@ -109,6 +115,7 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
         self.durationSeconds = durationSeconds
         self.engineUsed = engineUsed
         self.isFavorite = isFavorite
+        self.isRestricted = isRestricted
         self.schemaVersion = schemaVersion
     }
 
@@ -129,6 +136,9 @@ public struct Note: Identifiable, Codable, Hashable, Sendable {
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         engineUsed = try c.decodeIfPresent(String.self, forKey: .engineUsed)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        // Tolerant: a note written before the gate existed (no `isRestricted` key)
+        // decodes as not-restricted.
+        isRestricted = try c.decodeIfPresent(Bool.self, forKey: .isRestricted) ?? false
         let decodedKind = try c.decodeIfPresent(CaptureKind.self, forKey: .kind)
         kind = decodedKind ?? (audioFileName != nil ? .voice : .text)
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1

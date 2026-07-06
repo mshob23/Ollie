@@ -14,12 +14,13 @@ import XCTest
 /// write was rejected (see `docs/cloudkit-sync-troubleshooting.md` §1).
 ///
 /// This test makes that class of mistake **loud at build time**: it serializes the
-/// live SwiftData `Schema([NoteEntity.self])` to a deterministic, sorted string,
-/// hashes it (SHA256), and compares against a committed golden value. The moment
-/// `NoteEntity` changes shape, the hash diverges and the test FAILS with explicit
-/// instructions to (a) regenerate the golden and (b) deploy the Production schema
-/// before release. A green run is the human-readable proof that "the schema the
-/// code expects == the schema we last deployed."
+/// live SwiftData `Schema(NotesDataStore.modelTypes)` (every synced `@Model` — the
+/// notes ground truth plus the agent-layer entities) to a deterministic, sorted
+/// string, hashes it (SHA256), and compares against a committed golden value. The
+/// moment any of those entities changes shape, the hash diverges and the test FAILS
+/// with explicit instructions to (a) regenerate the golden and (b) deploy the
+/// Production schema before release. A green run is the human-readable proof that
+/// "the schema the code expects == the schema we last deployed."
 ///
 /// The serialization is intentionally deterministic (entities and properties are
 /// sorted by name) so it never churns between runs or machines, and it captures
@@ -29,13 +30,14 @@ import XCTest
 final class SchemaGoldenTests: XCTestCase {
 
     /// The committed fingerprint of the schema that has been (or must be) deployed
-    /// to the CloudKit **Production** environment. Regenerate this whenever
-    /// `NoteEntity` legitimately changes — see ``regenerationInstructions`` and the
-    /// failure message below. Keep it in sync with the checked-in
+    /// to the CloudKit **Production** environment. Regenerate this whenever any synced
+    /// `@Model` in `NotesDataStore.modelTypes` legitimately changes — see
+    /// ``regenerationInstructions`` and the failure message below. Keep it in sync
+    /// with the checked-in
     /// `Tests/HandheldNotesCoreTests/Resources/schema.golden` file (both hold the
     /// same hash); the test prefers the file when present and falls back to this
     /// constant so the gate still works if the resource is ever stripped.
-    static let goldenHash = "a6bd27053d1e45379136d4a3be0f040739b402ac7215cb15dfd5b3df2356854e"
+    static let goldenHash = "64eb442ba072e725609209619179fddf9edb2229627a3aae73fdd9a59797fa58"
 
     func testSchemaMatchesDeployedGolden() {
         let fingerprint = Self.schemaFingerprint()
@@ -91,7 +93,11 @@ final class SchemaGoldenTests: XCTestCase {
     /// the output independent of declaration order / runtime ordering, so the hash
     /// only moves when the schema's *shape* actually changes.
     static func schemaFingerprint() -> String {
-        let schema = Schema([NoteEntity.self])
+        // Fingerprint the FULL synced schema (notes ground truth + the agent-layer
+        // entities), from the single source of truth so a new entity is captured
+        // here automatically. Entities and properties are sorted below, so order in
+        // `modelTypes` doesn't matter.
+        let schema = Schema(NotesDataStore.modelTypes)
         var lines: [String] = ["schemaVersion=\(Note.currentSchemaVersion)"]
 
         for entity in schema.entities.sorted(by: { $0.name < $1.name }) {

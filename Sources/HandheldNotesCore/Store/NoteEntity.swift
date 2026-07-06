@@ -50,6 +50,11 @@ public final class NoteEntity {
     public var durationSeconds: Double?
     public var engineUsed: String?
     public var isFavorite: Bool = false
+    /// The gate flag. When true, this note is *restricted*: it and everything
+    /// derived from it never leave the device boundary (the export gate omits it
+    /// from `~/Ollie/` and prunes any previously-exported copy). Default false;
+    /// mirrors `Note.isRestricted`. See `docs/agent-contract.md` §5.
+    public var isRestricted: Bool = false
     public var schemaVersion: Int = Note.currentSchemaVersion
 
     /// The recording bytes, synced via iCloud and stored outside the main row.
@@ -72,6 +77,7 @@ public final class NoteEntity {
         durationSeconds: Double? = nil,
         engineUsed: String? = nil,
         isFavorite: Bool = false,
+        isRestricted: Bool = false,
         schemaVersion: Int = Note.currentSchemaVersion,
         audioData: Data? = nil
     ) {
@@ -88,6 +94,7 @@ public final class NoteEntity {
         self.durationSeconds = durationSeconds
         self.engineUsed = engineUsed
         self.isFavorite = isFavorite
+        self.isRestricted = isRestricted
         self.schemaVersion = schemaVersion
         self.audioData = audioData
     }
@@ -140,6 +147,7 @@ public extension Note {
             durationSeconds: entity.durationSeconds,
             engineUsed: entity.engineUsed,
             isFavorite: entity.isFavorite,
+            isRestricted: entity.isRestricted,
             schemaVersion: entity.schemaVersion)
     }
 }
@@ -163,6 +171,7 @@ public extension NoteEntity {
             durationSeconds: note.durationSeconds,
             engineUsed: note.engineUsed,
             isFavorite: note.isFavorite,
+            isRestricted: note.isRestricted,
             schemaVersion: note.schemaVersion,
             audioData: audioData)
     }
@@ -181,6 +190,7 @@ public extension NoteEntity {
         durationSeconds = note.durationSeconds
         engineUsed = note.engineUsed
         isFavorite = note.isFavorite
+        isRestricted = note.isRestricted
         schemaVersion = note.schemaVersion
     }
 }
