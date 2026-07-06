@@ -13,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Inject the macOS Carbon hotkey manager as the core's CaptureHotKeyController
     // so the platform-agnostic AppModel can drive Quick Capture without Carbon.
     private let model = AppModel(captureHotKeys: { handler in HotKeyManager(callback: handler) })
+    /// The inbox door (contract §4): watches `~/Ollie/inbox/` and applies external
+    /// agents' op files through the store. Mac-only — the Mac app is the only store
+    /// writer. Held for the app's lifetime; it shares `AppModel`'s process-wide store
+    /// (`NotesDataStore.shared`) so an applied op is visible to the next export.
+    private let inboxIngestor = InboxIngestor(container: NotesDataStore.shared)
     private var statusItem: NSStatusItem?
     private var quickPadPanel: NSPanel?
     /// The app that was frontmost when the quick pad opened, so focus can return
@@ -69,6 +74,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // zero pushes for our container until this was added.) Silent/content-available
         // pushes need no user permission, so there's nothing to prompt for.
         NSApp.registerForRemoteNotifications()
+
+        // Open the inbox door (contract §4): drain whatever accumulated while closed
+        // (startup scan = crash recovery), then watch `~/Ollie/inbox/` for external
+        // agents' op files. An applied batch posts `InboxIngestor.didApplyBatch`,
+        // which `AppModel` observes to re-export the layer promptly.
+        inboxIngestor.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

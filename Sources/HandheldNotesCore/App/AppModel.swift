@@ -665,6 +665,14 @@ public final class AppModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: .NSPersistentStoreRemoteChange,
             object: nil, queue: .main, using: refresh)
+        // 3) The inbox ingestor applied a batch of external ops (contract §4). It
+        //    writes through a context on the same store, so `didSave` above already
+        //    fires — but the ingestor posts this explicit signal too so the re-export
+        //    is a deliberate, once-per-batch consequence of ingestion rather than an
+        //    incidental side effect of a save. Same handler: re-project + re-export.
+        NotificationCenter.default.addObserver(
+            forName: InboxIngestor.didApplyBatch,
+            object: nil, queue: .main, using: refresh)
     }
 
     /// After the Mac wakes from sleep, re-project the store a few times with backoff.
