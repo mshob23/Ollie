@@ -306,6 +306,134 @@ def test_get_view_revision_limit(ollie_dir, write_jsonl):
     assert len(detail["revisions"]) == 2       # but metadata capped
 
 
+# ── get_view.interactions — precedence filtering (Views v2 spec §1, §6) ───────────
+
+def _interaction(view: str, block: str, value: str, updated: str,
+                 text: str = "the item", kind: str = "checkbox") -> dict:
+    return {"viewName": view, "blockId": block, "blockText": text, "kind": kind,
+            "value": value, "revisionId": "r", "surface": "ios",
+            "updatedAt": updated}
+
+
+def test_load_interactions_reads_file(ollie_dir, write_jsonl):
+    write_jsonl(ollie_dir / "interactions.jsonl",
+                [_interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z")])
+    rows = L.load_interactions()
+    assert len(rows) == 1 and rows[0]["blockId"] == "cl1:a:0"
+
+
+def test_load_interactions_missing_file_empty(ollie_dir):
+    assert L.load_interactions() == []
+
+
+def test_get_view_includes_applying_interactions(ollie_dir, write_jsonl):
+    # Revision at 05:00; a toggle at 06:00 is NEWER → it applies.
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "Open loops", "body": "- [ ] the item",
+                  "agentId": "claude-runner", "createdAt": "2026-07-06T05:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl",
+                [_interaction("Open loops", "cl1:a:0", "true", "2026-07-06T06:00:00Z",
+                              text="Call the plumber — ollie://note/x")])
+    detail = L.get_view("Open loops")
+    assert "interactions" in detail
+    assert len(detail["interactions"]) == 1
+    row = detail["interactions"][0]
+    # Denormalized agent shape: exactly {blockId, blockText, value, updatedAt}.
+    assert set(row) == {"blockId", "blockText", "value", "updatedAt"}
+    assert row["blockId"] == "cl1:a:0"
+    assert row["value"] == "true"
+    assert row["blockText"] == "Call the plumber — ollie://note/x"
+    assert row["updatedAt"] == "2026-07-06T06:00:00Z"
+
+
+def test_get_view_excludes_superseded_interactions(ollie_dir, write_jsonl):
+    # Revision at 07:00 is NEWER than the toggle at 06:00 → the toggle is superseded
+    # (publishing acknowledges/resets interaction, spec §1) → NOT returned.
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "Open loops", "body": "- [ ] the item",
+                  "agentId": "claude-runner", "createdAt": "2026-07-06T07:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl",
+                [_interaction("Open loops", "cl1:a:0", "true", "2026-07-06T06:00:00Z")])
+    detail = L.get_view("Open loops")
+    assert detail["interactions"] == [], "a toggle older than the latest revision is superseded"
+
+
+def test_get_view_interactions_equal_timestamp_is_superseded(ollie_dir, write_jsonl):
+    # Boundary: updatedAt == revision.createdAt does NOT apply (strictly-newer rule).
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "V", "body": "- [ ] x", "agentId": "a",
+                  "createdAt": "2026-07-06T06:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl",
+                [_interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z")])
+    assert L.get_view("V")["interactions"] == []
+
+
+def test_get_view_interactions_filtered_by_view_name(ollie_dir, write_jsonl):
+    # Only THIS view's rows are returned — another view's applying toggle is excluded.
+    write_jsonl(ollie_dir / "views.jsonl", [
+        {"id": "v1", "viewName": "A", "body": "- [ ] a", "agentId": "x",
+         "createdAt": "2026-07-06T05:00:00Z"},
+        {"id": "v2", "viewName": "B", "body": "- [ ] b", "agentId": "x",
+         "createdAt": "2026-07-06T05:00:00Z"},
+    ])
+    write_jsonl(ollie_dir / "interactions.jsonl", [
+        _interaction("A", "cl1:a:0", "true", "2026-07-06T06:00:00Z"),
+        _interaction("B", "cl1:b:0", "true", "2026-07-06T06:00:00Z"),
+    ])
+    detail = L.get_view("A")
+    assert len(detail["interactions"]) == 1
+    assert detail["interactions"][0]["blockId"] == "cl1:a:0"
+
+
+def test_get_view_interactions_sorted_newest_first(ollie_dir, write_jsonl):
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "V", "body": "b", "agentId": "x",
+                  "createdAt": "2026-07-06T05:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl", [
+        _interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z"),
+        _interaction("V", "cl1:b:0", "false", "2026-07-06T08:00:00Z"),
+        _interaction("V", "cl1:c:0", "true", "2026-07-06T07:00:00Z"),
+    ])
+    order = [r["updatedAt"] for r in L.get_view("V")["interactions"]]
+    assert order == ["2026-07-06T08:00:00Z", "2026-07-06T07:00:00Z", "2026-07-06T06:00:00Z"]
+
+
+def test_get_view_no_interactions_when_none(ollie_dir, write_jsonl):
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "V", "body": "b", "agentId": "x",
+                  "createdAt": "2026-07-06T05:00:00Z"}])
+    assert L.get_view("V")["interactions"] == []
+
+
+def test_applying_interactions_helper_direct(ollie_dir):
+    rows = [
+        _interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z"),   # applies
+        _interaction("V", "cl1:b:0", "true", "2026-07-06T04:00:00Z"),   # superseded
+        _interaction("Other", "cl1:c:0", "true", "2026-07-06T09:00:00Z"),  # wrong view
+    ]
+    applying = L.applying_interactions("V", "2026-07-06T05:00:00Z", rows)
+    assert [r["blockId"] for r in applying] == ["cl1:a:0"]
+
+
+def test_get_view_interactions_survives_pending_view_publish(ollie_dir, write_jsonl):
+    # A pending (un-ingested) view.publish becomes the newest revision via the overlay,
+    # so its ts is the `latestAt` interactions are filtered against. A toggle older than
+    # that pending publish is correctly superseded.
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "V", "body": "old", "agentId": "x",
+                  "createdAt": "2026-07-06T05:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl",
+                [_interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z")])
+    # Pending republish at 07:00 → newer than the 06:00 toggle → toggle superseded.
+    _drop_raw_op(ollie_dir, {
+        "op": "view.publish", "agent": "claude-runner", "via": "inbox",
+        "ts": "2026-07-06T07:00:00Z", "requestId": "rp",
+        "payload": {"viewName": "V", "body": "- [ ] fresh"}})
+    detail = L.get_view("V")
+    assert detail["latestAt"] == "2026-07-06T07:00:00Z"
+    assert detail["interactions"] == [], "the pending republish supersedes the older toggle"
+
+
 # ── Client-side cap validation (reject before writing) ───────────────────────────
 
 def test_validate_tag_caps():

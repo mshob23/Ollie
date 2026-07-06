@@ -8,8 +8,10 @@ import Foundation
 ///     so it's always authoritative.
 ///   • `notes/<id>.md` — one Markdown file per note (frontmatter + body) for humans
 ///     and Obsidian.
-///   • `tags.jsonl` / `memory.jsonl` / `views.jsonl` / `instructions.md` — the agent
-///     layer (contract §5). Written from the `LayerSnapshot` the caller passes.
+///   • `tags.jsonl` / `memory.jsonl` / `views.jsonl` / `instructions.md` /
+///     `interactions.jsonl` — the agent layer (contract §5, Views v2 spec §6). Written
+///     from the `LayerSnapshot` the caller passes; `interactions.jsonl` is orphan-pruned
+///     first (deleted-view + superseded-stale records — spec §6).
 ///
 /// **The export gate runs here.** Notes (and their tags) are routed through
 /// ``CorpusGate`` so restricted content — a note marked `isRestricted` and everything
@@ -32,17 +34,23 @@ public enum CorpusExporter {
         public var memory: [AgentMemory]
         public var viewRevisions: [AgentViewRevision]
         public var instructions: String
+        /// The live interaction state across all views (Views v2 spec §6) — one record
+        /// per `(viewName, blockId)`, exported to `interactions.jsonl`. Empty on the
+        /// corpus-only / wipe / backup paths.
+        public var interactions: [ViewInteraction]
 
         public init(
             tags: [AgentTag] = [],
             memory: [AgentMemory] = [],
             viewRevisions: [AgentViewRevision] = [],
-            instructions: String = ""
+            instructions: String = "",
+            interactions: [ViewInteraction] = []
         ) {
             self.tags = tags
             self.memory = memory
             self.viewRevisions = viewRevisions
             self.instructions = instructions
+            self.interactions = interactions
         }
 
         /// The empty layer — nothing to write (used by the wipe / backup paths).
@@ -196,60 +204,137 @@ public enum CorpusExporter {
             }
         }
 
-        // 3) The agent layer (contract §5): tags.jsonl (gated), memory.jsonl,
-        //    views.jsonl, instructions.md. Best-effort, same atomic write as ollie.jsonl.
-        //    A layer-file failure is logged but does NOT block the note corpus or meta —
-        //    the corpus is the load-bearing artifact; the layer files are additive.
-        writeLayer(exportableTags: exportableTags, layer: layer, dir: dir)
+        // 3) The agent layer (contract §5, Views v2 spec §6): tags.jsonl (gated),
+        //    memory.jsonl, views.jsonl, instructions.md, interactions.jsonl (pruned).
+        //    Best-effort, same atomic write as ollie.jsonl. A layer-file failure is
+        //    logged but does NOT block the note corpus or meta — the corpus is the
+        //    load-bearing artifact; the layer files are additive. Returns the exported
+        //    (post-prune) interaction count for the meta below.
+        let interactionCount = writeLayer(exportableTags: exportableTags, layer: layer, dir: dir)
 
         // 4) Only after a SUCCESSFUL JSONL write, refresh the staleness sidecar so a
         //    reader can trust it. Writing meta after a failed corpus write would
         //    falsely advertise a fresh export. Meta carries the layer counts (contract
-        //    §5) reflecting what was actually written (gated tags; full memory/views).
+        //    §5) reflecting what was actually written (gated tags; full memory/views;
+        //    post-prune interactions).
         if jsonlOK {
             writeMeta(
                 noteCount: written,
                 layerCounts: LayerCounts(
                     tags: exportableTags.count,
                     memory: layer.memory.count,
-                    viewRevisions: layer.viewRevisions.count))
+                    viewRevisions: layer.viewRevisions.count,
+                    interactions: interactionCount))
         }
     }
 
-    /// The `layerCounts` block in `.ollie.meta.json` (contract §5). Reflects what was
-    /// actually exported: **gated** tag count, full memory + view-revision counts.
+    /// The `layerCounts` block in `.ollie.meta.json` (contract §5 + Views v2 spec §6).
+    /// Reflects what was actually exported: **gated** tag count, full memory +
+    /// view-revision counts, and the **post-prune** interaction count.
     private struct LayerCounts {
         let tags: Int
         let memory: Int
         let viewRevisions: Int
+        let interactions: Int
     }
 
-    /// Write the four agent-layer artifacts. Each is best-effort and independent — one
+    /// Write the five agent-layer artifacts. Each is best-effort and independent — one
     /// failing (logged) never blocks the others or the note corpus.
-    ///   • `tags.jsonl`     — the **gated** tags (restricted-note tags already removed).
-    ///   • `memory.jsonl`   — all memory, retired entries included and flagged.
-    ///   • `views.jsonl`    — every view revision, full body (snapshots, not diffs).
-    ///   • `instructions.md`— the plain-markdown instructions text.
+    ///   • `tags.jsonl`        — the **gated** tags (restricted-note tags already removed).
+    ///   • `memory.jsonl`      — all memory, retired entries included and flagged.
+    ///   • `views.jsonl`       — every view revision, full body (snapshots, not diffs).
+    ///   • `instructions.md`   — the plain-markdown instructions text.
+    ///   • `interactions.jsonl`— the **pruned** live interaction state (Views v2 spec §6).
     ///
     /// Each JSONL file is written through a dedicated `Encodable` **record** struct
     /// (below) rather than the value type's own `Codable`, so the wire format matches
-    /// the contract §5 shape EXACTLY and stays decoupled from the in-app type (same
-    /// philosophy as `ExportRecord` for notes). Notably `tags.jsonl` omits the tag
+    /// the contract §5 / spec §6 shape EXACTLY and stays decoupled from the in-app type
+    /// (same philosophy as `ExportRecord` for notes). Notably `tags.jsonl` omits the tag
     /// record's `id` — the contract shape is `{"noteId","tag","agentId","createdAt"}`.
     ///
     /// Files are written even when their source is empty, so a reader sees an
     /// authoritative empty file rather than a stale one (mirrors `ollie.jsonl`'s
     /// wholesale rewrite). `instructions.md` is written empty (`""`) when there are no
     /// instructions — never left dangling from a prior export.
-    private static func writeLayer(exportableTags: [AgentTag], layer: LayerSnapshot, dir: URL) {
+    ///
+    /// Returns the count of interaction records actually exported (post-prune), so
+    /// `meta.layerCounts.interactions` matches the `interactions.jsonl` line count.
+    @discardableResult
+    private static func writeLayer(exportableTags: [AgentTag], layer: LayerSnapshot, dir: URL) -> Int {
         write(jsonlLines: exportableTags.map(TagRecord.init), to: dir.appendingPathComponent("tags.jsonl"))
         write(jsonlLines: layer.memory.map(MemoryRecord.init), to: dir.appendingPathComponent("memory.jsonl"))
         write(jsonlLines: layer.viewRevisions.map(ViewRecord.init), to: dir.appendingPathComponent("views.jsonl"))
+        // Interaction state (Views v2 spec §6): views export in full, so their
+        // interaction state does too (same gate reasoning — nothing here can cite a
+        // restricted transcript the view itself couldn't). Pruned first (orphan pass).
+        let liveInteractions = prunedInteractions(layer.interactions, revisions: layer.viewRevisions)
+        write(jsonlLines: liveInteractions.map(InteractionRecord.init),
+              to: dir.appendingPathComponent("interactions.jsonl"))
         let instructionsURL = dir.appendingPathComponent("instructions.md")
         do {
             try layer.instructions.write(to: instructionsURL, atomically: true, encoding: .utf8)
         } catch {
             Diag.log("HNDIAG export FAILED to write \(instructionsURL.path): \(error)")
+        }
+        return liveInteractions.count
+    }
+
+    /// The orphan-prune pass for interaction state (Views v2 spec §6), the interaction
+    /// analogue of the `.md` prune. Two records drop out:
+    ///   1. **Deleted-view records** — the record's `viewName` no longer appears in any
+    ///      exported revision. Its view is gone; the state can never apply again.
+    ///   2. **Superseded, stale records** — the record's `blockId` is absent from its
+    ///      view's **latest** revision **and** `updatedAt < latestRevision.createdAt`
+    ///      **and** the record is older than 30 days. All three must hold: an item the
+    ///      agent hasn't re-published (absent from latest) whose state the newer body
+    ///      already supersedes (older than that body — spec §1) and which has had 30
+    ///      days to be consumed. A fresh toggle, or one on a view the agent hasn't
+    ///      touched since, is kept.
+    ///
+    /// Records whose block is still present in the latest revision are always kept (the
+    /// user's checkmark is live). This runs against the SAME revision snapshot being
+    /// exported, so the `blockId`s are derived identically to the renderer (spec §3).
+    static func prunedInteractions(
+        _ interactions: [ViewInteraction],
+        revisions: [AgentViewRevision],
+        now: Date = Date()
+    ) -> [ViewInteraction] {
+        // Latest revision per view (exact-name match, latest createdAt wins) — the
+        // same "latest wins" rule the display + precedence use.
+        var latestByView: [String: AgentViewRevision] = [:]
+        for r in revisions {
+            if let existing = latestByView[r.viewName] {
+                if r.createdAt > existing.createdAt { latestByView[r.viewName] = r }
+            } else {
+                latestByView[r.viewName] = r
+            }
+        }
+        // The set of live blockIds in each view's latest revision (derived exactly as
+        // the renderer does — spec §3). Computed lazily + cached per view name.
+        var liveBlockIdsByView: [String: Set<String>] = [:]
+        func liveBlockIds(_ view: String) -> Set<String>? {
+            guard let latest = latestByView[view] else { return nil }
+            if let cached = liveBlockIdsByView[view] { return cached }
+            let ids = MarkdownLite.checklistBlockIds(in: latest.body)
+            liveBlockIdsByView[view] = ids
+            return ids
+        }
+
+        let ageCutoff = now.addingTimeInterval(-30 * 24 * 60 * 60)   // 30 days
+        return interactions.filter { rec in
+            guard let latest = latestByView[rec.viewName] else {
+                return false   // (1) the whole view is gone → prune
+            }
+            let liveIds = liveBlockIds(rec.viewName) ?? []
+            if liveIds.contains(rec.blockId) {
+                return true    // block still in the latest revision → keep (live checkmark)
+            }
+            // (2) absent from latest — prune only if the newer body supersedes it AND
+            //     it's had 30 days. Otherwise keep (recent toggle, or a view the agent
+            //     hasn't re-published since — its state may still apply on read).
+            let superseded = rec.updatedAt < latest.createdAt
+            let old = rec.updatedAt < ageCutoff
+            return !(superseded && old)
         }
     }
 
@@ -307,6 +392,33 @@ public enum CorpusExporter {
         }
     }
 
+    /// `interactions.jsonl` line — Views v2 spec §6:
+    /// `{"viewName","blockId","blockText","kind","value","revisionId","surface","updatedAt"}`.
+    /// One line per live interaction record (post-prune). Denormalized: it carries
+    /// `blockText` so agents never recompute the `blockId` hash (spec §3). The record
+    /// `id` is omitted — the logical key is `(viewName, blockId)`, mirroring how
+    /// `TagRecord` omits its id.
+    private struct InteractionRecord: Encodable {
+        let viewName: String
+        let blockId: String
+        let blockText: String
+        let kind: String
+        let value: String
+        let revisionId: String
+        let surface: String
+        let updatedAt: Date
+        init(_ i: ViewInteraction) {
+            viewName = i.viewName
+            blockId = i.blockId
+            blockText = i.blockText
+            kind = i.kind
+            value = i.value
+            revisionId = i.revisionId.uuidString
+            surface = i.surface
+            updatedAt = i.updatedAt
+        }
+    }
+
     /// Encode a list of `Encodable` records as JSONL (one compact record per line,
     /// trailing newline) and atomically write it — the same shape/round-trip as
     /// `ollie.jsonl`. An empty list writes an empty file (authoritative, not stale).
@@ -332,10 +444,11 @@ public enum CorpusExporter {
     /// Write `~/Ollie/.ollie.meta.json` describing the just-completed export:
     /// ```json
     /// { "exportedAt": <ISO8601 now>, "noteCount": N, "schemaVersion": 3,
-    ///   "layerCounts": {"tags":N, "memory":N, "viewRevisions":N} }
+    ///   "layerCounts": {"tags":N, "memory":N, "viewRevisions":N, "interactions":N} }
     /// ```
     /// The MCP server reads this to surface staleness ("corpus older than ~24h"), to
-    /// know the expected note count, and (as of schema v3) the agent-layer sizes.
+    /// know the expected note count, and (as of schema v3) the agent-layer sizes. The
+    /// `interactions` count is **additive** (Views v2 spec §6) — no meta version bump.
     /// Failures are logged, never swallowed.
     private static func writeMeta(noteCount: Int, layerCounts: LayerCounts) {
         let meta: [String: Any] = [
@@ -346,6 +459,7 @@ public enum CorpusExporter {
                 "tags": layerCounts.tags,
                 "memory": layerCounts.memory,
                 "viewRevisions": layerCounts.viewRevisions,
+                "interactions": layerCounts.interactions,
             ],
         ]
         do {

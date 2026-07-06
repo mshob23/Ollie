@@ -788,12 +788,15 @@ public final class AppModel: ObservableObject {
         // value types are all Sendable, so it rides safely into the detached export task.
         //
         // `views.jsonl` is EVERY revision, full body (contract §5) — reuse the
-        // `allRevisions` gathered above rather than re-querying.
+        // `allRevisions` gathered above rather than re-querying. `interactions.jsonl`
+        // (Views v2 spec §6) is the live per-block state across all views; the exporter
+        // orphan-prunes it against `allRevisions` before writing.
         let layer = CorpusExporter.LayerSnapshot(
             tags: allTags,
             memory: allMemory,
             viewRevisions: allRevisions,
-            instructions: layerStore.instructions())
+            instructions: layerStore.instructions(),
+            interactions: layerStore.allInteractions())
         CorpusExporter.exportInBackground(notes, layer: layer)
         #endif
     }

@@ -32,6 +32,7 @@ final class CorpusExporterGuardTests: XCTestCase {
     private var memoryURL: URL { dir.appendingPathComponent("memory.jsonl") }
     private var viewsURL: URL { dir.appendingPathComponent("views.jsonl") }
     private var instructionsURL: URL { dir.appendingPathComponent("instructions.md") }
+    private var interactionsURL: URL { dir.appendingPathComponent("interactions.jsonl") }
     private func text(_ url: URL) -> String { (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
     /// Non-empty JSONL lines in a file (drops the trailing newline's empty tail).
     private func lines(_ url: URL) -> [String] {
@@ -318,5 +319,166 @@ final class CorpusExporterGuardTests: XCTestCase {
         CorpusExporter.export([note("an ordinary transcript")])
         XCTAssertFalse(jsonl().contains("\"media\""),
                        "the reserved media field must be omitted until photo notes exist")
+    }
+
+    // MARK: - M7 (7d): interactions.jsonl export + prune + meta count
+
+    /// A view + its one live checklist item, and an interaction record keyed to that
+    /// item's real `blockId` (derived exactly as the renderer does — spec §3), toggled
+    /// *after* the revision so it applies. `at`/`revAt` control the precedence timing.
+    private func viewRevision(
+        _ name: String = "Open loops",
+        body: String,
+        at t: TimeInterval = 100
+    ) -> AgentViewRevision {
+        AgentViewRevision(viewName: name, body: body, agentId: "claude-mac",
+                          createdAt: Date(timeIntervalSince1970: t))
+    }
+    private func interaction(
+        view: String = "Open loops",
+        blockId: String,
+        text: String = "Call the plumber",
+        value: String = "true",
+        at t: TimeInterval
+    ) -> ViewInteraction {
+        ViewInteraction(viewName: view, blockId: blockId, blockText: text,
+                        value: value, surface: "ios",
+                        updatedAt: Date(timeIntervalSince1970: t))
+    }
+    /// The `blockId` the renderer assigns to the sole checklist item in `body`.
+    private func onlyBlockId(_ body: String) -> String {
+        let ids = MarkdownLite.checklistBlockIds(in: body)
+        return ids.first ?? "cl1:missing:0"
+    }
+    private func interactionCountInMeta() -> Int? {
+        (meta()?["layerCounts"] as? [String: Any])?["interactions"] as? Int
+    }
+
+    /// The interactions.jsonl line shape (spec §6): denormalized `blockText`, the
+    /// logical-key fields, and NO record `id` (keyed by `(viewName, blockId)`).
+    func testInteractionsFileHasSpecShapeAndDenormalizedBlockText() {
+        let body = "- [ ] Call the plumber — ollie://note/x"
+        let rev = viewRevision(body: body, at: 100)
+        let bid = onlyBlockId(body)
+        let inter = interaction(blockId: bid, text: "Call the plumber — ollie://note/x",
+                                value: "true", at: 200)  // toggled after the revision
+        CorpusExporter.export([note("n")],
+                              layer: .init(viewRevisions: [rev], interactions: [inter]))
+
+        let ls = lines(interactionsURL)
+        XCTAssertEqual(ls.count, 1)
+        let line = ls[0]
+        XCTAssertTrue(line.contains("\"viewName\":\"Open loops\""))
+        XCTAssertTrue(line.contains("\"blockId\":\"\(bid)\""))
+        XCTAssertTrue(line.contains("\"blockText\":\"Call the plumber — ollie://note/x\""),
+                      "blockText is denormalized so agents never recompute the hash")
+        XCTAssertTrue(line.contains("\"value\":\"true\""))
+        XCTAssertTrue(line.contains("\"kind\":\"checkbox\""))
+        XCTAssertTrue(line.contains("\"surface\":\"ios\""))
+        XCTAssertFalse(line.contains("\"id\":"),
+                       "the interaction record id is omitted (keyed by viewName+blockId)")
+    }
+
+    /// interactions.jsonl appears (empty) even with no interaction records, like the
+    /// other layer files — a reader never trips over a missing file.
+    func testInteractionsFileAppearsEvenWhenEmpty() {
+        CorpusExporter.export([note("solo")])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: interactionsURL.path))
+        XCTAssertEqual(lines(interactionsURL).count, 0)
+        XCTAssertEqual(interactionCountInMeta(), 0, "meta.layerCounts.interactions is additive")
+    }
+
+    /// meta.layerCounts.interactions equals the exported (post-prune) line count.
+    func testMetaInteractionsCountMatchesExportedLines() {
+        let bodyA = "- [ ] item A"
+        let bodyB = "- [ ] item B"
+        let revA = viewRevision("A", body: bodyA, at: 100)
+        let revB = viewRevision("B", body: bodyB, at: 100)
+        let iA = interaction(view: "A", blockId: onlyBlockId(bodyA), at: 200)
+        let iB = interaction(view: "B", blockId: onlyBlockId(bodyB), at: 200)
+        CorpusExporter.export([note("n")],
+                              layer: .init(viewRevisions: [revA, revB], interactions: [iA, iB]))
+
+        XCTAssertEqual(lines(interactionsURL).count, 2)
+        XCTAssertEqual(interactionCountInMeta(), 2)
+    }
+
+    /// PRUNE (1): a record whose view no longer exists (no revision carries its
+    /// `viewName`) is dropped — the view is gone, the state can never apply.
+    func testPruneDropsRecordsOfDeletedView() {
+        let liveBody = "- [ ] still here"
+        let liveRev = viewRevision("Live", body: liveBody, at: 100)
+        let liveInter = interaction(view: "Live", blockId: onlyBlockId(liveBody), at: 200)
+        // A record for a view with NO revision in this export → its view was deleted.
+        let orphan = interaction(view: "Deleted", blockId: "cl1:dead:0", at: 200)
+        CorpusExporter.export([note("n")],
+                              layer: .init(viewRevisions: [liveRev],
+                                           interactions: [liveInter, orphan]))
+
+        let ls = lines(interactionsURL)
+        XCTAssertEqual(ls.count, 1, "the deleted-view record is pruned")
+        XCTAssertTrue(text(interactionsURL).contains("\"viewName\":\"Live\""),
+                      "the live-view record survives")
+        XCTAssertFalse(text(interactionsURL).contains("\"viewName\":\"Deleted\""),
+                       "a record for a view with no revision is dropped")
+    }
+
+    /// KEEP: a record whose `blockId` is still present in the view's latest revision is
+    /// always kept — the user's checkmark is live, regardless of age.
+    func testPruneKeepsRecordWhoseBlockIsStillInLatestRevision() {
+        let body = "- [ ] persistent task"
+        // Latest revision is 40 days old; the toggle is 35 days old (older than the
+        // revision AND > 30 days) — but the block is STILL in the latest body, so keep.
+        let now = Date()
+        let rev = viewRevision(body: body, at: now.addingTimeInterval(-40*86400).timeIntervalSince1970)
+        let inter = interaction(blockId: onlyBlockId(body),
+                                at: now.addingTimeInterval(-35*86400).timeIntervalSince1970)
+        let kept = CorpusExporter.prunedInteractions([inter], revisions: [rev], now: now)
+        XCTAssertEqual(kept.count, 1, "a block still in the latest revision is never pruned")
+    }
+
+    /// PRUNE (2): a record absent from the latest revision, older than that revision,
+    /// AND older than 30 days — all three hold → pruned (superseded + stale).
+    func testPruneDropsSupersededStaleRecord() {
+        let now = Date()
+        // Latest revision (10 days ago) NO LONGER contains the old item's block.
+        let latestBody = "- [ ] a different item"
+        let rev = viewRevision(body: latestBody, at: now.addingTimeInterval(-10*86400).timeIntervalSince1970)
+        // The record's block isn't in `latestBody`; toggled 40 days ago (before the
+        // revision AND > 30 days old).
+        let staleGoneBlock = "cl1:oldoldoldoldold:0"
+        let inter = interaction(blockId: staleGoneBlock,
+                                at: now.addingTimeInterval(-40*86400).timeIntervalSince1970)
+        let kept = CorpusExporter.prunedInteractions([inter], revisions: [rev], now: now)
+        XCTAssertTrue(kept.isEmpty,
+                      "absent-from-latest + superseded + >30 days → pruned")
+    }
+
+    /// KEEP: absent from the latest revision and superseded, but NOT yet 30 days old →
+    /// kept (the user's recent toggle gets a grace window before we drop it).
+    func testPruneKeepsRecentlyTouchedRecordEvenIfAbsentFromLatest() {
+        let now = Date()
+        let latestBody = "- [ ] a different item"
+        let rev = viewRevision(body: latestBody, at: now.addingTimeInterval(-5*86400).timeIntervalSince1970)
+        // Absent block, but toggled only 2 days ago (< 30 days) → keep.
+        let inter = interaction(blockId: "cl1:recentgone:0",
+                                at: now.addingTimeInterval(-2*86400).timeIntervalSince1970)
+        let kept = CorpusExporter.prunedInteractions([inter], revisions: [rev], now: now)
+        XCTAssertEqual(kept.count, 1, "a recent toggle is kept even if its block left the latest body")
+    }
+
+    /// KEEP: absent from latest and >30 days old, but the toggle is NEWER than the
+    /// latest revision (not superseded) → kept (the user acted after the last publish).
+    func testPruneKeepsRecordNewerThanLatestRevisionEvenIfAbsentAndOld() {
+        let now = Date()
+        // Latest revision is 60 days old; the toggle is 40 days old — older than 30
+        // days, absent from the (different) latest body, but NEWER than the revision.
+        let latestBody = "- [ ] a different item"
+        let rev = viewRevision(body: latestBody, at: now.addingTimeInterval(-60*86400).timeIntervalSince1970)
+        let inter = interaction(blockId: "cl1:userlater:0",
+                                at: now.addingTimeInterval(-40*86400).timeIntervalSince1970)
+        let kept = CorpusExporter.prunedInteractions([inter], revisions: [rev], now: now)
+        XCTAssertEqual(kept.count, 1,
+                       "a toggle newer than the latest revision still applies — never pruned")
     }
 }

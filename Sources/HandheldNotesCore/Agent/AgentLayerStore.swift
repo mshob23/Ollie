@@ -145,6 +145,25 @@ public struct AgentLayerStore {
         return collapsed
     }
 
+    /// **All** live interaction state across every view — the source for the
+    /// `interactions.jsonl` export (Views v2 spec §6). Duplicate keys are collapsed
+    /// per `(viewName, blockId)`, latest `updatedAt` winning (same LWW read semantics
+    /// as ``interactions(viewName:)``, applied store-wide). Newest first. Never
+    /// mutates — losers are pruned opportunistically by the exporter's orphan pass.
+    public func allInteractions() -> [ViewInteraction] {
+        let d = FetchDescriptor<InteractionStateEntity>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        let all = ((try? context.fetch(d)) ?? []).map(ViewInteraction.init(entity:))
+        // Collapse duplicate keys — key on (viewName, blockId), first seen (newest) wins.
+        var seen = Set<String>()
+        var collapsed: [ViewInteraction] = []
+        for i in all {
+            let key = i.viewName + "\u{0}" + i.blockId   // NUL joiner — can't appear in either field
+            if seen.insert(key).inserted { collapsed.append(i) }
+        }
+        return collapsed
+    }
+
     // MARK: - Mutations (mechanical validation here; throws AgentLayerError)
 
     /// Apply one agent op. Validates mechanics (ids exist, sizes within caps) and

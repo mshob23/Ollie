@@ -324,7 +324,7 @@ public struct MarkdownLite: View {
     /// Classify a single line of a view body per the §6 line-based dialect. Pure: the
     /// result depends only on `line` (fence pairing is the block parser's job). This
     /// is the contract the ``MarkdownLineKind`` tests pin down.
-    public static func classify(line: String) -> MarkdownLineKind {
+    nonisolated public static func classify(line: String) -> MarkdownLineKind {
         // Blank = only whitespace.
         if line.trimmingCharacters(in: .whitespaces).isEmpty {
             return .blank
@@ -373,7 +373,7 @@ public struct MarkdownLite: View {
 
     /// Recognize a checklist line (`- [ ] task` / `- [x] done`) and pull its state +
     /// label, or return nil if it isn't one. Case-insensitive on the `x`.
-    private static func checklistItem(_ s: Substring) -> (checked: Bool, text: String)? {
+    nonisolated private static func checklistItem(_ s: Substring) -> (checked: Bool, text: String)? {
         // Marker must be one of - * + then a space then `[`.
         guard let marker = s.first, "-*+".contains(marker) else { return nil }
         var rest = s.dropFirst()
@@ -400,7 +400,7 @@ public struct MarkdownLite: View {
     /// (collecting the literal lines between as a monospaced block), group runs of
     /// bullets/checklist items into one list, coalesce prose, drop blank separators.
     /// Internal (the view uses it); the *classifier* is the public, tested contract.
-    static func blocks(from source: String) -> [MarkdownBlock] {
+    nonisolated static func blocks(from source: String) -> [MarkdownBlock] {
         // Split on newlines, preserving empty lines (paragraph separators). Handles
         // both \n and \r\n.
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
@@ -484,7 +484,7 @@ public struct MarkdownLite: View {
     /// Reword ⇒ different bytes ⇒ different hash ⇒ the old interaction state detaches and
     /// the item falls back to the body default (fails safe). This is an internal join
     /// key; agents never recompute it (the export/MCP surfaces carry `blockText`).
-    static func hash16(ofChecklistText text: String) -> String {
+    nonisolated static func hash16(ofChecklistText text: String) -> String {
         let digest = SHA256.hash(data: Data(text.utf8))
         // Lowercase hex; take the first 16 characters (= first 8 bytes).
         var hex = ""
@@ -493,6 +493,23 @@ public struct MarkdownLite: View {
             hex += String(format: "%02x", byte)
         }
         return hex
+    }
+
+    /// The set of checklist-item `blockId`s present in a view body, derived exactly as
+    /// the renderer derives them (`blocks(from:)` — spec §3, including occurrence
+    /// ordinals). Used by the exporter's interaction-prune pass to decide which stored
+    /// interaction records still correspond to a live item in a revision. Plain bullets
+    /// (no `blockId`) and non-checklist content are excluded.
+    nonisolated public static func checklistBlockIds(in source: String) -> Set<String> {
+        var ids: Set<String> = []
+        for block in blocks(from: source) {
+            if case let .list(items) = block {
+                for item in items {
+                    if let id = item.blockId { ids.insert(id) }
+                }
+            }
+        }
+        return ids
     }
 
     // MARK: - ollie://note/<uuid> citation parsing

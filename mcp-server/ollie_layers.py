@@ -9,6 +9,8 @@ The Ollie Mac app exports four agent-layer artifacts next to `ollie.jsonl`
     ~/Ollie/memory.jsonl        {"id","text","agentId","createdAt","retired","retiredAt"?}
     ~/Ollie/views.jsonl         {"id","viewName","body","agentId","createdAt"}  (every revision)
     ~/Ollie/instructions.md     plain markdown
+    ~/Ollie/interactions.jsonl  {"viewName","blockId","blockText","kind","value",
+                                 "revisionId","surface","updatedAt"}  (Views v2 spec §6)
 
 …and ingests op files the *other* way, from `~/Ollie/inbox/` (contract §3.4):
 
@@ -91,6 +93,10 @@ def instructions_path() -> Path:
     return _ollie_dir() / "instructions.md"
 
 
+def interactions_path() -> Path:
+    return _ollie_dir() / "interactions.jsonl"
+
+
 def inbox_dir() -> Path:
     return _ollie_dir() / "inbox"
 
@@ -144,6 +150,18 @@ def load_instructions() -> str:
         return p.read_text(encoding="utf-8") if p.exists() else ""
     except OSError:
         return ""
+
+
+def load_interactions() -> list[dict]:
+    """Raw exported interaction state (Views v2 spec §6): `{"viewName","blockId",
+    "blockText","kind","value","revisionId","surface","updatedAt"}` per line — the
+    user's per-block checkbox toggles on views. The Mac app already orphan-prunes this
+    file (deleted-view + superseded-stale records), so every row here is live; the
+    *applying* subset per view is filtered by `get_view` under the precedence rule
+    (spec §1: an overlay applies iff its `updatedAt` is newer than the displayed
+    revision). Interaction state has **no inbox op** — it's user-authored/app-written,
+    so there is no overlay to fold; this file is the whole truth."""
+    return _load_jsonl(interactions_path())
 
 
 # ── Inbox / pending ops (the un-ingested tail the overlay reads) ─────────────────
@@ -440,19 +458,60 @@ def list_views(inbox: Path | None = None) -> list[dict]:
     return rows
 
 
+def applying_interactions(view_name: str, latest_at: str,
+                          interactions: list[dict] | None = None) -> list[dict]:
+    """The interaction rows that **apply** to a view's latest revision under the
+    precedence rule (Views v2 spec §1): an overlay applies iff its `updatedAt` is
+    strictly newer than the displayed revision's `createdAt` — a newer revision
+    supersedes older interaction state (publishing is the acknowledgment). Filters
+    `interactions` (defaults to `load_interactions()`) to `view_name` and to rows with
+    `updatedAt > latest_at`, returning each as the denormalized agent shape
+    `{blockId, blockText, value, updatedAt}` (spec §6 — `blockText` is carried so the
+    agent never recomputes the hash), newest first.
+
+    ISO-8601 UTC timestamps compare correctly as strings (fixed width, `Z` suffix),
+    so a lexical `>` is the temporal `>`; an empty/absent `latest_at` (no revision)
+    admits every row for the view."""
+    rows = interactions if interactions is not None else load_interactions()
+    out: list[dict] = []
+    for r in rows:
+        if str(r.get("viewName", "")) != view_name:
+            continue
+        updated = str(r.get("updatedAt", ""))
+        if updated <= latest_at:          # not newer than the displayed revision → superseded
+            continue
+        out.append({
+            "blockId": r.get("blockId", ""),
+            "blockText": r.get("blockText", ""),
+            "value": r.get("value", ""),
+            "updatedAt": updated,
+        })
+    out.sort(key=lambda r: r["updatedAt"], reverse=True)
+    return out
+
+
 def get_view(name: str, revision_limit: int = 5, inbox: Path | None = None) -> dict:
-    """One view by exact `name`: the latest revision's full `body` plus metadata for
-    up to `revision_limit` recent revisions (newest first). Returns
-    `{name, body, latestAt, latestAgent, revisionCount, revisions:[{createdAt,agentId,pending?},…]}`.
-    The `revisions` list is metadata only (no bodies — call again per revision if you
-    need an older body; prior bodies live in `views.jsonl`). `{"error": …}` if no
-    such view exists. The body is the §3.5 markdown dialect: `ollie://note/<uuid>`
-    citations and forward-compat fenced blocks."""
+    """One view by exact `name`: the latest revision's full `body`, its **applying**
+    interaction state, plus metadata for up to `revision_limit` recent revisions
+    (newest first). Returns `{name, body, latestAt, latestAgent, revisionCount,
+    revisions:[{createdAt,agentId,pending?},…], interactions:[{blockId,blockText,
+    value,updatedAt},…]}`. The `revisions` list is metadata only (no bodies — call
+    again per revision if you need an older body; prior bodies live in `views.jsonl`).
+    `{"error": …}` if no such view exists. The body is the §3.5 markdown dialect:
+    `ollie://note/<uuid>` citations and forward-compat fenced blocks.
+
+    `interactions` are the user's checkbox toggles that still APPLY to the latest
+    revision (Views v2 spec §1 — only rows whose `updatedAt` is newer than the
+    returned revision; a republish retires older state). Consume them per the runbook:
+    act on each checked item, then republish this view dropping it or baking in
+    `- [x]` — the republish is the acknowledgment. Never write or delete interaction
+    records."""
     groups = _group_views(effective_views(inbox))
     revs = groups.get(name)
     if not revs:
         return {"error": f"No view named {name!r}"}
     latest = revs[0]
+    latest_at = latest.get("createdAt", "")
     meta: list[dict] = []
     for r in revs[: max(0, revision_limit)]:
         row = {"createdAt": r.get("createdAt", ""), "agentId": r.get("agentId", "")}
@@ -462,10 +521,11 @@ def get_view(name: str, revision_limit: int = 5, inbox: Path | None = None) -> d
     return {
         "name": name,
         "body": latest.get("body", ""),
-        "latestAt": latest.get("createdAt", ""),
+        "latestAt": latest_at,
         "latestAgent": latest.get("agentId", ""),
         "revisionCount": len(revs),
         "revisions": meta,
+        "interactions": applying_interactions(name, latest_at),
     }
 
 

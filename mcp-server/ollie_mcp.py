@@ -143,13 +143,22 @@ def list_views() -> list[dict]:
 
 @mcp.tool()
 def get_view(name: str, revision_limit: int = 5) -> dict:
-    """One view by exact `name`: the latest revision's full markdown `body` plus
-    metadata for up to `revision_limit` recent revisions. Returns
-    `{name, body, latestAt, latestAgent, revisionCount, revisions:[{createdAt,
-    agentId[, pending]}]}`, or `{"error": …}` if there's no such view. Read a view
-    before republishing it so you extend rather than clobber it. Body dialect (§3.5):
+    """One view by exact `name`: the latest revision's full markdown `body`, the user's
+    APPLYING checkbox `interactions`, plus metadata for up to `revision_limit` recent
+    revisions. Returns `{name, body, latestAt, latestAgent, revisionCount,
+    revisions:[{createdAt, agentId[, pending]}], interactions:[{blockId, blockText,
+    value, updatedAt}]}`, or `{"error": …}` if there's no such view. Read a view before
+    republishing it so you extend rather than clobber it. Body dialect (§3.5):
     `ollie://note/<uuid>` links cite notes (the app makes them tappable); fenced code
-    blocks render as plain monospaced panels."""
+    blocks render as plain monospaced panels.
+
+    `interactions` is the checkbox state the user set that STILL APPLIES to this latest
+    revision (only rows newer than it — a republish supersedes older state). For each
+    with `value:"true"`, ACT on the item (`blockText` is the item's text; if it cites
+    `ollie://note/<uuid>`, tag that note, e.g. `done` or `request:done`), then republish
+    this view dropping the item or baking in `- [x]` — the republish IS the
+    acknowledgment (it retires the consumed state). NEVER write or delete interaction
+    records; there is no tool for that by design (they are user-authored)."""
     return layers.get_view(name, revision_limit)
 
 

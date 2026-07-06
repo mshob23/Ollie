@@ -32,8 +32,24 @@ Work through these six steps in order, then stop.
    - Anything that needs an **outside-world action** (sending mail, buying a thing,
      calling someone) is out of scope — you cannot act. Note that in the view instead.
 
-5. **Refresh the standing views.** Update two living views from the recent corpus,
-   each with `publish_view` (publishing appends a new revision — that's expected):
+5. **Consume checked items, then refresh the standing views.** For each existing view
+   (`list_views()`), first read `get_view(name)` and handle its `interactions` — the
+   checkboxes the user ticked that still **apply** to the latest revision (rows with
+   `value:"true"`; only rows newer than that revision are returned, so a prior
+   republish has already retired anything you consumed before):
+   - **Act on the checked item.** `blockText` is the item's text. If it cites a note
+     (`ollie://note/<uuid>`), tag that note to reflect the completion — `done`, or
+     `request:done` if the item was a request you'd opened.
+   - **Republish the view to acknowledge it.** `publish_view(name, body)` with the item
+     either **dropped** or rewritten as `- [x]`. Publishing a newer revision is *how*
+     you acknowledge interaction — it retires the older checkbox state so it stops
+     applying (a recurring item you republish as `- [ ]` correctly resets, and the old
+     checkmark does not bleed back). **Never** try to write or delete interaction
+     records — there is no tool for that; they are the user's, and the republish is the
+     only acknowledgment.
+
+   Then update the two standing views from the recent corpus (publishing appends a new
+   revision — that's expected):
    - **"Open loops"** — unresolved threads, open questions, things left hanging.
    - **"This week"** — a short digest of what was captured recently.
    Cite notes as `ollie://note/<uuid>` in both.
