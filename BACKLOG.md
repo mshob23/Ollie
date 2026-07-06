@@ -52,6 +52,34 @@ shipped on TestFlight build 7 + the notarized Mac `.dmg`.
 - **MCP server over the exported folder (Mac).** Lets Claude/agents query the corpus
   directly as a tool. Natural once Rung 3 export exists.
 
+## The agent layer (Rungs 5–8) — in progress
+
+*Approved July 2026. Turns rented intelligence into cached, owned understanding written
+back into the store — tags + memory + views, gated so restricted notes never leave the
+device. Full spec: [`AGENT_LAYER_PLAN.md`](./AGENT_LAYER_PLAN.md); the canonical data
+contract is [`docs/agent-contract.md`](docs/agent-contract.md). Scope: build through
+Views v1; defer watch views, Views v2 interactive blocks, photo notes, and the on-device
+agent (schemas reserve room for all four).*
+
+- **Rung 5 — agent write-back.** *In progress.* Agents write **tags** (cached judgment)
+  and **memory** (a codebook of shorthand/preferences/dead-ends) back into the store as
+  append-only, attributed records. New SwiftData entities + `AgentLayerStore` choke point
+  (plan M1), an inbox op protocol the Mac app validates and applies (M3), and MCP write
+  tools + read-your-writes overlay (M4). Notes stay immutable ground truth; the layer is
+  derived and disposable.
+- **Rung 6 — the gate.** *Planned.* A note can be marked *restricted*; it and everything
+  derived from it (its tag lines, its `.md`) are filtered out of everything under
+  `~/Ollie/`. Restriction is contagious, encoded once in `CorpusGate`. Export v3 (plan
+  M2) + a restriction toggle in the apps (M5b).
+- **Rung 7 — views v1.** *Planned.* Agents publish named living documents ("Open loops",
+  "This week") as immutable revisions; the apps render a **Views** feed with history and
+  tappable `ollie://note/<uuid>` citations. Shared `MarkdownLite` renderer + a Views tab
+  on iOS and a Views pane on Mac (plan M5a/M5e/M5f).
+- **Rung 8 — the agent runner (the loop).** *Planned.* A launchd-scheduled headless
+  Claude session on the Mac periodically tags new notes, fulfills request-notes ("Ollie,
+  look into…"), and refreshes views. Speak into the watch on the sidewalk; the answer is
+  in the Views tab by the time you're home (plan M6).
+
 ## Consider
 
 - **Just use it.** The app is on your devices. A couple weeks of real capture will

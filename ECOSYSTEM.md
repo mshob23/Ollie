@@ -88,9 +88,33 @@ A single **iCloud / CloudKit** store, backed by SwiftData, is shared by the Mac 
 
 ---
 
+## The three layers (the agent layer, approved July 2026)
+
+Ollie's thesis in one line: **capture is dumb, intelligence is rented, the data is owned.** The whole
+system sorts into three layers, and the *agent layer* is what's being built now (through **Views v1**):
+
+| Layer | What it is | State |
+|---|---|---|
+| **Capture** | The three surfaces above → transcribe → save. Immediate, never waits on anything. | ✅ shipped |
+| **Owned store** | One CloudKit/SwiftData library. **Notes are immutable ground truth**; the agent layer (tags · memory · view revisions · instructions) is *derived, attributed, regenerable, disposable* data alongside them. | notes ✅ · agent layer 🔨 |
+| **Rented intelligence** | Agents (a Claude session / a scheduled Mac runner) read the corpus and write back through a validated inbox → the Mac app applies. Understanding is **cached**, not baked in. | 🔨 building |
+
+Three things make it safe and useful: agents **write back** tags + memory (owned judgment, not a
+one-off chat); a **gate** marks notes *restricted* so they and everything derived from them never
+leave the device; and **views** — named living documents agents publish as immutable revisions,
+rendered as a Views feed with history. A launchd-scheduled runner closes the loop: speak a question
+into the watch on the sidewalk, and the answer is in the Views tab by the time you're home.
+
+The canonical data contract every door conforms to is **[`docs/agent-contract.md`](docs/agent-contract.md)**;
+the implementation plan is [`AGENT_LAYER_PLAN.md`](AGENT_LAYER_PLAN.md); the rung breakdown (Rungs 5–8)
+is in [`BACKLOG.md`](BACKLOG.md).
+
+---
+
 ## Roadmap / next (ordered)
 
 1. **Hardware verification of watch capture** — confirm the press-and-hold record → transfer → note
    path on a real Apple Watch.
 2. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.
-3. **Organization & export** — tags/folders and Markdown export across the synced library.
+3. **The agent layer** — tags · memory · gated export · Views, plus a scheduled Mac agent runner.
+   In progress; see the three-layer section above and [`docs/agent-contract.md`](docs/agent-contract.md).
