@@ -1,9 +1,10 @@
 # Views v2 — user interaction design brief
 
-*Status: **design desired, not yet designed**. Deferred from Views v1 (see
-[`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6 and [`agent-contract.md`](agent-contract.md) §7).
-This brief is self-contained: an implementer should be able to design the interaction model from
-this file + the contract alone.*
+*Status: **RESOLVED** — the six open questions below are answered in
+[`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) (2026-07-06), which is the
+implementable spec. This brief is kept as the problem statement / rationale record. Originally
+deferred from Views v1 (see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6 and
+[`agent-contract.md`](agent-contract.md) §7).*
 
 ## The problem
 
