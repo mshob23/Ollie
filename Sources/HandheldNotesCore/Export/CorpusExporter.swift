@@ -1,19 +1,54 @@
 import Foundation
 
-/// Rung 3 of the exposability ladder: mirror the note corpus to plain, user-owned
-/// files so ANY tool — Obsidian, a script, an LLM, the Ollie MCP server — can read
-/// it. Two shapes from the same data:
+/// Rung 3 of the exposability ladder: mirror the note corpus **and the agent layer**
+/// to plain, user-owned files so ANY tool — Obsidian, a script, an LLM, the Ollie MCP
+/// server — can read them. The shapes, all from the same export pass:
 ///   • `ollie.jsonl` — the whole corpus, one JSON record per line. Machine/LLM fuel;
 ///     this is what the MCP server reads. Rewritten wholesale each export (cheap),
 ///     so it's always authoritative.
 ///   • `notes/<id>.md` — one Markdown file per note (frontmatter + body) for humans
 ///     and Obsidian.
+///   • `tags.jsonl` / `memory.jsonl` / `views.jsonl` / `instructions.md` — the agent
+///     layer (contract §5). Written from the `LayerSnapshot` the caller passes.
 ///
-/// Best-effort + non-fatal; runs off the main actor (the snapshot is a `[Note]`,
-/// which is `Sendable`). **macOS-only for now** — the Mac holds the full
+/// **The export gate runs here.** Notes (and their tags) are routed through
+/// ``CorpusGate`` so restricted content — a note marked `isRestricted` and everything
+/// derived from it — never lands under `~/Ollie/` (contract §0 "restriction is
+/// contagious", §5). Views and memory export in full (they can't carry a restricted
+/// transcript; see `CorpusGate`).
+///
+/// Best-effort + non-fatal; runs off the main actor (the snapshots are `[Note]` /
+/// `LayerSnapshot`, both `Sendable`). **macOS-only for now** — the Mac holds the full
 /// CloudKit-synced corpus and is where the MCP server runs; iOS export (into the
 /// app's Files container) is a backlog item.
 public enum CorpusExporter {
+
+    /// The agent-layer data one export pass writes alongside the notes — a single
+    /// `Sendable` value the caller (`AppModel.reloadNotes`) snapshots on the main actor
+    /// and hands to the detached export task. Empty by default so the corpus-only call
+    /// sites (a genuine wipe, `backup`) don't have to synthesize it.
+    public struct LayerSnapshot: Sendable {
+        public var tags: [AgentTag]
+        public var memory: [AgentMemory]
+        public var viewRevisions: [AgentViewRevision]
+        public var instructions: String
+
+        public init(
+            tags: [AgentTag] = [],
+            memory: [AgentMemory] = [],
+            viewRevisions: [AgentViewRevision] = [],
+            instructions: String = ""
+        ) {
+            self.tags = tags
+            self.memory = memory
+            self.viewRevisions = viewRevisions
+            self.instructions = instructions
+        }
+
+        /// The empty layer — nothing to write (used by the wipe / backup paths).
+        public static let empty = LayerSnapshot()
+    }
+
     /// Test-only override for the export root. When non-nil, `exportDirectory`
     /// returns this instead of `~/Ollie`, so tests can redirect the export at a temp
     /// dir (to assert success) or an unwritable path (to assert failure handling)
@@ -53,16 +88,25 @@ public enum CorpusExporter {
     /// default priority keeps the corpus fresh without contending with interactive UI.
     /// (Spelled `.medium` — the non-deprecated name for `TaskPriority.default`; same
     /// underlying value.)
-    public static func exportInBackground(_ notes: [Note], allowEmpty: Bool = false) {
-        Task.detached(priority: .medium) { export(notes, allowEmpty: allowEmpty) }
+    public static func exportInBackground(
+        _ notes: [Note],
+        layer: LayerSnapshot = .empty,
+        allowEmpty: Bool = false
+    ) {
+        Task.detached(priority: .medium) { export(notes, layer: layer, allowEmpty: allowEmpty) }
     }
 
-    /// Mirror the corpus to disk. Safe on a background thread.
+    /// Mirror the corpus + agent layer to disk. Safe on a background thread.
     ///
-    /// - Parameter allowEmpty: pass `true` ONLY for a genuine wipe (`deleteAllNotes`).
-    ///   By default a zero-note export is REFUSED when a non-empty corpus already
-    ///   exists on disk (see the guard below).
-    public static func export(_ notes: [Note], allowEmpty: Bool = false) {
+    /// - Parameters:
+    ///   - notes: the full note projection (before restriction filtering). Routed
+    ///     through ``CorpusGate`` so restricted notes never reach disk.
+    ///   - layer: the agent-layer snapshot (tags/memory/views/instructions). Tags are
+    ///     gated against `notes`; memory, views, and instructions export in full.
+    ///   - allowEmpty: pass `true` ONLY for a genuine wipe (`deleteAllNotes`). By
+    ///     default a zero-note export is REFUSED when a non-empty corpus already exists
+    ///     on disk (see the guard below).
+    public static func export(_ notes: [Note], layer: LayerSnapshot = .empty, allowEmpty: Bool = false) {
         // De-dup by id first — CloudKit mirroring can briefly surface duplicate-id
         // rows, and the corpus an LLM reads shouldn't contain the same note twice.
         var seen = Set<UUID>()
@@ -80,6 +124,11 @@ public enum CorpusExporter {
         // wipe). `reloadNotes`'s fetch-failure guard is the first line of defense;
         // this is the second, in case a readable-but-momentarily-empty store slips
         // through. A genuine wipe passes `allowEmpty: true` after backing up.
+        //
+        // Keyed on the RAW projection (`notes`), NOT the gated set below: an empty
+        // gated set can be a *legitimate* state (every note restricted) that should
+        // write through, whereas an empty raw projection is the transient-failure
+        // signal this guard exists to catch.
         if notes.isEmpty && !allowEmpty {
             let existing = (try? Data(contentsOf: jsonlURL)) ?? Data()
             if !existing.isEmpty {
@@ -87,6 +136,13 @@ public enum CorpusExporter {
                 return
             }
         }
+
+        // ── THE GATE (contract §5): restricted notes — and their tags — never leave
+        //    the device. Everything below writes the GATED note set; the raw `notes`
+        //    (with its restricted members) is used only to derive the restriction that
+        //    contaminates the tags. Views/memory/instructions export in full.
+        let exportableNotes = CorpusGate.exportableNotes(notes)
+        let exportableTags = CorpusGate.exportableTags(layer.tags, notes: notes)
 
         let notesDir = dir.appendingPathComponent("notes", isDirectory: true)
         let fm = FileManager.default
@@ -98,15 +154,15 @@ public enum CorpusExporter {
             return
         }
 
-        // 1) The whole corpus as JSONL (one compact record per line) — the LLM/MCP
-        //    source of truth. A failed write is LOGGED, not swallowed: a silently
-        //    stale corpus is the exact failure this whole stage exists to prevent.
-        //    (`jsonlURL` computed above, before the empty-corpus guard.)
+        // 1) The whole (gated) corpus as JSONL (one compact record per line) — the
+        //    LLM/MCP source of truth. A failed write is LOGGED, not swallowed: a
+        //    silently stale corpus is the exact failure this whole stage exists to
+        //    prevent. (`jsonlURL` computed above, before the empty-corpus guard.)
         var jsonlOK = false
         // `written` is the count ACTUALLY serialized (a record that fails to encode is
         // dropped), so `meta.noteCount` matches the JSONL line count exactly — a reader
         // that compares them never sees a phantom mismatch.
-        let (jsonl, written) = jsonlString(for: notes)
+        let (jsonl, written) = jsonlString(for: exportableNotes)
         do {
             try jsonl.write(to: jsonlURL, atomically: true, encoding: .utf8)
             jsonlOK = true
@@ -114,8 +170,8 @@ public enum CorpusExporter {
             Diag.log("HNDIAG export FAILED to write \(jsonlURL.path): \(error)")
         }
 
-        // 2) One Markdown file per note (frontmatter + body) for humans / Obsidian.
-        for note in notes {
+        // 2) One Markdown file per (gated) note (frontmatter + body) for humans / Obsidian.
+        for note in exportableNotes {
             let url = notesDir.appendingPathComponent("\(note.id.uuidString).md")
             do {
                 try markdown(for: note).write(to: url, atomically: true, encoding: .utf8)
@@ -124,32 +180,173 @@ public enum CorpusExporter {
             }
         }
 
-        // 2b) Prune orphaned `.md` files — a deleted note used to leave its Markdown
-        //     behind forever, so Obsidian/a human browsing `notes/` saw resurrected
-        //     notes and the directory grew unbounded. Remove any `.md` whose id isn't
-        //     in the current set. Best-effort; the JSONL the MCP reads is already whole.
-        let liveNames = Set(notes.map { "\($0.id.uuidString).md" })
+        // 2b) Prune orphaned `.md` files — best-effort. This does DOUBLE duty:
+        //     (a) a deleted note used to leave its Markdown behind forever, so
+        //         Obsidian/a human browsing `notes/` saw resurrected notes and the
+        //         directory grew unbounded; and
+        //     (b) a note that just became RESTRICTED drops out of `exportableNotes`,
+        //         so its previously-exported `.md` is pruned here too (contract §5 —
+        //         "a note that becomes restricted has its previously-exported `.md`
+        //         pruned"). `liveNames` is built from the GATED set, so any `.md` whose
+        //         id isn't currently exportable is removed.
+        let liveNames = Set(exportableNotes.map { "\($0.id.uuidString).md" })
         if let existing = try? fm.contentsOfDirectory(atPath: notesDir.path) {
             for name in existing where name.hasSuffix(".md") && !liveNames.contains(name) {
                 try? fm.removeItem(at: notesDir.appendingPathComponent(name))
             }
         }
 
-        // 3) Only after a SUCCESSFUL JSONL write, refresh the staleness sidecar so a
+        // 3) The agent layer (contract §5): tags.jsonl (gated), memory.jsonl,
+        //    views.jsonl, instructions.md. Best-effort, same atomic write as ollie.jsonl.
+        //    A layer-file failure is logged but does NOT block the note corpus or meta —
+        //    the corpus is the load-bearing artifact; the layer files are additive.
+        writeLayer(exportableTags: exportableTags, layer: layer, dir: dir)
+
+        // 4) Only after a SUCCESSFUL JSONL write, refresh the staleness sidecar so a
         //    reader can trust it. Writing meta after a failed corpus write would
-        //    falsely advertise a fresh export.
-        if jsonlOK { writeMeta(noteCount: written) }
+        //    falsely advertise a fresh export. Meta carries the layer counts (contract
+        //    §5) reflecting what was actually written (gated tags; full memory/views).
+        if jsonlOK {
+            writeMeta(
+                noteCount: written,
+                layerCounts: LayerCounts(
+                    tags: exportableTags.count,
+                    memory: layer.memory.count,
+                    viewRevisions: layer.viewRevisions.count))
+        }
+    }
+
+    /// The `layerCounts` block in `.ollie.meta.json` (contract §5). Reflects what was
+    /// actually exported: **gated** tag count, full memory + view-revision counts.
+    private struct LayerCounts {
+        let tags: Int
+        let memory: Int
+        let viewRevisions: Int
+    }
+
+    /// Write the four agent-layer artifacts. Each is best-effort and independent — one
+    /// failing (logged) never blocks the others or the note corpus.
+    ///   • `tags.jsonl`     — the **gated** tags (restricted-note tags already removed).
+    ///   • `memory.jsonl`   — all memory, retired entries included and flagged.
+    ///   • `views.jsonl`    — every view revision, full body (snapshots, not diffs).
+    ///   • `instructions.md`— the plain-markdown instructions text.
+    ///
+    /// Each JSONL file is written through a dedicated `Encodable` **record** struct
+    /// (below) rather than the value type's own `Codable`, so the wire format matches
+    /// the contract §5 shape EXACTLY and stays decoupled from the in-app type (same
+    /// philosophy as `ExportRecord` for notes). Notably `tags.jsonl` omits the tag
+    /// record's `id` — the contract shape is `{"noteId","tag","agentId","createdAt"}`.
+    ///
+    /// Files are written even when their source is empty, so a reader sees an
+    /// authoritative empty file rather than a stale one (mirrors `ollie.jsonl`'s
+    /// wholesale rewrite). `instructions.md` is written empty (`""`) when there are no
+    /// instructions — never left dangling from a prior export.
+    private static func writeLayer(exportableTags: [AgentTag], layer: LayerSnapshot, dir: URL) {
+        write(jsonlLines: exportableTags.map(TagRecord.init), to: dir.appendingPathComponent("tags.jsonl"))
+        write(jsonlLines: layer.memory.map(MemoryRecord.init), to: dir.appendingPathComponent("memory.jsonl"))
+        write(jsonlLines: layer.viewRevisions.map(ViewRecord.init), to: dir.appendingPathComponent("views.jsonl"))
+        let instructionsURL = dir.appendingPathComponent("instructions.md")
+        do {
+            try layer.instructions.write(to: instructionsURL, atomically: true, encoding: .utf8)
+        } catch {
+            Diag.log("HNDIAG export FAILED to write \(instructionsURL.path): \(error)")
+        }
+    }
+
+    /// `tags.jsonl` line — contract §5: `{"noteId","tag","agentId","createdAt"}`.
+    /// Deliberately **no `id`**: a tag is identified by `(noteId, tag)`, and the
+    /// contract shape omits the record id.
+    private struct TagRecord: Encodable {
+        let noteId: String
+        let tag: String
+        let agentId: String
+        let createdAt: Date
+        init(_ t: AgentTag) {
+            noteId = t.noteId.uuidString
+            tag = t.tag
+            agentId = t.agentId
+            createdAt = t.createdAt
+        }
+    }
+
+    /// `memory.jsonl` line — contract §5:
+    /// `{"id","text","agentId","createdAt","retired","retiredAt"?}`. Retired entries
+    /// are included and flagged; `retiredAt` is omitted while live (nil optional).
+    private struct MemoryRecord: Encodable {
+        let id: String
+        let text: String
+        let agentId: String
+        let createdAt: Date
+        let retired: Bool
+        let retiredAt: Date?
+        init(_ m: AgentMemory) {
+            id = m.id.uuidString
+            text = m.text
+            agentId = m.agentId
+            createdAt = m.createdAt
+            retired = m.retired
+            retiredAt = m.retiredAt
+        }
+    }
+
+    /// `views.jsonl` line — contract §5:
+    /// `{"id","viewName","body","agentId","createdAt"}`. Every revision, full body
+    /// (snapshots, not diffs).
+    private struct ViewRecord: Encodable {
+        let id: String
+        let viewName: String
+        let body: String
+        let agentId: String
+        let createdAt: Date
+        init(_ v: AgentViewRevision) {
+            id = v.id.uuidString
+            viewName = v.viewName
+            body = v.body
+            agentId = v.agentId
+            createdAt = v.createdAt
+        }
+    }
+
+    /// Encode a list of `Encodable` records as JSONL (one compact record per line,
+    /// trailing newline) and atomically write it — the same shape/round-trip as
+    /// `ollie.jsonl`. An empty list writes an empty file (authoritative, not stale).
+    private static func write<T: Encodable>(jsonlLines values: [T], to url: URL) {
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]   // one line each, NOT pretty
+        var lines: [String] = []
+        lines.reserveCapacity(values.count)
+        for value in values {
+            if let data = try? enc.encode(value), let line = String(data: data, encoding: .utf8) {
+                lines.append(line)
+            }
+        }
+        let text = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            Diag.log("HNDIAG export FAILED to write \(url.path): \(error)")
+        }
     }
 
     /// Write `~/Ollie/.ollie.meta.json` describing the just-completed export:
-    /// `{ "exportedAt": <ISO8601 now>, "noteCount": N, "schemaVersion": <current> }`.
-    /// The MCP server reads this to surface staleness ("corpus older than ~24h") and
-    /// to know the expected note count. Failures are logged, never swallowed.
-    private static func writeMeta(noteCount: Int) {
+    /// ```json
+    /// { "exportedAt": <ISO8601 now>, "noteCount": N, "schemaVersion": 3,
+    ///   "layerCounts": {"tags":N, "memory":N, "viewRevisions":N} }
+    /// ```
+    /// The MCP server reads this to surface staleness ("corpus older than ~24h"), to
+    /// know the expected note count, and (as of schema v3) the agent-layer sizes.
+    /// Failures are logged, never swallowed.
+    private static func writeMeta(noteCount: Int, layerCounts: LayerCounts) {
         let meta: [String: Any] = [
             "exportedAt": ISO8601DateFormatter().string(from: Date()),
             "noteCount": noteCount,
             "schemaVersion": Note.currentSchemaVersion,
+            "layerCounts": [
+                "tags": layerCounts.tags,
+                "memory": layerCounts.memory,
+                "viewRevisions": layerCounts.viewRevisions,
+            ],
         ]
         do {
             let data = try JSONSerialization.data(
@@ -210,6 +407,11 @@ public enum CorpusExporter {
         /// real content — so an LLM reading the corpus doesn't treat `[Transcription
         /// failed: …]` as something the user said. Omitted for healthy notes.
         let transcriptionFailed: Bool?
+        /// **Reserved for photo notes** (contract §5, §7): per-note media references.
+        /// Always `nil` today — and because the encoder omits nil optionals (same as
+        /// `transcriptionFailed`), the key is absent from `ollie.jsonl` entirely until
+        /// photo notes ship. Documented here so readers know the shape it will take.
+        let media: [String]?
 
         init(_ n: Note) {
             id = n.id.uuidString
@@ -224,6 +426,7 @@ public enum CorpusExporter {
             durationSeconds = n.durationSeconds
             hasAudio = n.hasAudio
             transcriptionFailed = n.transcriptionFailed ? true : nil
+            media = nil   // reserved — no media notes today
         }
     }
 

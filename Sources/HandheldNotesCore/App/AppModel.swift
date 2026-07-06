@@ -564,9 +564,27 @@ public final class AppModel: ObservableObject {
         // Keep system Spotlight in sync with the live projection (best-effort, async).
         SpotlightIndexer.index(notes)
         #if os(macOS)
-        // Rung 3: mirror the corpus to ~/Ollie (JSONL + Markdown) for external tools
-        // (Obsidian, the Ollie MCP server, any LLM). Mac-only for now; off-main, best-effort.
-        CorpusExporter.exportInBackground(notes)
+        // Rung 3 + agent layer: mirror the corpus AND the agent layer to ~/Ollie
+        // (JSONL + Markdown) for external tools (Obsidian, the Ollie MCP server, any
+        // LLM). Mac-only for now; off-main, best-effort. The gate (restricted notes +
+        // their tags) is applied inside `CorpusExporter` via `CorpusGate`.
+        //
+        // Gather the layer snapshot from the SAME fresh read context — so a layer
+        // record the inbox ingestor or a CloudKit import just persisted surfaces in
+        // the export on this pass, exactly like the notes do. `AgentLayerStore` is
+        // MainActor (we're on it); the snapshot's value types are all Sendable, so it
+        // rides safely into the detached export task.
+        let layerStore = AgentLayerStore(context: readContext)
+        // `views.jsonl` is EVERY revision, full body (contract §5) — gather them across
+        // all views by flattening each view's revision list (there is no single
+        // all-revisions query; views are few so this is cheap).
+        let allRevisions = layerStore.viewNames().flatMap { layerStore.revisions(viewName: $0) }
+        let layer = CorpusExporter.LayerSnapshot(
+            tags: layerStore.allTags(),
+            memory: layerStore.memory(includeRetired: true),
+            viewRevisions: allRevisions,
+            instructions: layerStore.instructions())
+        CorpusExporter.exportInBackground(notes, layer: layer)
         #endif
     }
 
