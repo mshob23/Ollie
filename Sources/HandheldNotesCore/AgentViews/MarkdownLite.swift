@@ -126,7 +126,9 @@ public struct MarkdownLite: View {
                 .lineSpacing(4)
                 .tint(.hcAccent)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                // No .textSelection here: on macOS a selectable Text is AppKit-backed and
+                // routes link clicks through NSWorkspace, bypassing the SwiftUI openURL
+                // handler above — which silently breaks ollie://note citation taps.
 
         case let .list(items):
             VStack(alignment: .leading, spacing: 6) {
@@ -159,7 +161,9 @@ public struct MarkdownLite: View {
                 .lineSpacing(4)
                 .tint(.hcAccent)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                // No .textSelection here: on macOS a selectable Text is AppKit-backed and
+                // routes link clicks through NSWorkspace, bypassing the SwiftUI openURL
+                // handler above — which silently breaks ollie://note citation taps.
             Spacer(minLength: 0)
         }
     }
