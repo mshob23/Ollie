@@ -338,4 +338,62 @@ final class ViewInteractionModelTests: XCTestCase {
         XCTAssertEqual(rows.count, 1, "boundary cycling rewrites one record in place")
         XCTAssertEqual(rows.first?.value, "false")
     }
+
+    // MARK: - Overlay caching (perf regression: the 0x8BADF00D watchdog crash)
+
+    /// `resolved` must NOT hit the store on every call. The renderer calls it for every
+    /// checklist glyph on every layout pass; when it fetched SwiftData per call, opening
+    /// a checklist-heavy view during a fresh-install CloudKit import blocked the main
+    /// thread past iOS's scene-update watchdog and the app was SIGKILLed (0x8BADF00D).
+    ///
+    /// We can't count fetches (no seam), so we characterize the cache behaviorally: a
+    /// record written **behind the model's back** after the cache has loaded is NOT seen
+    /// by further `resolved` calls (proving no re-fetch), but IS seen by a freshly built
+    /// model (proving the cache is per-model-lifetime and navigation refreshes it).
+    func testResolvedCachesOverlayAndDoesNotRefetchPerCall() {
+        let (store, context) = makeStore()
+        let rev = revision(body: "- [ ] task", at: 1_000)
+        let id = blockId("task")
+
+        let model = makeModel(store: store, revision: rev)
+        // First read loads the (empty) cache → body default.
+        XCTAssertFalse(model.resolved(blockId: id, bodyChecked: false))
+
+        // Write an applicable overlay (updatedAt newer than the revision) directly via a
+        // second store on the same context — bypassing the model entirely.
+        store.setInteractions([ViewInteraction(
+            viewName: "Open loops", blockId: id, blockText: "task",
+            value: "true", revisionId: rev.id, surface: "mac",
+            updatedAt: Date(timeIntervalSince1970: 2_000))])
+
+        // Same model, many calls: still the cached (empty) result → NOT re-fetching.
+        for _ in 0..<50 {
+            XCTAssertFalse(model.resolved(blockId: id, bodyChecked: false),
+                           "resolved must read the cache, not re-fetch the store per call")
+        }
+
+        // A freshly built model (as a re-entered/rebuilt pane makes) DOES see it.
+        let rebuilt = makeModel(store: store, revision: rev)
+        XCTAssertTrue(rebuilt.resolved(blockId: id, bodyChecked: false),
+                      "a rebuilt model reloads the overlay cache")
+        _ = context
+    }
+
+    /// A commit that writes invalidates the cache, so the model reflects its own just-
+    /// written state on the next read (read-your-writes across a settle within one model).
+    func testCommitInvalidatesOverlayCacheForReadYourWrites() {
+        let (store, _) = makeStore()
+        let rev = revision(body: "- [ ] task", at: 1_000)
+        let id = blockId("task")
+
+        let model = makeModel(store: store, revision: rev)
+        XCTAssertFalse(model.resolved(blockId: id, bodyChecked: false)) // loads cache
+        model.toggle(blockId: id, blockText: "task")                    // → pending true
+        model.commitNow()                                               // writes + invalidates
+        XCTAssertEqual(model.saveCount, 1)
+        // Pending is cleared; the value must now come from the refreshed overlay, not a
+        // stale empty cache (which would fall back to the body default `false`).
+        XCTAssertTrue(model.resolved(blockId: id, bodyChecked: false),
+                      "post-commit read reflects the just-written overlay")
+    }
 }

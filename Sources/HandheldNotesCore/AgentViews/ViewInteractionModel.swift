@@ -65,6 +65,17 @@ public final class ViewInteractionModel {
     /// for a block whose overlay doesn't apply (superseded or absent).
     private var bodyDefaults: [String: Bool] = [:]
 
+    /// Cached overlay records for this view (spec §1 layer 2), loaded **once** on first
+    /// read and reused for the model's lifetime. Critical for performance: `resolved`
+    /// runs on **every** checklist glyph on **every** SwiftUI layout pass, so fetching
+    /// the store per call meant O(items × re-renders) synchronous main-thread SwiftData
+    /// fetches — which, colliding with a fresh-install CloudKit import, blocked the main
+    /// thread past iOS's scene-update watchdog (0x8BADF00D) and got the app SIGKILLed.
+    /// One fetch per model lifetime (the model is rebuilt per displayed revision) plus
+    /// one refresh per settle. `nil` = not yet loaded; invalidated after a commit that
+    /// writes so the just-written state is re-read.
+    private var overlayCache: [ViewInteraction]?
+
     /// The single settle task (spec §4): a tap cancels the in-flight one and starts a
     /// fresh 600 ms timer, so a burst of taps collapses to one commit at rest.
     private var settleTask: Task<Void, Never>?
@@ -207,6 +218,7 @@ public final class ViewInteractionModel {
 
         guard !survivors.isEmpty else { return }   // nothing changed → zero writes
         store.setInteractions(survivors)           // one ModelContext save for the batch
+        overlayCache = nil                         // invalidate: next read reflects the write
         saveCount += 1
         onCommit?()
     }
@@ -225,8 +237,18 @@ public final class ViewInteractionModel {
     }
 
     /// The collapsed overlay record for a block (latest `updatedAt` wins on duplicate
-    /// keys), or nil if the user hasn't toggled it. Reads the store's collapsed view.
+    /// keys), or nil if the user hasn't toggled it. Reads the **cached** overlay set —
+    /// never the store per call (see ``overlayCache``); the cache loads lazily on first
+    /// access and is invalidated after a writing commit.
     private func overlay(blockId: String) -> ViewInteraction? {
-        store.interactions(viewName: viewName).first { $0.blockId == blockId }
+        overlays().first { $0.blockId == blockId }
+    }
+
+    /// The view's overlay records, loaded once and cached (see ``overlayCache``).
+    private func overlays() -> [ViewInteraction] {
+        if let cached = overlayCache { return cached }
+        let fetched = store.interactions(viewName: viewName)
+        overlayCache = fetched
+        return fetched
     }
 }
