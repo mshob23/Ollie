@@ -111,4 +111,74 @@ final class AppModelAgentLayerTests: XCTestCase {
         XCTAssertTrue(model.agentMemory.isEmpty,
                       "user-deleting a memory hard-removes it from the snapshot")
     }
+
+    // MARK: - 5e/5f: published views snapshot (feed rows + latest-wins + revisions)
+
+    /// Publishing several revisions across two views surfaces one feed row per view
+    /// (latest revision), and the detail's `revisions(forView:)` returns every revision
+    /// newest-first — the two shapes the Views surfaces read.
+    func testViewsSnapshotLatestPerViewAndRevisionHistory() throws {
+        let model = AppModel(inMemoryStore: true)
+        let store = externalStore(model)
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+        // "Open loops": two revisions (v1 then v2 later). "This week": one.
+        try store.apply(.viewPublish(viewName: "Open loops", body: "loops v1",
+                                     agent: "claude-mac", ts: t0))
+        try store.apply(.viewPublish(viewName: "This week", body: "week v1",
+                                     agent: "claude-runner", ts: t0.addingTimeInterval(10)))
+        try store.apply(.viewPublish(viewName: "Open loops", body: "loops v2",
+                                     agent: "claude-runner", ts: t0.addingTimeInterval(20)))
+        model.refresh()
+
+        // One row per view, newest view first: "Open loops" (latest at +20) before
+        // "This week" (latest at +10).
+        XCTAssertEqual(model.agentViews.latest.map(\.viewName), ["Open loops", "This week"])
+        let openRow = try XCTUnwrap(model.agentViews.latest.first { $0.viewName == "Open loops" })
+        XCTAssertEqual(openRow.body, "loops v2", "the feed row shows the latest revision")
+
+        // Full revision history, newest first.
+        let revs = model.revisions(forView: "Open loops")
+        XCTAssertEqual(revs.map(\.body), ["loops v2", "loops v1"])
+        XCTAssertEqual(model.revisions(forView: "This week").map(\.body), ["week v1"])
+        XCTAssertTrue(model.revisions(forView: "does-not-exist").isEmpty)
+    }
+
+    /// Pinning is a per-device preference: it round-trips through `settings`, toggles,
+    /// and does NOT create a store record.
+    func testPinToggleIsPerDevicePreference() throws {
+        let model = AppModel(inMemoryStore: true)
+        try externalStore(model).apply(.viewPublish(viewName: "Open loops", body: "b",
+                                                    agent: "claude-mac"))
+        model.refresh()
+        XCTAssertNil(model.pinnedViewName)
+
+        model.togglePinnedView("Open loops")
+        XCTAssertEqual(model.pinnedViewName, "Open loops")
+        XCTAssertEqual(model.settings.pinnedViewName, "Open loops", "persisted in settings")
+
+        // Toggling the same view clears it.
+        model.togglePinnedView("Open loops")
+        XCTAssertNil(model.pinnedViewName)
+    }
+
+    /// User-deleting a whole view drops it from the snapshot AND clears a dangling pin.
+    func testUserDeleteViewRemovesRevisionsAndClearsPin() throws {
+        let model = AppModel(inMemoryStore: true)
+        let store = externalStore(model)
+        try store.apply(.viewPublish(viewName: "Doomed", body: "r1", agent: "claude-mac"))
+        try store.apply(.viewPublish(viewName: "Doomed", body: "r2", agent: "claude-mac"))
+        try store.apply(.viewPublish(viewName: "Keeper", body: "k1", agent: "claude-mac"))
+        model.refresh()
+        model.setPinnedView("Doomed")
+        XCTAssertEqual(model.agentViews.latest.count, 2)
+
+        model.userDelete(view: "Doomed")
+        XCTAssertEqual(model.agentViews.latest.map(\.viewName), ["Keeper"],
+                       "the deleted view leaves the feed; the other view stays")
+        XCTAssertTrue(model.revisions(forView: "Doomed").isEmpty,
+                      "all its revisions are gone")
+        XCTAssertNil(model.pinnedViewName,
+                     "deleting the pinned view clears the now-dangling pin")
+    }
 }

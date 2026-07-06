@@ -41,4 +41,29 @@ final class QuickCaptureSettingsTests: XCTestCase {
                        KeyShortcut(keyCode: 49, carbonModifiers: 6144, display: "⌃⌥Space"))
         XCTAssertTrue(back.confirmQuickCaptureBeforeSaving)
     }
+
+    // MARK: - pinnedViewName (M5 5e: per-device Views-feed pin)
+
+    /// An older settings file (no `pinnedViewName` key) tolerant-decodes to nil —
+    /// nothing pinned — without disturbing the other keys.
+    func testOlderSettingsFileHasNoPinnedView() throws {
+        let old = #"{"transcriptionEngineID":"appleSpeech","hasSeededDemo":true}"#
+        let s = try JSONDecoder().decode(NotesSettings.self, from: Data(old.utf8))
+        XCTAssertNil(s.pinnedViewName, "absent key → nothing pinned")
+    }
+
+    /// A pinned view name round-trips, and is OMITTED (not written as null) when nil so
+    /// the settings file stays clean — mirroring `microphoneName`'s `encodeIfPresent`.
+    func testPinnedViewNameRoundTripsAndOmitsWhenNil() throws {
+        var s = NotesSettings()
+        XCTAssertNil(s.pinnedViewName)
+        // nil → key omitted.
+        let emptyRaw = String(decoding: try JSONEncoder().encode(s), as: UTF8.self)
+        XCTAssertFalse(emptyRaw.contains("pinnedViewName"),
+                       "an unset pin should not be written at all")
+        // Set → round-trips.
+        s.pinnedViewName = "Open loops"
+        let back = try JSONDecoder().decode(NotesSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertEqual(back.pinnedViewName, "Open loops")
+    }
 }

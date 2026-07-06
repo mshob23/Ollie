@@ -51,6 +51,13 @@ public struct NotesSettings: Codable, Equatable, Sendable {
     /// device is missing at record time, capture falls back to the system default.
     public var microphoneName: String? = nil
 
+    /// The view name the user has **pinned** to the top of the Views feed, or `nil`
+    /// for none (contract §5 / plan M5). Per-device (a device-local preference, not a
+    /// synced record) — it lives here alongside the mic choice, not in the CloudKit
+    /// store. Tolerant-decoded like every other key: an older settings file simply
+    /// yields `nil` (nothing pinned).
+    public var pinnedViewName: String? = nil
+
     public var engine: TranscriptionEngine {
         TranscriptionEngine(rawValue: transcriptionEngineID) ?? .appleSpeech
     }
@@ -86,6 +93,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         quickPadShortcut = try Self.decodeShortcut(c, .quickPadShortcut, fallback: fresh.quickPadShortcut)
         confirmQuickCaptureBeforeSaving = try c.decodeIfPresent(Bool.self, forKey: .confirmQuickCaptureBeforeSaving) ?? fresh.confirmQuickCaptureBeforeSaving
         microphoneName = try c.decodeIfPresent(String.self, forKey: .microphoneName)
+        pinnedViewName = try c.decodeIfPresent(String.self, forKey: .pinnedViewName)
     }
 
     private static func decodeShortcut(
@@ -102,7 +110,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         case transcriptionEngineID, hasSeededDemo, didImportLegacyJSON,
              syncAudioOverICloud, geotagEnabled,
              holdToDictateShortcut, toggleDictationShortcut, quickPadShortcut,
-             confirmQuickCaptureBeforeSaving, microphoneName
+             confirmQuickCaptureBeforeSaving, microphoneName, pinnedViewName
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -117,6 +125,7 @@ public struct NotesSettings: Codable, Equatable, Sendable {
         try c.encode(quickPadShortcut, forKey: .quickPadShortcut)
         try c.encode(confirmQuickCaptureBeforeSaving, forKey: .confirmQuickCaptureBeforeSaving)
         try c.encodeIfPresent(microphoneName, forKey: .microphoneName)
+        try c.encodeIfPresent(pinnedViewName, forKey: .pinnedViewName)
     }
 
     public static func load() -> NotesSettings {
@@ -146,6 +155,39 @@ public enum RecordingState: Equatable {
     case error(String)
 }
 
+/// A published projection of the **views** layer (contract §5) — one immutable
+/// snapshot the Views surfaces (iOS Views tab, Mac Views pane) render, refreshed on
+/// every `reloadNotes()` so a revision that syncs in from CloudKit or lands via the
+/// inbox appears without any extra plumbing. Value types only (`Sendable`), built
+/// once per reload from the same `AgentLayerStore` read context that projects the
+/// notes — no second projection pass.
+///
+/// The two members are the two shapes the UI needs:
+///   • ``latest`` — the newest revision of each view, newest-view first: exactly the
+///     Views-feed rows (one row per view).
+///   • ``revisionsByView`` — every revision keyed by view name, each list newest
+///     first: what the detail screen's "earlier revisions" list reads (and how the
+///     feed resolves a pinned view's latest revision without re-querying the store).
+public struct AgentLayerSnapshot: Equatable, Sendable {
+    /// One row per view — the latest revision of each, newest view first.
+    public var latest: [AgentViewRevision]
+    /// All revisions of each view (key = exact `viewName`), each list newest first.
+    public var revisionsByView: [String: [AgentViewRevision]]
+
+    public init(latest: [AgentViewRevision] = [],
+                revisionsByView: [String: [AgentViewRevision]] = [:]) {
+        self.latest = latest
+        self.revisionsByView = revisionsByView
+    }
+
+    public static let empty = AgentLayerSnapshot()
+
+    /// All revisions of one view, newest first (empty if the view is unknown).
+    public func revisions(forView name: String) -> [AgentViewRevision] {
+        revisionsByView[name] ?? []
+    }
+}
+
 /// The single source of truth the SwiftUI views observe. Owns the store, the
 /// services, and the app's mutable state. Everything the UI triggers funnels
 /// through here.
@@ -173,6 +215,10 @@ public final class AppModel: ObservableObject {
     /// Agent memory entries (retired included, flagged), newest first — the AI-memory
     /// trust screen renders these.
     @Published public private(set) var agentMemory: [AgentMemory] = []
+
+    /// The published views-layer snapshot (contract §5) the Views feed + detail render.
+    /// Refreshed alongside `agentTags`/`agentMemory` on every `reloadNotes()`.
+    @Published public private(set) var agentViews: AgentLayerSnapshot = .empty
 
     // Capture state.
     @Published public var recordingState: RecordingState = .idle
@@ -490,6 +536,44 @@ public final class AppModel: ObservableObject {
         saveAndReload()
     }
 
+    // MARK: Views surface (the Views feed + detail, contract §5)
+
+    /// All revisions of one view, newest first — read from the published `agentViews`
+    /// snapshot so the detail's "earlier revisions" list stays live (refreshes when a
+    /// new revision syncs in). Empty for an unknown view.
+    public func revisions(forView name: String) -> [AgentViewRevision] {
+        agentViews.revisions(forView: name)
+    }
+
+    /// The view name the user has pinned to the top of the Views feed, or `nil`.
+    /// Backed by the per-device `NotesSettings.pinnedViewName`.
+    public var pinnedViewName: String? { settings.pinnedViewName }
+
+    /// Pin a view to the top of the Views feed (`nil` clears the pin). Per-device
+    /// preference — writing `settings` persists it via the `didSet` in `settings`.
+    /// No re-export/reload: pinning is a display-only device preference, not a store
+    /// record, so the published snapshots are unaffected.
+    public func setPinnedView(_ name: String?) {
+        guard settings.pinnedViewName != name else { return }
+        settings.pinnedViewName = name
+    }
+
+    /// Toggle whether a view is pinned: pins it if it isn't the current pin, else
+    /// clears the pin. The Views UI's pin/unpin button target.
+    public func togglePinnedView(_ name: String) {
+        setPinnedView(settings.pinnedViewName == name ? nil : name)
+    }
+
+    /// User delete of a whole view (contract §0: users may delete anything) — removes
+    /// every revision sharing the name, then re-projects (so the row disappears and,
+    /// on macOS, `views.jsonl` refreshes). Clears the pin if the deleted view was
+    /// pinned so a dangling pin can't survive.
+    public func userDelete(view name: String) {
+        AgentLayerStore(context: modelContext).userDelete(view: name)
+        if settings.pinnedViewName == name { settings.pinnedViewName = nil }
+        saveAndReload()
+    }
+
     /// Maintenance only (behind the `--wipe-all-notes` launch arg): delete every note
     /// + its audio so a shared library can be cleared of test/demo clutter.
     ///
@@ -649,6 +733,26 @@ public final class AppModel: ObservableObject {
         agentTags = allTags
         agentMemory = allMemory
 
+        // Views layer (contract §5): gather every revision across all views (there is
+        // no single all-revisions query; views are few, so flattening each view's
+        // newest-first revision list is cheap). Group them by exact `viewName` and take
+        // each group's head as that view's latest — the two shapes the Views feed +
+        // detail read. Published on EVERY platform (the iOS Views tab consumes it too),
+        // and reused below for the macOS export so there's a single projection pass.
+        let viewNames = layerStore.viewNames()                  // newest-view first
+        var revisionsByView: [String: [AgentViewRevision]] = [:]
+        var latestRevisions: [AgentViewRevision] = []
+        var allRevisions: [AgentViewRevision] = []
+        for name in viewNames {
+            let revs = layerStore.revisions(viewName: name)     // newest first
+            revisionsByView[name] = revs
+            allRevisions.append(contentsOf: revs)
+            if let latest = revs.first { latestRevisions.append(latest) }
+        }
+        // `viewNames()` is already ordered by each view's latest revision, so
+        // `latestRevisions` is newest-view first — the feed's row order.
+        agentViews = AgentLayerSnapshot(latest: latestRevisions, revisionsByView: revisionsByView)
+
         #if os(macOS)
         // Rung 3 + agent layer: mirror the corpus AND the agent layer to ~/Ollie
         // (JSONL + Markdown) for external tools (Obsidian, the Ollie MCP server, any
@@ -656,10 +760,8 @@ public final class AppModel: ObservableObject {
         // their tags) is applied inside `CorpusExporter` via `CorpusGate`. The snapshot's
         // value types are all Sendable, so it rides safely into the detached export task.
         //
-        // `views.jsonl` is EVERY revision, full body (contract §5) — gather them across
-        // all views by flattening each view's revision list (there is no single
-        // all-revisions query; views are few so this is cheap).
-        let allRevisions = layerStore.viewNames().flatMap { layerStore.revisions(viewName: $0) }
+        // `views.jsonl` is EVERY revision, full body (contract §5) — reuse the
+        // `allRevisions` gathered above rather than re-querying.
         let layer = CorpusExporter.LayerSnapshot(
             tags: allTags,
             memory: allMemory,

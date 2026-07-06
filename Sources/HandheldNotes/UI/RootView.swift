@@ -8,6 +8,16 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
     @State private var showSettings = false
 
+    /// Which pane fills the two columns: the notes list + note detail (default), or
+    /// the Views feed + view detail (contract §5, plan M5 5f). A segmented control in
+    /// the header toggles between them.
+    @State private var pane: RootPane = .notes
+    /// The view the Mac Views feed has selected (drives the Views detail pane). Held
+    /// here so it survives a pane toggle.
+    @State private var selectedViewName: String?
+
+    enum RootPane: Hashable { case notes, views }
+
     /// Tracks which "bad sync" state we last raised a banner for, so we only toast
     /// on a *transition* into local-only / degraded — not on every fold event while
     /// already parked there. `nil` = currently healthy (idle/syncing).
@@ -33,14 +43,36 @@ struct RootView: View {
                     .padding(.top, 14)
                     .padding(.bottom, 10)
 
+                // Pane switch: Notes list / Views feed. Kept compact and left-aligned
+                // so it reads as a mode toggle, not a primary navigation bar.
+                HStack(spacing: 0) {
+                    Picker("", selection: $pane) {
+                        Label("Notes", systemImage: "note.text").tag(RootPane.notes)
+                        Label("Views", systemImage: "rectangle.stack").tag(RootPane.views)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
+                    Spacer()
+                }
+
                 Divider().overlay(Color.hcCardBorder.opacity(0.5))
 
                 HStack(spacing: 0) {
-                    NotesListView()
-                        .overlay(Rectangle().fill(Color.hcCardBorder.opacity(0.5)).frame(width: 1), alignment: .trailing)
-
-                    NoteDetailView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    switch pane {
+                    case .notes:
+                        NotesListView()
+                            .overlay(Rectangle().fill(Color.hcCardBorder.opacity(0.5)).frame(width: 1), alignment: .trailing)
+                        NoteDetailView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .views:
+                        ViewsFeedPane(selectedViewName: $selectedViewName)
+                            .overlay(Rectangle().fill(Color.hcCardBorder.opacity(0.5)).frame(width: 1), alignment: .trailing)
+                        ViewDetailPane(selectedViewName: $selectedViewName, onOpenNote: openNote)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
 
@@ -63,6 +95,17 @@ struct RootView: View {
         .onChange(of: model.syncHealth) { _, newValue in
             surfaceSyncBannerIfNeeded(newValue)
         }
+    }
+
+    /// Open a note cited from a view (`ollie://note/<uuid>`): select it and flip the
+    /// pane back to Notes so the note detail is on screen. If the id isn't a known
+    /// note (e.g. a restricted/deleted note), select nothing and still switch — the
+    /// detail pane's empty state is the graceful landing.
+    private func openNote(_ id: UUID) {
+        if model.notes.contains(where: { $0.id == id }) {
+            model.selectedNoteID = id
+        }
+        pane = .notes
     }
 
     /// Raise a transient GLOBAL banner only when sync *transitions* into a real
