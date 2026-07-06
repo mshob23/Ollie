@@ -157,6 +157,23 @@ public final class AppModel: ObservableObject {
     @Published public var selectedNoteID: Note.ID?
     @Published public var searchText: String = ""
 
+    // MARK: Agent-layer snapshots (trust surfaces)
+    //
+    // Published projections of the agent layer so SwiftUI views (note-detail tag
+    // chips, the AI-memory screen) stay live: they refresh on every `reloadNotes()`,
+    // which already fires for our own writes (`didSave`), CloudKit imports
+    // (`.NSPersistentStoreRemoteChange`), and applied inbox batches
+    // (`InboxIngestor.didApplyBatch`). Mutating them goes through `AgentLayerStore`
+    // (the write choke point) then re-projects — same pattern as notes.
+
+    /// Every agent tag in the store, newest first. Note-detail filters this by
+    /// `noteId` for its chip row (see ``tags(forNote:)``).
+    @Published public private(set) var agentTags: [AgentTag] = []
+
+    /// Agent memory entries (retired included, flagged), newest first — the AI-memory
+    /// trust screen renders these.
+    @Published public private(set) var agentMemory: [AgentMemory] = []
+
     // Capture state.
     @Published public var recordingState: RecordingState = .idle
     @Published public var micLevel: Float = 0
@@ -406,6 +423,20 @@ public final class AppModel: ObservableObject {
         saveAndReload()
     }
 
+    /// Flip a note's **restriction** flag (the export gate, contract §5). Mirrors
+    /// `toggleFavorite`: mutate the entity, save, re-project. Because `saveAndReload`
+    /// re-runs the corpus export (macOS) through `CorpusGate`, marking a note
+    /// restricted removes it — and its tag lines — from `~/Ollie/` on this same pass,
+    /// and un-restricting it re-exports it. No gate wiring is needed here; the
+    /// save → reload → export path already carries the change.
+    public func setRestricted(_ restricted: Bool, for id: Note.ID) {
+        guard let entity = entity(for: id) else { return }
+        guard entity.isRestricted != restricted else { return }
+        entity.isRestricted = restricted
+        entity.updatedAt = Date()
+        saveAndReload()
+    }
+
     public func delete(_ id: Note.ID) {
         guard let entity = entity(for: id) else { return }
         if let audio = entity.audioFileName { NotesStore.deleteAudio(named: audio) }
@@ -414,6 +445,49 @@ public final class AppModel: ObservableObject {
         if selectedNoteID == id { selectedNoteID = nil }
         saveAndReload()
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
+    }
+
+    // MARK: Agent layer — user-facing reads & mutations (Settings + note detail)
+    //
+    // The human surfaces onto the agent layer (contract §3): the user reads their
+    // standing instructions, the agent's memory, and a note's tags, and can edit
+    // instructions or hard-delete any derived record (contract §0: "users may delete
+    // anything"). All of it funnels through `AgentLayerStore` — the single write
+    // choke point — over the app's write context, then re-projects (which, on macOS,
+    // re-exports the gated `~/Ollie/` layer files so a deletion propagates promptly).
+
+    /// The agent tags on one note, newest first — filtered from the published
+    /// `agentTags` snapshot (which refreshes on every reload). Backs the note-detail
+    /// chip row.
+    public func tags(forNote id: Note.ID) -> [AgentTag] {
+        agentTags.filter { $0.noteId == id }
+    }
+
+    /// The user's standing instructions to agents (contract §2), or "" if unset.
+    /// Read on the Settings editor's appear.
+    public func agentInstructions() -> String {
+        AgentLayerStore(context: modelContext).instructions()
+    }
+
+    /// Save the user's standing instructions (Settings editor "done"). Upserts the
+    /// single well-known record and re-projects/re-exports.
+    public func setAgentInstructions(_ text: String) {
+        AgentLayerStore(context: modelContext).setInstructions(text)
+        saveAndReload()
+    }
+
+    /// User hard-delete of one agent tag (contract §0). Removes the record and
+    /// re-projects (so the chip disappears and, on macOS, `tags.jsonl` refreshes).
+    public func userDelete(tag: AgentTag) {
+        AgentLayerStore(context: modelContext).userDelete(tag: tag)
+        saveAndReload()
+    }
+
+    /// User hard-delete of one agent memory entry (contract §0) — distinct from an
+    /// agent `retire`, which only tombstones. Removes it outright and re-projects.
+    public func userDelete(memory: AgentMemory) {
+        AgentLayerStore(context: modelContext).userDelete(memory: memory)
+        saveAndReload()
     }
 
     /// Maintenance only (behind the `--wipe-all-notes` launch arg): delete every note
@@ -563,25 +637,32 @@ public final class AppModel: ObservableObject {
         notes = entities.map(Note.init(entity:))
         // Keep system Spotlight in sync with the live projection (best-effort, async).
         SpotlightIndexer.index(notes)
+
+        // Project the agent layer from the SAME fresh read context — so a layer record
+        // the inbox ingestor or a CloudKit import just persisted surfaces on this pass,
+        // exactly like the notes do. Feeds the published trust-surface snapshots
+        // (note-detail tag chips, the AI-memory screen) on every platform, and (macOS)
+        // the ~/Ollie export. `AgentLayerStore` is MainActor (we're on it).
+        let layerStore = AgentLayerStore(context: readContext)
+        let allTags = layerStore.allTags()
+        let allMemory = layerStore.memory(includeRetired: true)
+        agentTags = allTags
+        agentMemory = allMemory
+
         #if os(macOS)
         // Rung 3 + agent layer: mirror the corpus AND the agent layer to ~/Ollie
         // (JSONL + Markdown) for external tools (Obsidian, the Ollie MCP server, any
         // LLM). Mac-only for now; off-main, best-effort. The gate (restricted notes +
-        // their tags) is applied inside `CorpusExporter` via `CorpusGate`.
+        // their tags) is applied inside `CorpusExporter` via `CorpusGate`. The snapshot's
+        // value types are all Sendable, so it rides safely into the detached export task.
         //
-        // Gather the layer snapshot from the SAME fresh read context — so a layer
-        // record the inbox ingestor or a CloudKit import just persisted surfaces in
-        // the export on this pass, exactly like the notes do. `AgentLayerStore` is
-        // MainActor (we're on it); the snapshot's value types are all Sendable, so it
-        // rides safely into the detached export task.
-        let layerStore = AgentLayerStore(context: readContext)
         // `views.jsonl` is EVERY revision, full body (contract §5) — gather them across
         // all views by flattening each view's revision list (there is no single
         // all-revisions query; views are few so this is cheap).
         let allRevisions = layerStore.viewNames().flatMap { layerStore.revisions(viewName: $0) }
         let layer = CorpusExporter.LayerSnapshot(
-            tags: layerStore.allTags(),
-            memory: layerStore.memory(includeRetired: true),
+            tags: allTags,
+            memory: allMemory,
             viewRevisions: allRevisions,
             instructions: layerStore.instructions())
         CorpusExporter.exportInBackground(notes, layer: layer)

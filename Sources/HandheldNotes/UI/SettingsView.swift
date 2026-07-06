@@ -13,6 +13,10 @@ struct SettingsView: View {
     @State private var resetResult: ResetResult?
     /// Snapshot of available input devices, refreshed when Settings appears.
     @State private var availableMicsState: [String] = []
+    /// Working copy of the standing AI instructions, loaded when Settings appears and
+    /// saved when the editor loses focus (see `instructionsSection`).
+    @State private var instructionsDraft: String = ""
+    @FocusState private var instructionsFocused: Bool
 
     /// The outcome to surface after a `resetSync()` attempt — either "relaunch
     /// needed" (success) or an error message (nothing was deleted).
@@ -37,10 +41,15 @@ struct SettingsView: View {
                     micSection
                     quickCaptureSection
                     captureSection
+                    instructionsSection
+                    memorySection
                     syncSection
                     footer
                 }
-                .onAppear { availableMicsState = AppModel.availableMicrophones() }
+                .onAppear {
+                    availableMicsState = AppModel.availableMicrophones()
+                    instructionsDraft = model.agentInstructions()
+                }
                 .padding(.horizontal, 24)
                 .padding(.top, 22)
                 .padding(.bottom, 24)
@@ -225,6 +234,100 @@ struct SettingsView: View {
             }
             .toggleStyle(.switch)
             .tint(.hcAccent)
+        }
+    }
+
+    // MARK: AI instructions (standing instructions to agents)
+
+    /// A multi-line editor for the user's standing instructions to agents (contract
+    /// §2). Loaded when Settings appears; committed when the editor loses focus.
+    private var instructionsSection: some View {
+        SettingsSection(
+            eyebrow: "Intelligence",
+            title: "AI instructions",
+            blurb: "Standing guidance for the agents that read your notes — how to tag, what to summarize, what to leave alone."
+        ) {
+            VStack(alignment: .leading, spacing: 9) {
+                TextEditor(text: $instructionsDraft)
+                    .focused($instructionsFocused)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.hcPrimaryText)
+                    .lineSpacing(4)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 96)
+                    .padding(12)
+                    .hcPanel(fill: .hcPanel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.hcAccent.opacity(instructionsFocused ? 0.35 : 0), lineWidth: 1)
+                    )
+                    .overlay(alignment: .topLeading) {
+                        if instructionsDraft.isEmpty && !instructionsFocused {
+                            Text("e.g. Prefer terse summaries. Tag by project. Never surface anything tagged private.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.hcMutedText)
+                                .padding(.horizontal, 17)
+                                .padding(.vertical, 20)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.15), value: instructionsFocused)
+
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.hcMutedText)
+                    Text("Agents read this before working with your notes.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.hcMutedText)
+                    Spacer(minLength: 0)
+                }
+            }
+            // Commit on blur (⌘-tab, clicking away, closing the sheet): persist iff
+            // the text actually changed.
+            .onChange(of: instructionsFocused) { _, focused in
+                if !focused { commitInstructionsIfChanged() }
+            }
+            .onDisappear { commitInstructionsIfChanged() }
+        }
+    }
+
+    private func commitInstructionsIfChanged() {
+        guard instructionsDraft != model.agentInstructions() else { return }
+        model.setAgentInstructions(instructionsDraft)
+    }
+
+    // MARK: AI memory (the agent codebook — user can read + delete)
+
+    /// The agent's memory (contract §2): one fact per row, attributed + dated, retired
+    /// entries dimmed. The user can hard-delete any entry — the trust surface that
+    /// keeps the codebook the user's to prune.
+    private var memorySection: some View {
+        SettingsSection(
+            eyebrow: "Intelligence",
+            title: "AI memory",
+            blurb: "The durable facts agents have learned about your shorthand and preferences. Yours to prune."
+        ) {
+            if model.agentMemory.isEmpty {
+                HStack(spacing: 9) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Color.hcMutedText)
+                        .frame(width: 18)
+                    Text("No memories yet — agents add facts here as they learn your notes.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.hcSecondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 2)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.agentMemory) { entry in
+                        MemoryRow(entry: entry) { model.userDelete(memory: entry) }
+                    }
+                }
+            }
         }
     }
 
@@ -589,5 +692,75 @@ private struct SettingsSection<Content: View>: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.hcCardBorder.opacity(0.4), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - One AI-memory row (fact + provenance, retired dimmed, deletable)
+
+/// A single memory entry in the AI-memory list: the fact, a small provenance footer
+/// (agent · date), a "retired" tag when tombstoned, and a delete button revealed on
+/// hover (plus a context menu) — the macOS-native stand-in for the iPhone's swipe.
+private struct MemoryRow: View {
+    let entry: AgentMemory
+    let onDelete: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.text)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(entry.retired ? Color.hcMutedText : Color.hcPrimaryText)
+                    .strikethrough(entry.retired, color: Color.hcMutedText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                HStack(spacing: 6) {
+                    Text(entry.agentId.isEmpty ? "agent" : entry.agentId)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.hcMutedText)
+                    Text("·").foregroundStyle(Color.hcMutedText)
+                    Text(Self.relative(from: entry.createdAt))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.hcMutedText)
+                    if entry.retired {
+                        Text("retired")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.hcMutedText)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.hcMutedText.opacity(0.15)))
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            if hovering {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.hcSecondaryText)
+                        .frame(width: 22, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Delete this memory")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(Color.hcCardBorder.opacity(0.5), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .contextMenu {
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+
+    /// "just now / 12m ago / …" relative date, matching the app's other footers.
+    private static func relative(from date: Date) -> String {
+        let fmt = RelativeDateTimeFormatter()
+        fmt.unitsStyle = .abbreviated
+        return fmt.localizedString(for: date, relativeTo: Date())
     }
 }

@@ -186,6 +186,12 @@ struct NoteRow: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
+                if note.isRestricted && !hovering {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.hcAccent)
+                        .help("Restricted — never exported")
+                }
                 if note.isFavorite && !hovering {
                     Image(systemName: "star.fill")
                         .font(.system(size: 10))

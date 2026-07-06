@@ -23,7 +23,11 @@ struct NoteDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 SourceBanner(source: note.source)
+                if note.isRestricted {
+                    RestrictedBanner()
+                }
                 NoteHeader(note: note)
+                TagChipsView(noteID: note.id)
                 AudioPlayerView(url: model.audioURL(for: note))
                 if note.transcriptionFailed {
                     RetranscribeBanner(note: note)
@@ -98,6 +102,43 @@ private struct RetranscribeBanner: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.hcAccent.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.hcAccent.opacity(0.3), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Restricted banner (the export gate, contract §5)
+
+/// Shown when a note is marked restricted: it and everything derived from it (its
+/// tags) never leave the device — the export gate omits it from `~/Ollie/`. A small,
+/// calm strip so the state is legible without alarming.
+private struct RestrictedBanner: View {
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.hcAccent)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Restricted — never exported")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                Text("This note and its tags stay on your devices. Agents and the exported ~/Ollie corpus never see it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -203,6 +244,15 @@ private struct NoteHeader: View {
 
                 Spacer(minLength: 0)
 
+                Button(action: { model.setRestricted(!note.isRestricted, for: note.id) }) {
+                    Image(systemName: note.isRestricted ? "lock.fill" : "lock.open")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(note.isRestricted ? Color.hcAccent : Color.hcMutedText)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help(note.isRestricted ? "Restricted — never exported. Click to allow exporting." : "Restrict this note — never export it or its tags")
+
                 Button(action: { model.toggleFavorite(note.id) }) {
                     Image(systemName: note.isFavorite ? "star.fill" : "star")
                         .font(.system(size: 16, weight: .medium))
@@ -277,6 +327,38 @@ private struct NoteHeader: View {
         fmt.dateFormat = Calendar.current.isDate(date, equalTo: now, toGranularity: .year)
             ? "MMM d" : "MMM d, yyyy"
         return fmt.string(from: date)
+    }
+}
+
+// MARK: - Agent tag chips (deletable — contract §2)
+
+/// The agent tags applied to this note, as a wrapping row of chips under the
+/// metadata. Each chip is user-deletable via a right-click context menu (contract §0:
+/// users may delete anything). Hidden entirely when the note has no tags — chips
+/// appear only once an agent has tagged it. Reads the live `model.agentTags`
+/// snapshot, so it refreshes when tags sync in or are deleted.
+private struct TagChipsView: View {
+    @EnvironmentObject var model: AppModel
+    let noteID: Note.ID
+
+    private var tags: [AgentTag] { model.tags(forNote: noteID) }
+
+    var body: some View {
+        if !tags.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow(text: "Tags")
+                FlowChips {
+                    ForEach(tags) { tag in
+                        Chip(tag.tag, symbol: "tag", tint: .hcAccent)
+                            .contextMenu {
+                                Button("Remove tag", role: .destructive) {
+                                    model.userDelete(tag: tag)
+                                }
+                            }
+                    }
+                }
+            }
+        }
     }
 }
 
