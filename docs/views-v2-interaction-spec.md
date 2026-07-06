@@ -154,6 +154,15 @@ Net: tap-tap-tap-tap → at most **one** durable, diffed, atomic write of the re
 `setInstructions`), and interaction cleanup inside `userDelete(view:)` (deleting a view deletes
 its interaction state).
 
+**Boundary cycling (enter → toggle → leave, repeated).** Deliberately *not* coalesced further:
+each cycle's exit commit is a genuine settled state change and writes once. Entering/leaving
+*without* toggling writes nothing (nothing pending). This is fine because (a) the upsert rewrites
+one record in place — storage is O(boxes touched), never O(toggles); (b) it's bounded by human
+navigation speed (a few ~200-byte record writes per minute, worst case — less traffic than note
+capture); and (c) the alternative — holding pending state in memory across navigation to batch
+wider — silently loses the user's toggle if the app dies mid-hold. The boundary commit is the last
+reliable moment to persist; durability beats saving a tiny write.
+
 ---
 
 ## 5. Renderer + panes
@@ -216,10 +225,15 @@ append interaction records; never delete them.
 `InteractionStateEntity` joins `NotesDataStore.modelTypes` → `SchemaGoldenTests` fails by design.
 This is the **only** schema change in the milestone (batch rule, contract §2). Ship order:
 
-1. Land the entity + regenerate the golden (test instructions / `Resources/schema.golden`).
+1. Land the entity + regenerate the golden (test instructions / `Resources/schema.golden`), and
+   update `Scripts/expected-ck-fields.txt`: that file is a flat **union** of field names across
+   record types, and `CD_id` / `CD_viewName` / `CD_updatedAt` already exist — so only **6** new
+   names land (`CD_blockId`, `CD_blockText`, `CD_kind`, `CD_value`, `CD_revisionId`,
+   `CD_surface`; 25 → 31). No `Data`-typed fields → no `_ckAsset` twins. One new record type:
+   `CD_InteractionStateEntity`.
 2. Deploy to CloudKit **Production** before any release build: cktool import to Development →
-   Dashboard *Deploy Schema Changes to Production* → `verify-prod-schema.sh` (field count grows
-   by 9: 25 → 34). Same runbook as the M1 deploy.
+   Dashboard *Deploy Schema Changes to Production* → `verify-prod-schema.sh` (31/31). Same
+   runbook as the M1 deploy.
 3. Only then bump the TestFlight build.
 
 ---

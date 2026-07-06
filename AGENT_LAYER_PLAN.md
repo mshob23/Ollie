@@ -8,6 +8,11 @@ photo notes, and the on-device FoundationModels agent (schemas reserve room for 
 **include** the scheduled Mac agent runner. Capture/search App Intents already shipped (Rung 2) —
 no new intent work in this plan.
 
+**Scope extension (2026-07-06):** M0–M6 shipped; **M7** added — the Views v2 **checkbox
+interaction layer**, designed in [`docs/views-v2-interaction-spec.md`](docs/views-v2-interaction-spec.md)
+(the design contract for M7; on conflict with this plan's task list, the spec wins on design, the
+plan on process). Fenced interactive blocks (`checklist`/`metric`/`chart`/`timeline`) stay deferred.
+
 ---
 
 ## 0. Context — what this adds and why
@@ -238,7 +243,7 @@ Markdown, rendered with a shared lightweight renderer (see M5). Two conventions 
 ## 4. Milestones
 
 Execute in order; each is independently shippable and ends green. Estimated relative sizes: M1 ●●,
-M2 ●●, M3 ●●, M4 ●●, M5 ●●●●, M6 ●●.
+M2 ●●, M3 ●●, M4 ●●, M5 ●●●●, M6 ●●, M7 ●●●.
 
 ### M0 — Contract doc + backlog alignment (docs only)
 
@@ -459,6 +464,77 @@ is unreliable — acceptable to verify sync on hardware and UI-with-local-data i
 gain tags; "This week" view appears on Mac and (hardware) iPhone. Then `launchctl kickstart` the
 job and confirm one scheduled run completes.
 
+### M7 — Views v2: checkbox interaction layer
+
+**Goal:** checklist items in views become tappable; the settled end-state syncs; the agent
+consumes checks on its next run. **Design contract:** [`docs/views-v2-interaction-spec.md`](docs/views-v2-interaction-spec.md)
+— read it in full first; every design decision below (precedence rule, `blockId` derivation,
+debounce semantics) is normative *there*, and this milestone only lists the tasks. This milestone
+contains the plan's **second and final** schema change — one entity, one batch, one Production
+deploy (hard rule 1 applies in full).
+
+**7a. Schema + store (Core).**
+- New `Store/InteractionStateEntity.swift`: `@Model` + `ViewInteraction` value struct + projection,
+  per spec §2 (9 fields incl. `kind`/`value` as strings; caps in `AgentLayerStore.Caps`:
+  blockId ≤ 128, blockText ≤ 500 truncate-don't-reject, value ≤ 64, kind ≤ 32).
+- Edit `Store/NotesDataStore.swift`: add to the schema.
+- Edit `Agent/AgentLayerStore.swift`: `interactions(viewName:)` (collapsed: latest `updatedAt`
+  wins per `(viewName, blockId)`), `setInteraction(_:)` (in-code upsert by key; the user path —
+  **no new `AgentOp` case, no inbox op**: interaction state is user-authored, app-written only),
+  cascade inside `userDelete(view:)`.
+- Regenerate schema golden; update `Scripts/expected-ck-fields.txt` (**6** new names — the file
+  is a union and `CD_id`/`CD_viewName`/`CD_updatedAt` already exist: `CD_blockId`, `CD_blockText`,
+  `CD_kind`, `CD_value`, `CD_revisionId`, `CD_surface`; 25 → 31; no Data fields → no `_ckAsset`
+  twins) + CK coverage/rejection tests for `CD_InteractionStateEntity`.
+- Tests: upsert-by-key (second set rewrites, doesn't duplicate); duplicate-key collapse picks
+  latest `updatedAt`; caps; view delete cascades.
+
+**7b. blockId + renderer hook (Core).**
+- Edit `AgentViews/MarkdownLite.swift`: block parser annotates checklist `ListItem`s with
+  `blockId` = `cl1:<sha256-16hex-of-classifier-text>:<occ>` (spec §3; CryptoKit); new optional
+  `ChecklistHook` init param (`resolved` + `onToggle`), default nil → **zero behavior change** at
+  existing call sites (watch/feed previews untouched). Non-nil: glyph renders `resolved(...)`,
+  glyph+label row gets the tap gesture, animated; haptic on iOS.
+- Tests (pure, no SwiftUI): id derivation goldens; occurrence ordinals for duplicate text;
+  reorder keeps ids; reword changes id; `cl2:`-style unknown prefixes stay non-interactive.
+
+**7c. Interaction model (Core) + panes (Mac + iOS).**
+- New `AgentViews/ViewInteractionModel.swift` (`@MainActor @Observable`, per spec §4): `pending`,
+  `resolved(blockId:bodyChecked:)` (pending → overlay-iff-newer-than-revision → body), `toggle(...)`
+  (600 ms cancel-and-restart settle timer), `commitNow()` (diff against committed, skip
+  `new == committed`, one `ModelContext` save per settle, clear pending).
+- Wire `ViewsPane.swift` (Mac) + the iOS Views detail: one model per displayed view; `commitNow()`
+  on `.onDisappear`, `scenePhase != .active` (iOS), and view-switch (Mac pane selection change).
+- Tests: N toggles → one save; round-trip → zero saves; enter/leave with no toggle → zero saves;
+  precedence incl. newer-revision supersession (spec §1) and the recurring-reset case (agent
+  republishes `- [ ]`, old checked overlay does NOT bleed through).
+
+**7d. Export + prune + MCP + runbook.**
+- Edit `Export/CorpusExporter.swift`: write `interactions.jsonl` (spec §6 line shape, denormalized
+  `blockText`; same temp+rename style); `.ollie.meta.json` `layerCounts` gains `"interactions": N`
+  (additive, no meta version bump); extend the orphan-prune pass (records of deleted views;
+  records with `blockId` absent from latest revision AND older than it AND age > 30 days).
+  Interactions export **in full** — same gate reasoning as views (§3.3).
+- Edit `mcp-server/ollie_layers.py` + `ollie_mcp.py`: `get_view` gains `interactions`
+  (only rows *applying* under the precedence rule — newer than the returned revision), each
+  `{blockId, blockText, value, updatedAt}`. No new write tool.
+- Edit `Scripts/ollie-runbook.md`: consumption step — for each applying checked item, act on it
+  (if `blockText` cites `ollie://note/<uuid>`, tag that note, e.g. `done` / `request:done`), then
+  republish the view dropping it or baking in `- [x]`; **the republish is the acknowledgment**.
+  Never write or delete interaction records.
+- Tests: exporter via `exportDirectoryOverride` (shape, prune, meta count); pytest for the
+  `get_view` overlay filtering.
+
+**Verify:** `swift test` + `pytest mcp-server/tests` green; iOS simulator build green (no `-sdk`!);
+Mac manual pass — tap boxes rapidly, confirm exactly one `interactions.jsonl` change per settle
+and none on a round-trip; check a box on the iPhone (hardware), see it in `interactions.jsonl` on
+the Mac, run `./Scripts/ollie-agent-run.sh`, confirm the republished view absorbed it and the
+overlay stopped applying.
+**Release gate (blocking, before any TestFlight/DMG build):** deploy the schema to CloudKit
+**Production** — cktool import to Development → Dashboard *Deploy Schema Changes to Production* →
+`Scripts/verify-prod-schema.sh` reports **31/31** — then bump the build. Same runbook as the M1
+deploy (see `docs/cloudkit-sync-troubleshooting.md`).
+
 ---
 
 ## 5. End-to-end acceptance (after M6)
@@ -482,9 +558,11 @@ Production deploy done before any release build (`SCHEMA_DEPLOYED=1` gate enforc
 
 ## 6. Deferred, with names reserved (do not build; do not break)
 
-- **Views v2**: interactive fenced blocks (`checklist`, `metric`, `chart`, `timeline`) +
-  `InteractionEventEntity` (tap → event record → export → next run). Renderer already passes
-  unknown fences through as monospaced panels.
+- **Views v2 fenced blocks**: interactive fenced blocks (`checklist`, `metric`, `chart`,
+  `timeline`) with explicit item ids (`cl2:` prefix reserved). Renderer already passes unknown
+  fences through as monospaced panels. *(The plain-markdown checkbox interaction layer is no
+  longer deferred — it is **M7**, designed in `docs/views-v2-interaction-spec.md`, which also
+  supersedes the old `InteractionEventEntity` name with `InteractionStateEntity`.)*
 - **Watch views**: pinned view's latest revision on the wrist (extend the existing
   `updateApplicationContext` snapshot with one more payload — deliberately not now).
 - **Photo notes**: `CaptureKind.photo`, per-note media attachments, render-to-text (OCR/caption)
