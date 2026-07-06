@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftData
 import XCTest
 @testable import HandheldNotesCore
@@ -395,5 +396,33 @@ final class ViewInteractionModelTests: XCTestCase {
         // stale empty cache (which would fall back to the body default `false`).
         XCTAssertTrue(model.resolved(blockId: id, bodyChecked: false),
                       "post-commit read reflects the just-written overlay")
+    }
+
+    /// **The 0x8BADF00D infinite-render-loop guard.** The renderer calls `resolved`
+    /// during SwiftUI body evaluation. `resolved` writes internal bookkeeping
+    /// (`bodyDefaults`, and lazily loads `overlayCache`); if any of those were
+    /// observed, that mid-render mutation would re-dirty the view graph → re-run the
+    /// body → mutate again → an infinite update loop that wedges the main thread until
+    /// the scene-update watchdog SIGKILLs the app. So `resolved` must trigger **no**
+    /// observation notification. (`withObservationTracking` fires `onChange` on the
+    /// first mutation of any property *read* during `apply`; `resolved` reads + writes
+    /// `overlayCache` on its first call, so before the `@ObservationIgnored` fix this
+    /// tripped — after it, it does not.)
+    func testResolvedTriggersNoObservationDuringRender() {
+        let (store, _) = makeStore()
+        let model = makeModel(store: store, revision: revision(body: "- [ ] a"))
+        let id = blockId("a")
+
+        // A reference holder so the @Sendable onChange can flag without a mutable
+        // capture (observation fires synchronously on this thread here).
+        final class Flag: @unchecked Sendable { var value = false }
+        let notified = Flag()
+        withObservationTracking {
+            _ = model.resolved(blockId: id, bodyChecked: false)
+        } onChange: {
+            notified.value = true
+        }
+        XCTAssertFalse(notified.value,
+            "resolved() must not mutate OBSERVED state during render — else SwiftUI loops (0x8BADF00D)")
     }
 }

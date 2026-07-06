@@ -54,16 +54,26 @@ public final class ViewInteractionModel {
 
     /// The optimistic in-memory layer (spec §1 layer 1): `blockId → checked`. A tap
     /// writes here instantly; the settle drains it. Never survives the pane.
+    ///
+    /// The **only** observed stored property, deliberately: a tap (`toggle`) mutates it
+    /// off the render pass, so its one invalidation correctly re-renders the glyph.
+    /// Everything below is `@ObservationIgnored` because it is mutated *during* render
+    /// (see ``resolved``) — an observed write mid-body-evaluation re-dirties the SwiftUI
+    /// graph, which re-runs the body, which writes again: an infinite update loop that
+    /// wedges the main thread until the scene-update watchdog SIGKILLs the app
+    /// (0x8BADF00D). It only manifests inside a live SwiftUI render, so the unit tests
+    /// (which call `resolved` outside any observation transaction) can't catch it.
     public private(set) var pending: [String: Bool] = [:]
 
     /// The classifier-captured text last seen for a toggled block (the snapshot stored
     /// as `blockText`). Recorded on `toggle` so the commit can denormalize it.
-    private var pendingText: [String: String] = [:]
+    @ObservationIgnored private var pendingText: [String: String] = [:]
 
     /// The body default (layer 3) last observed for a block, captured from `resolved`
     /// on every render. The commit needs it to compute the currently-committed value
-    /// for a block whose overlay doesn't apply (superseded or absent).
-    private var bodyDefaults: [String: Bool] = [:]
+    /// for a block whose overlay doesn't apply (superseded or absent). **Ignored:**
+    /// written during render (see the note on ``pending``).
+    @ObservationIgnored private var bodyDefaults: [String: Bool] = [:]
 
     /// Cached overlay records for this view (spec §1 layer 2), loaded **once** on first
     /// read and reused for the model's lifetime. Critical for performance: `resolved`
@@ -73,12 +83,13 @@ public final class ViewInteractionModel {
     /// thread past iOS's scene-update watchdog (0x8BADF00D) and got the app SIGKILLed.
     /// One fetch per model lifetime (the model is rebuilt per displayed revision) plus
     /// one refresh per settle. `nil` = not yet loaded; invalidated after a commit that
-    /// writes so the just-written state is re-read.
-    private var overlayCache: [ViewInteraction]?
+    /// writes so the just-written state is re-read. **Ignored:** loaded lazily *during*
+    /// render (see the note on ``pending``).
+    @ObservationIgnored private var overlayCache: [ViewInteraction]?
 
     /// The single settle task (spec §4): a tap cancels the in-flight one and starts a
     /// fresh 600 ms timer, so a burst of taps collapses to one commit at rest.
-    private var settleTask: Task<Void, Never>?
+    @ObservationIgnored private var settleTask: Task<Void, Never>?
 
     /// Optional hook fired **after** a commit actually writes (skipped when the commit
     /// was a no-op). The panes use it to re-project / re-export so a toggle propagates
@@ -88,7 +99,9 @@ public final class ViewInteractionModel {
     /// Test-only counter of durable saves this model has performed (a commit that wrote
     /// ≥ 1 record). Round-trips and empty settles do NOT increment it — the property the
     /// spec's "N toggles → one save", "round-trip → zero saves" tests assert on.
-    public private(set) var saveCount = 0
+    /// **Ignored:** bumped inside `commit()`, which can run from the settle timer during
+    /// a render pass; tests read it directly, never via observation.
+    @ObservationIgnored public private(set) var saveCount = 0
 
     /// - Parameters:
     ///   - store: the write choke point (spec §3). The model reads the overlay and
