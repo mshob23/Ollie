@@ -243,7 +243,7 @@ Markdown, rendered with a shared lightweight renderer (see M5). Two conventions 
 ## 4. Milestones
 
 Execute in order; each is independently shippable and ends green. Estimated relative sizes: M1 ●●,
-M2 ●●, M3 ●●, M4 ●●, M5 ●●●●, M6 ●●, M7 ●●●.
+M2 ●●, M3 ●●, M4 ●●, M5 ●●●●, M6 ●●, M7 ●●●, M8 ●●.
 
 ### M0 — Contract doc + backlog alignment (docs only)
 
@@ -535,6 +535,52 @@ overlay stopped applying.
 `Scripts/verify-prod-schema.sh` reports **31/31** — then bump the build. Same runbook as the M1
 deploy (see `docs/cloudkit-sync-troubleshooting.md`).
 
+### M8 — Watch views + views polish (time machine, double-title)
+
+**Goal:** the pinned view's latest revision readable on the wrist; users can restore an earlier
+view revision; the view-name/H1 duplication is gone. **No schema change** — nothing here touches
+a synced `@Model`, so no golden regen and no Production deploy.
+
+**8a. Watch views (read-only).**
+- iPhone side (`HandheldNotesiOS/Sources/WatchSessionReceiver.swift` — it already calls
+  `updateApplicationContext`): extend the snapshot with the pinned view (`viewName`, latest
+  revision `body` truncated safely to ≤ 24 KB on a character boundary with a "… (truncated)"
+  marker, `agentId`, `createdAt`). Pinned name comes from `NotesSettings.pinnedViewName`; when
+  nothing is pinned, send the newest view. Pure encode/truncate helpers, unit-tested.
+- Watch side (`Watch/Sources/`): receive in `WatchConnectivityClient.swift`; new
+  `WatchViewScreen` rendering the body via `MarkdownLite` **path-referenced into the watch
+  target like `Theme.swift`** (project.yml `sources` entry). MarkdownLite is watch-safe except
+  `.textSelection(.enabled)` (heading + code block), which **does not exist on watchOS** — wrap
+  it in a small `#if !os(watchOS)` conditional modifier first (Core change, no behavior change
+  on Mac/iOS). `onOpenNote` = no-op on watch (citations render as plain text; no note browsing
+  on the wrist). This is the one plan-sanctioned exception to "nothing touches `Watch/Sources/`."
+- **Interaction stays off the watch** (M7 non-goal): the hook is nil there.
+
+**8b. Time machine — restore an earlier revision.**
+- Core: `AgentLayerStore.userRestore(viewName:revisionId:surface:)` — appends a **new** revision
+  copying the old body (append-only preserved; never edits or reorders history), `agentId` =
+  `user-mac` / `user-ios`. Add the `user-<surface>` agentId convention to `docs/agent-contract.md`
+  §1 (one line).
+- UI: the "Earlier revisions" rows (Mac `ViewsPane.swift` detail; iOS `ViewsFeedView.swift`
+  detail) gain a **Restore** action with a confirm. Free synergy with M7: the restored copy is a
+  *newer revision*, so per the precedence rule any older interaction overlays stop applying —
+  exactly right.
+- Tests: restore appends (count + 1); latest-wins now shows the restored body; the source
+  revision is byte-identical afterward.
+
+**8c. Double-title.**
+- `MarkdownLite` gains an optional `suppressLeadingHeading: String?` (default nil = zero change):
+  when the **first** block is an H1 case-insensitively equal to it, skip that block. Detail panes
+  pass the view name; feed previews and everything else pass nothing.
+- `Scripts/ollie-runbook.md`: one line — don't open a view body with an H1 repeating the view
+  name.
+- Tests: suppression logic on `blocks(from:)` output; non-first / non-matching H1 untouched.
+
+**Verify:** `swift test` green; iOS app **and** watch app build (`-destination` only — never
+`-sdk`; the `HandheldNotesWatch` scheme exists for exactly this). Manual: pin a view on the
+iPhone → it appears on watch hardware; restore an old revision on the Mac → latest flips, iPhone
+follows via sync; publish a view whose body opens with its own name as H1 → renders once.
+
 ---
 
 ## 5. End-to-end acceptance (after M6)
@@ -563,8 +609,8 @@ Production deploy done before any release build (`SCHEMA_DEPLOYED=1` gate enforc
   fences through as monospaced panels. *(The plain-markdown checkbox interaction layer is no
   longer deferred — it is **M7**, designed in `docs/views-v2-interaction-spec.md`, which also
   supersedes the old `InteractionEventEntity` name with `InteractionStateEntity`.)*
-- **Watch views**: pinned view's latest revision on the wrist (extend the existing
-  `updateApplicationContext` snapshot with one more payload — deliberately not now).
+- ~~**Watch views**~~ — no longer deferred: now **M8** (read-only pinned view on the wrist).
+  Watch *interaction* (tapping checkboxes on the wrist) remains deferred.
 - **Photo notes**: `CaptureKind.photo`, per-note media attachments, render-to-text (OCR/caption)
   at capture, `media` field in exports (already reserved), content-addressed view assets.
 - **On-device agent**: FoundationModels tool-calling loop inside the apps, privileged tier
