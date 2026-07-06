@@ -233,7 +233,11 @@ Building any of these is scope creep; breaking the reservation (stripping an unk
 on `media`, colliding a reserved id) is a regression.
 
 - **Interaction events** — an `InteractionEventEntity` (tap → event record → export → next run) for
-  interactive view blocks. Not modeled yet.
+  interactive view blocks. Not modeled yet. **Design desired** — the rapid-toggle / atomic-end-state
+  commit model and open questions are captured in
+  [`views-v2-interaction-design.md`](views-v2-interaction-design.md). Key invariant to preserve:
+  user interaction must never mutate a view revision; interaction state is a separate, debounced,
+  end-state, per-block layer (at most one durable write per settle).
 - **`media: [String]?`** on `ExportRecord` — reserved for per-note photo/audio attachments; always
   `nil` today.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent
