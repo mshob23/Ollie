@@ -38,6 +38,25 @@ final class CKSchemaRejectionTests: XCTestCase {
         XCTAssertEqual(SyncHealth.classify(partial), .schemaNotDeployed)
     }
 
+    /// The M7 record type: if `CD_InteractionStateEntity` (or any of its 6 new
+    /// fields, e.g. `CD_blockId`) hits Production before the schema is deployed, the
+    /// same 12/2006 signature must still classify as `.schemaNotDeployed` — the new
+    /// entity is not special-cased.
+    private func interactionStateSchemaRejection() -> NSError {
+        NSError(
+            domain: CKError.errorDomain,
+            code: CKError.Code.invalidArguments.rawValue,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Invalid Arguments",
+                "ServerErrorDescription":
+                    "Cannot create or modify field 'CD_blockId' in record 'CD_InteractionStateEntity' in production schema",
+            ])
+    }
+
+    func testInteractionStateProductionSchemaRejectionClassifiesAsSchemaNotDeployed() {
+        XCTAssertEqual(SyncHealth.classify(interactionStateSchemaRejection()), .schemaNotDeployed)
+    }
+
     func testPlainInvalidArgumentsIsNotASchemaAlarm() {
         // CONSERVATISM: invalidArguments without the schema server-message must NOT
         // false-alarm the "deploy your schema" banner (it has non-schema causes).

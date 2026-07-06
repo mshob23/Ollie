@@ -37,7 +37,7 @@ final class SchemaGoldenTests: XCTestCase {
     /// `Tests/HandheldNotesCoreTests/Resources/schema.golden` file (both hold the
     /// same hash); the test prefers the file when present and falls back to this
     /// constant so the gate still works if the resource is ever stripped.
-    static let goldenHash = "64eb442ba072e725609209619179fddf9edb2229627a3aae73fdd9a59797fa58"
+    static let goldenHash = "547fd122e54b9d05c32b1e375df447ba02a7eda877caa8ee0dd0d29393fcce43"
 
     func testSchemaMatchesDeployedGolden() {
         let fingerprint = Self.schemaFingerprint()

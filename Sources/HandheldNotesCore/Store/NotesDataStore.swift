@@ -22,18 +22,20 @@ public enum NotesDataStore {
     public static let cloudKitContainerID = "iCloud.com.mohammadshobaki.handheldnotes"
 
     /// The full set of `@Model` types the synced store mirrors: the notes ground
-    /// truth plus the agent layer (tags, memory, view revisions, instructions). This
-    /// is the SINGLE source of truth for the schema — the container factory, the
-    /// store-URL derivation, and the tests all build `Schema` from this so a new
-    /// entity is added in exactly one place. Any change here shifts the golden
-    /// fingerprint (`SchemaGoldenTests`) by design; regenerate it and deploy the
-    /// CloudKit Production schema before release (see RELEASE.md).
+    /// truth plus the agent layer (tags, memory, view revisions, instructions, and the
+    /// Views v2 per-block interaction state). This is the SINGLE source of truth for
+    /// the schema — the container factory, the store-URL derivation, and the tests all
+    /// build `Schema` from this so a new entity is added in exactly one place. Any
+    /// change here shifts the golden fingerprint (`SchemaGoldenTests`) by design;
+    /// regenerate it and deploy the CloudKit Production schema before release (see
+    /// RELEASE.md).
     public static let modelTypes: [any PersistentModel.Type] = [
         NoteEntity.self,
         TagEntity.self,
         MemoryEntity.self,
         ViewRevisionEntity.self,
         InstructionsEntity.self,
+        InteractionStateEntity.self,
     ]
 
     /// True if the live container ended up CloudKit-backed (vs. the local

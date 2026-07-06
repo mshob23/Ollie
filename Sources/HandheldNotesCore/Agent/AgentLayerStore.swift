@@ -33,6 +33,14 @@ public struct AgentLayerStore {
         public static let memoryTextMax = 2000
         public static let viewNameMax = 80
         public static let viewBodyMax = 131072
+        /// Interaction-state caps (Views v2 spec §2). `blockText` is **truncated, not
+        /// rejected** (it's a snapshot, not user-supplied content to validate); the
+        /// others clamp mechanically. Interaction state is user-authored/app-written,
+        /// so `setInteraction` sanitizes rather than throwing.
+        public static let interactionBlockIdMax = 128
+        public static let interactionBlockTextMax = 500
+        public static let interactionValueMax = 64
+        public static let interactionKindMax = 32
     }
 
     private let context: ModelContext
@@ -115,6 +123,28 @@ public struct AgentLayerStore {
         instructionsEntity()?.text ?? ""
     }
 
+    /// The collapsed interaction state for one view — **one record per
+    /// `(viewName, blockId)`**, latest `updatedAt` winning. Two devices can *insert*
+    /// the same logical key while offline (CloudKit merges same-record edits but not
+    /// concurrent inserts), so the read collapses duplicate keys here (spec §2, §6):
+    /// the newest `updatedAt` wins and the losers are dropped from the result. Losers
+    /// are pruned opportunistically elsewhere (the exporter's orphan pass); this
+    /// reader never mutates.
+    public func interactions(viewName: String) -> [ViewInteraction] {
+        var d = FetchDescriptor<InteractionStateEntity>(
+            predicate: #Predicate { $0.viewName == viewName },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        d.includePendingChanges = true
+        let all = ((try? context.fetch(d)) ?? []).map(ViewInteraction.init(entity:))
+        // Collapse duplicate keys: first seen wins because `all` is newest-first.
+        var seen = Set<String>()
+        var collapsed: [ViewInteraction] = []
+        for i in all where seen.insert(i.blockId).inserted {
+            collapsed.append(i)
+        }
+        return collapsed
+    }
+
     // MARK: - Mutations (mechanical validation here; throws AgentLayerError)
 
     /// Apply one agent op. Validates mechanics (ids exist, sizes within caps) and
@@ -153,6 +183,57 @@ public struct AgentLayerStore {
         try? context.save()
     }
 
+    /// The **user** path for interaction state (a view checkbox toggle): upsert the
+    /// single record for `(viewName, blockId)` (Views v2 spec §4). Like
+    /// `setInstructions` this is user-authored/app-written — **not** an agent op, and
+    /// there is no inbox op for it. Mechanical sanitization (caps) happens here:
+    /// `blockText` is **truncated** to its cap (it's a snapshot, not rejected);
+    /// `blockId`/`value`/`kind` are clamped defensively. Saves once.
+    ///
+    /// Upsert-by-key, not by `id`: CloudKit forbids unique constraints, so identity
+    /// for `(viewName, blockId)` is enforced in code (contract §2). If duplicate-key
+    /// records already exist (two devices inserted the same key offline), the newest
+    /// `updatedAt` is updated in place and the losers are pruned opportunistically
+    /// (users may delete anything — spec §6).
+    public func setInteraction(_ value: ViewInteraction) {
+        let key = value.viewName
+        let block = value.blockId
+        var d = FetchDescriptor<InteractionStateEntity>(
+            predicate: #Predicate { $0.viewName == key && $0.blockId == block },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        d.includePendingChanges = true
+        let matches = (try? context.fetch(d)) ?? []
+
+        let blockText = String(value.blockText.prefix(Caps.interactionBlockTextMax))
+        let blockId = String(value.blockId.prefix(Caps.interactionBlockIdMax))
+        let rawValue = String(value.value.prefix(Caps.interactionValueMax))
+        let kind = String(value.kind.prefix(Caps.interactionKindMax))
+
+        if let winner = matches.first {
+            // Update the newest existing record in place …
+            winner.blockText = blockText
+            winner.kind = kind
+            winner.value = rawValue
+            winner.revisionId = value.revisionId
+            winner.surface = value.surface
+            winner.updatedAt = value.updatedAt
+            // … and prune any duplicate-key losers so the key converges to one record.
+            for loser in matches.dropFirst() { context.delete(loser) }
+        } else {
+            context.insert(InteractionStateEntity(
+                id: value.id,
+                viewName: value.viewName,
+                blockId: blockId,
+                blockText: blockText,
+                kind: kind,
+                value: rawValue,
+                revisionId: value.revisionId,
+                surface: value.surface,
+                updatedAt: value.updatedAt))
+        }
+        try? context.save()
+    }
+
     /// User hard-delete of a tag (contract §0: users may delete anything). Removes
     /// the specific record by id.
     public func userDelete(tag: AgentTag) {
@@ -177,13 +258,21 @@ public struct AgentLayerStore {
         }
     }
 
-    /// User delete of a whole view — removes *all* revisions sharing the name.
+    /// User delete of a whole view — removes *all* revisions sharing the name **and**
+    /// cascades to its interaction state (deleting a view deletes its checkbox state;
+    /// Views v2 spec §4). Saves once for the whole cascade.
     public func userDelete(view name: String) {
-        let d = FetchDescriptor<ViewRevisionEntity>(
+        let dRev = FetchDescriptor<ViewRevisionEntity>(
             predicate: #Predicate { $0.viewName == name })
-        let revisions = (try? context.fetch(d)) ?? []
-        guard !revisions.isEmpty else { return }
+        let revisions = (try? context.fetch(dRev)) ?? []
+
+        let dInter = FetchDescriptor<InteractionStateEntity>(
+            predicate: #Predicate { $0.viewName == name })
+        let interactions = (try? context.fetch(dInter)) ?? []
+
+        guard !revisions.isEmpty || !interactions.isEmpty else { return }
         for r in revisions { context.delete(r) }
+        for i in interactions { context.delete(i) }
         try? context.save()
     }
 

@@ -5,10 +5,11 @@
 #
 # Record types the container mirrors: CD_NoteEntity (notes ground truth) plus the
 # agent layer — CD_TagEntity, CD_MemoryEntity, CD_ViewRevisionEntity,
-# CD_InstructionsEntity. Field names below are the flat union across those types
-# (CloudKit prefixes stored fields CD_<name>; shared names like CD_id / CD_createdAt
-# / CD_agentId recur across types and are listed once). verify-prod-schema.sh greps
-# each name against the exported Production schema.
+# CD_InstructionsEntity, CD_InteractionStateEntity. Field names below are the flat
+# union across those types (CloudKit prefixes stored fields CD_<name>; shared names
+# like CD_id / CD_createdAt / CD_agentId / CD_viewName / CD_updatedAt recur across
+# types and are listed once). verify-prod-schema.sh greps each name against the
+# exported Production schema. 31 field names → verify-prod-schema.sh expects 31/31.
 #
 # RULES (learned from two production outages — see docs/cloudkit-sync-troubleshooting.md):
 #  - every stored attribute `x` on any synced model appears here as CD_x
@@ -22,6 +23,8 @@ CD_agentId
 CD_audioData
 CD_audioData_ckAsset
 CD_audioFileName
+CD_blockId
+CD_blockText
 CD_body
 CD_createdAt
 CD_durationSeconds
@@ -29,6 +32,7 @@ CD_engineUsed
 CD_id
 CD_isFavorite
 CD_isRestricted
+CD_kind
 CD_kindRaw
 CD_latitude
 CD_longitude
@@ -36,10 +40,13 @@ CD_noteId
 CD_placeLabel
 CD_retired
 CD_retiredAt
+CD_revisionId
 CD_schemaVersion
 CD_sourceRaw
+CD_surface
 CD_tag
 CD_text
 CD_transcript
 CD_updatedAt
+CD_value
 CD_viewName
