@@ -202,6 +202,11 @@ struct ViewDetailPane: View {
     /// selection changes (via `.id(selectedViewName)` on the content).
     @State private var shownRevisionID: UUID?
 
+    /// The earlier revision the reader has asked to restore, awaiting confirmation
+    /// (plan §M8 8b). Non-nil drives the confirmation dialog; the confirm appends a new
+    /// revision copying this one's body via `model.userRestore`.
+    @State private var revisionToRestore: AgentViewRevision?
+
     /// The interaction brain for the currently-*displayed* revision (Views v2 spec §4).
     /// Rebuilt whenever the shown view/revision changes (committing the previous one at
     /// that boundary first), so the supersession boundary — the revision's `createdAt` —
@@ -243,13 +248,36 @@ struct ViewDetailPane: View {
         .onChange(of: shown?.id) { _, _ in rebuildInteraction() }
         .onAppear { rebuildInteraction() }
         .onDisappear { interaction?.commitNow() }
+        // Restore-revision confirmation (plan §M8 8b). Appends a NEW revision copying the
+        // chosen earlier one's body — history is append-only, so this is additive, not a
+        // rollback that loses anything.
+        .confirmationDialog(
+            "Restore this revision?",
+            isPresented: Binding(get: { revisionToRestore != nil },
+                                 set: { if !$0 { revisionToRestore = nil } }),
+            presenting: revisionToRestore) { rev in
+            Button("Restore") {
+                if let name = selectedViewName {
+                    model.userRestore(viewName: name, revisionId: rev.id)
+                    // Snap back to the latest so the restored copy (now newest) is shown.
+                    shownRevisionID = nil
+                }
+                revisionToRestore = nil
+            }
+            Button("Cancel", role: .cancel) { revisionToRestore = nil }
+        } message: { rev in
+            Text("Adds a new revision copying this one from \(HCRelative.string(from: rev.createdAt)). Nothing is deleted.")
+        }
     }
 
     private func content(name: String, shown: AgentViewRevision) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 headerBlock(name: name, shown: shown)
-                MarkdownLite(shown.body, onOpenNote: onOpenNote, checklist: checklistHook)
+                // Suppress a leading H1 that just repeats the view name (plan §M8 8c):
+                // the pane's own header already shows the title.
+                MarkdownLite(shown.body, onOpenNote: onOpenNote, checklist: checklistHook,
+                             suppressLeadingHeading: name)
                 if revisions.count > 1 {
                     earlierRevisions(shown: shown)
                 }
@@ -348,6 +376,9 @@ struct ViewDetailPane: View {
                         revision: rev,
                         label: index == 0 ? "Latest" : "Revision \(revisions.count - index)",
                         isShown: rev.id == shown.id,
+                        // Only earlier revisions are restorable — restoring the latest
+                        // would just duplicate it. nil ⇒ no Restore affordance.
+                        onRestore: index == 0 ? nil : { revisionToRestore = rev },
                         onTap: { shownRevisionID = rev.id })
                 }
             }
@@ -383,6 +414,9 @@ private struct RevisionRow: View {
     let revision: AgentViewRevision
     let label: String
     let isShown: Bool
+    /// nil ⇒ this row can't be restored (it's the latest); non-nil ⇒ a "Restore this
+    /// revision" context-menu item that runs this (which raises the confirm).
+    let onRestore: (() -> Void)?
     let onTap: () -> Void
     @State private var hovering = false
 
@@ -420,6 +454,13 @@ private struct RevisionRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.12), value: hovering)
+        .contextMenu {
+            if let onRestore {
+                Button("Restore this revision", systemImage: "arrow.uturn.backward") {
+                    onRestore()
+                }
+            }
+        }
     }
 }
 

@@ -43,6 +43,11 @@ Trust boundary = **the device**. The export gate filters restricted content out 
 `agentId`: a short `provider-surface` string, e.g. `claude-mac`, `claude-runner`. **Reserved for
 later:** `ondevice-fm`, `siri`. Every derived record and every op carries one.
 
+The **`user-<surface>`** provider (`user-mac` / `user-ios`) marks a record written by a *direct
+user action*, not an agent — today only a view-revision restore (plan §M8 8b, the "time machine":
+the user appends a new revision copying an earlier body). It carries no `via` (no op door; the app
+writes it directly) and never judges meaning, same as any other derived record.
+
 Op envelopes additionally carry `via` — the **door** the op came through:
 
 | `via` | Meaning | Status |

@@ -145,6 +145,54 @@ final class MarkdownLiteTests: XCTestCase {
         XCTAssertEqual(blocks, [.heading(level: 1, text: "Heading"), .paragraph(text: "body text")])
     }
 
+    // MARK: - 8c: leading-title suppression (blocks(from:suppressingLeadingHeading:))
+
+    func testSuppressLeadingHeadingDropsExactMatch() {
+        let src = "# Open loops\n\nbody text"
+        let blocks = MarkdownLite.blocks(from: src, suppressingLeadingHeading: "Open loops")
+        // The leading H1 that repeats the view name is dropped; the body remains.
+        XCTAssertEqual(blocks, [.paragraph(text: "body text")])
+    }
+
+    func testSuppressLeadingHeadingIsCaseInsensitiveAndTrims() {
+        let src = "#   open LOOPS  \n\nbody"
+        // Different case + surrounding whitespace still matches (both sides trimmed).
+        let blocks = MarkdownLite.blocks(from: src, suppressingLeadingHeading: "  Open Loops ")
+        XCTAssertEqual(blocks, [.paragraph(text: "body")])
+    }
+
+    func testSuppressLeadingHeadingNilLeavesEverythingUntouched() {
+        let src = "# Open loops\n\nbody text"
+        // nil parameter == byte-for-byte the plain parse (no suppression).
+        XCTAssertEqual(MarkdownLite.blocks(from: src, suppressingLeadingHeading: nil),
+                       MarkdownLite.blocks(from: src))
+    }
+
+    func testSuppressLeadingHeadingLeavesNonMatchingH1() {
+        let src = "# A different title\n\nbody"
+        let blocks = MarkdownLite.blocks(from: src, suppressingLeadingHeading: "Open loops")
+        // The H1 doesn't equal the view name → nothing suppressed.
+        XCTAssertEqual(blocks, [.heading(level: 1, text: "A different title"),
+                                .paragraph(text: "body")])
+    }
+
+    func testSuppressLeadingHeadingLeavesNonFirstMatchingH1() {
+        let src = "intro paragraph\n\n# Open loops\n\nbody"
+        let blocks = MarkdownLite.blocks(from: src, suppressingLeadingHeading: "Open loops")
+        // The matching H1 is NOT the first block → left in place.
+        XCTAssertEqual(blocks, [.paragraph(text: "intro paragraph"),
+                                .heading(level: 1, text: "Open loops"),
+                                .paragraph(text: "body")])
+    }
+
+    func testSuppressLeadingHeadingLeavesMatchingH2() {
+        let src = "## Open loops\n\nbody"
+        let blocks = MarkdownLite.blocks(from: src, suppressingLeadingHeading: "Open loops")
+        // Only an H1 is suppressed; a matching H2 renders (it's a real subheading).
+        XCTAssertEqual(blocks, [.heading(level: 2, text: "Open loops"),
+                                .paragraph(text: "body")])
+    }
+
     // MARK: - ollie://note/<uuid> citation parsing
 
     func testValidOllieNoteURLYieldsID() {

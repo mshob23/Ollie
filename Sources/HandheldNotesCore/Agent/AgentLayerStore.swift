@@ -298,6 +298,37 @@ public struct AgentLayerStore {
         }
     }
 
+    /// The **user** path to restore an earlier view revision (plan §M8 8b, the "time
+    /// machine"). Appends a **new** revision to `viewName` copying the source
+    /// revision's `body` — history is append-only, never edited or reordered, so the
+    /// source revision stays byte-identical and the restored copy becomes the newest
+    /// (latest-`createdAt`-wins display). Attribution is `user-<surface>`
+    /// (`user-mac` / `user-ios`) — a user-initiated action, not an agent (contract §1).
+    ///
+    /// Follows the same append shape as `view.publish` (a fresh ``ViewRevisionEntity``,
+    /// stamped `createdAt = now`), but it is a user path, so — like the other
+    /// `userDelete`/`setInteraction` user methods — there is no `AgentOp`, no inbox op,
+    /// and no meaning validation. A `revisionId` that isn't a revision of `viewName` is
+    /// a **safe no-op** (mirrors the tolerant `userDelete` conventions): nothing is
+    /// written and nothing throws.
+    ///
+    /// Free M7 synergy: the restored copy is newer than any earlier revision, so per the
+    /// interaction precedence rule (spec §1) stale checkbox overlays anchored to older
+    /// revisions stop applying automatically — exactly the desired "rewind" behavior.
+    public func userRestore(viewName: String, revisionId: UUID, surface: String) {
+        var d = FetchDescriptor<ViewRevisionEntity>(
+            predicate: #Predicate { $0.id == revisionId && $0.viewName == viewName })
+        d.fetchLimit = 1
+        guard let source = try? context.fetch(d).first else { return }   // unknown id → no-op
+
+        context.insert(ViewRevisionEntity(
+            viewName: viewName,
+            body: source.body,                 // copy the old body verbatim (append, never edit)
+            agentId: "user-\(surface)",
+            createdAt: Date()))
+        try? context.save()
+    }
+
     /// User delete of a whole view — removes *all* revisions sharing the name **and**
     /// cascades to its interaction state (deleting a view deletes its checkbox state;
     /// Views v2 spec §4). Saves once for the whole cascade.

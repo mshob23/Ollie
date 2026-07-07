@@ -1,4 +1,3 @@
-@preconcurrency import AVFoundation
 import Foundation
 
 /// Captures the Mac microphone to a 16 kHz mono WAV. Built on `AVCaptureSession`
@@ -12,10 +11,19 @@ import Foundation
 /// this the hard way.) One capture stream feeds both the WAV file and the live
 /// level meter, so the overlay can never show speech that isn't being recorded.
 ///
-/// The Speech/Capture frameworks don't exist on watchOS; the whole engine is
-/// compiled out there (`#if !os(watchOS)`) — the watch has its own recorder and
-/// never touches this. On watchOS the stub throws so the package still builds.
-#if !os(watchOS)
+/// Mic capture via `AVCaptureSession` is a **Mac-only** feature — device selection,
+/// the live level meter, and the 16 kHz WAV path all exist to serve the Mac's
+/// Settings-chosen input. The whole engine is compiled behind `#if os(macOS)` so
+/// the `AVCaptureDevice` symbol never lands in the iOS (or watch) binary; that's
+/// what keeps the App Store scanner from flagging ITMS-90683 (a missing
+/// `NSCameraUsageDescription` for an `AVCaptureDevice` symbol the iOS app never
+/// actually uses — iOS follows the system audio route via `NotesPipeline`, and the
+/// watch has its own recorder). Off macOS the stub throws so the package still
+/// builds and every `AppModel` call site keeps compiling.
+#if os(macOS)
+@preconcurrency import AVFoundation   // Mac-only: AVCaptureSession/Device live here, so
+                                      // the import (and the AVCaptureDevice symbol) never
+                                      // reach the iOS/watch binary (ITMS-90683 fix, C1).
 @MainActor
 final class MicCaptureService {
     enum CaptureError: LocalizedError {
@@ -291,7 +299,9 @@ private final class UncheckedSendableBox<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
 }
 
-#else   // watchOS stub — the watch never records via this service.
+#else   // iOS / watchOS stub — neither records via this Mac-only service. iOS
+        // dictation goes through the system audio route (NotesPipeline); the watch
+        // has its own recorder. The stub keeps the API surface so AppModel compiles.
 @MainActor
 final class MicCaptureService {
     enum CaptureError: LocalizedError {

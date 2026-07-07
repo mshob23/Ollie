@@ -123,6 +123,11 @@ public struct MarkdownLite: View {
     /// nil ⇒ exactly v1 display-only glyphs (every existing call site). Non-nil ⇒
     /// checklist items become interactive (glyph reflects `resolved`, row taps toggle).
     private let checklist: ChecklistHook?
+    /// The view name whose leading H1 to suppress, or nil ⇒ render every block (plan
+    /// §M8 8c). Non-nil ⇒ if the FIRST block is an H1 case-insensitively equal to this
+    /// (both trimmed), that block is dropped — the detail panes pass the view name so a
+    /// body opening with its own title doesn't render it twice under the pane's header.
+    private let suppressLeadingHeading: String?
 
     /// - Parameters:
     ///   - source: the view body (markdown in the §6 dialect).
@@ -132,19 +137,28 @@ public struct MarkdownLite: View {
     ///     byte-for-byte the v1 display-only rendering — no existing call site changes.
     ///     Pass one to make checklist boxes tappable (Views panes do; feed/watch previews
     ///     don't).
+    ///   - suppressLeadingHeading: a view name whose leading H1 to drop (plan §M8 8c).
+    ///     **Defaults to nil** (render every block — unchanged). When set and the first
+    ///     block is an H1 case-insensitively equal to it (trimmed), that block is
+    ///     skipped so a body opening with its own title isn't shown twice. Detail panes
+    ///     pass the view name; feed/watch previews pass nothing.
     public init(
         _ source: String,
         onOpenNote: @escaping (UUID) -> Void,
-        checklist: ChecklistHook? = nil
+        checklist: ChecklistHook? = nil,
+        suppressLeadingHeading: String? = nil
     ) {
         self.source = source
         self.onOpenNote = onOpenNote
         self.checklist = checklist
+        self.suppressLeadingHeading = suppressLeadingHeading
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(MarkdownLite.blocks(from: source).enumerated()), id: \.offset) { _, block in
+            let rendered = MarkdownLite.blocks(from: source,
+                                               suppressingLeadingHeading: suppressLeadingHeading)
+            ForEach(Array(rendered.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
         }
@@ -171,7 +185,7 @@ public struct MarkdownLite: View {
                 .font(.hcDisplay(headingSize(level), weight: .semibold))
                 .foregroundStyle(Color.hcPrimaryText)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                .hcTextSelectable()
 
         case let .paragraph(text):
             Text(inlineAttributed(text))
@@ -274,7 +288,24 @@ public struct MarkdownLite: View {
         #endif
     }
 
+    /// The `.codeBlock` render arm (plan §M9 9b). Consult the pure fence-widget parser:
+    /// a recognized fence (`metric`/`chart`/`timeline`/`table`) renders as its real
+    /// widget; **`nil` renders today's monospaced panel byte-for-byte unchanged** (the
+    /// forward-compat fallback — an unknown info string, a single malformed line, or an
+    /// empty fence all degrade the whole fence to the panel the reader already knows).
+    @ViewBuilder
     private func codeBlockView(info: String, code: String) -> some View {
+        if let widget = FenceWidget.parse(info: info, code: code) {
+            FenceWidgetView(widget)
+        } else {
+            monospacedPanel(info: info, code: code)
+        }
+    }
+
+    /// The v1 monospaced code panel — the byte-for-byte fallback for any fence the widget
+    /// parser doesn't recognize. Unchanged from the pre-9b renderer (an eyebrow of the info
+    /// word over the literal lines, in a recessed rounded well).
+    private func monospacedPanel(info: String, code: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if !info.isEmpty {
                 Text(info.uppercased())
@@ -286,7 +317,7 @@ public struct MarkdownLite: View {
                 .font(.system(size: 13, design: .monospaced))
                 .foregroundStyle(Color.hcPrimaryText)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                .hcTextSelectable()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
@@ -472,6 +503,27 @@ public struct MarkdownLite: View {
         return blocks
     }
 
+    /// ``blocks(from:)`` with the optional §M8 8c leading-title suppression applied:
+    /// when `viewName` is non-nil and the **first** block is an H1 (`level == 1`) whose
+    /// text is case-insensitively equal to `viewName` (both trimmed), that first block
+    /// is dropped. `nil` (or a non-matching / non-first / non-H1 leading block) returns
+    /// the parse unchanged. Pure — the suppression is the tested contract; the view just
+    /// renders whatever this returns.
+    ///
+    /// Only the *leading* block is ever considered, and only an exact (trimmed,
+    /// case-insensitive) match to the view name suppresses it — an H2 with the same
+    /// text, a matching H1 that isn't first, or a differently-worded H1 all render.
+    nonisolated static func blocks(from source: String,
+                                   suppressingLeadingHeading viewName: String?) -> [MarkdownBlock] {
+        let parsed = blocks(from: source)
+        guard let viewName else { return parsed }
+        guard case let .heading(level, text)? = parsed.first, level == 1 else { return parsed }
+        let a = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = viewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard a.caseInsensitiveCompare(b) == .orderedSame else { return parsed }
+        return Array(parsed.dropFirst())
+    }
+
     // MARK: - blockId derivation (content-addressed checklist ids — spec §3)
 
     /// The `<hash16>` component of a checklist item's `blockId` (`cl1:<hash16>:<occ>`):
@@ -525,4 +577,383 @@ public struct MarkdownLite: View {
         guard let last else { return nil }
         return UUID(uuidString: last)
     }
+}
+
+// MARK: - Watch-safe text selection
+
+private extension View {
+    /// Enable text selection on Mac/iOS, no-op on watchOS. `.textSelection(.enabled)`
+    /// does not exist on watchOS (this file is path-referenced into the watch target —
+    /// plan §M8 8a), so it's guarded here rather than inline; on Mac/iOS the behavior is
+    /// byte-for-byte the same as calling `.textSelection(.enabled)` directly.
+    @ViewBuilder
+    func hcTextSelectable() -> some View {
+        #if os(watchOS)
+        self
+        #else
+        self.textSelection(.enabled)
+        #endif
+    }
+}
+
+// MARK: - Fence widget renderers (plan §M9 9b)
+//
+// The SwiftUI **renderers** for the M9 view-body fence widgets (the pure grammar + parser
+// live in `FenceWidgets.swift`, 9a). `codeBlockView` above calls `FenceWidget.parse`; a
+// non-`nil` result is drawn by ``FenceWidgetView`` here, a `nil` result stays the existing
+// monospaced panel (`monospacedPanel`, byte-for-byte unchanged).
+//
+// Four widgets, one per known fence:
+//   • metric   → big-number cards, wrapping 2–3 per row (label small, value large, delta
+//                small beside the value).
+//   • chart    → horizontal bars scaled to the fence's max value (label left, value at the
+//                bar end). Plain `Capsule`s + `Text` — **no Swift Charts**.
+//   • timeline → a vertical dotted timeline: dot + `when` (verbatim) + text per entry.
+//   • table    → a simple `Grid`, header row bolded, thin hairline separators.
+//
+// Kept **inline in this file** (rather than a sibling `FenceWidgetViews.swift`) on purpose:
+// only `MarkdownLite.swift` is path-referenced into the watch target (plan §M8 8a), so
+// folding the renderers in here means the watch's loose-source list needs no extra file —
+// it already compiles this one. (`FenceWidgets.swift`, the 9a parser, is the one further
+// dependency the watch target must add alongside it.)
+//
+// **Watch-safe by construction:** SwiftUI + `Theme.swift` tokens only — no AppKit / UIKit /
+// Swift Charts. Sizes are relative and there are no fixed wide frames, so the exact same
+// body renders on a 40mm watch and a Mac window (`.frame(maxWidth: .infinity)` + wrapping,
+// never a hard-coded width). `Grid`, `Capsule`, `RoundedRectangle`, `LazyVGrid` all exist
+// on macOS 14 / iOS 17 / watchOS 10.
+//
+// Each widget carries an `.accessibilityLabel` summarizing its data (plan §M9 9b) so a
+// VoiceOver reader hears "3 metrics: Captured this week 23 up 8; …" rather than a pile of
+// unlabeled shapes. The widgets are pure value pictures — no `@Observable` state is mutated
+// during render (the views-v2 render-loop landmine, spec §10), so they're safe in any body.
+
+/// Draws a parsed ``FenceWidget`` (plan §M9 9b). Thin dispatch over the four cases; each
+/// concrete widget is its own subview below. Themed with `Theme.swift` tokens so a widget
+/// looks native to the app, not foreign.
+struct FenceWidgetView: View {
+    let widget: FenceWidget
+    init(_ widget: FenceWidget) { self.widget = widget }
+
+    var body: some View {
+        switch widget {
+        case let .metric(cards):
+            MetricWidget(cards: cards)
+        case let .chart(bars):
+            ChartWidget(bars: bars)
+        case let .timeline(entries):
+            TimelineWidget(entries: entries)
+        case let .table(header, rows):
+            TableWidget(header: header, rows: rows)
+        }
+    }
+}
+
+// MARK: metric
+
+/// Big-number metric cards wrapping 2 per row. Each card: a small muted label above a large
+/// serif value, with the optional delta small beside it. A fixed column count keeps a card
+/// legible on a 40mm watch — the row width flexes, the column count doesn't.
+private struct MetricWidget: View {
+    let cards: [FenceWidget.MetricCard]
+
+    var body: some View {
+        // 2 per row so a single card is at least half the (already narrow) container —
+        // readable on a 40mm watch; on a wide Mac window the cards simply grow. §M9 9b's
+        // "2–3 per row" — we take the low end so the watch never gets a 3-up squeeze.
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .topLeading),
+                            count: 2)
+        LazyVGrid(columns: columns, spacing: 8) {
+            ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
+                MetricCardView(card: card)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.summary(cards))
+    }
+
+    /// A VoiceOver summary: "3 metrics: Captured this week 23, up 8; Open loops 5; …".
+    static func summary(_ cards: [FenceWidget.MetricCard]) -> String {
+        let items = cards.map { card -> String in
+            var s = "\(card.label) \(card.value)"
+            if let delta = card.delta { s += ", \(spokenDelta(delta))" }
+            return s
+        }
+        return "\(cards.count) metric\(cards.count == 1 ? "" : "s"): " + items.joined(separator: "; ")
+    }
+}
+
+/// One metric card: label (small, muted) over value (large, serif) + optional delta chip.
+private struct MetricCardView: View {
+    let card: FenceWidget.MetricCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(card.label)
+                .font(.hcEyebrow(9.5))
+                .tracking(0.8)
+                .foregroundStyle(Color.hcMutedText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(card.value)
+                    .font(.hcDisplay(24, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                if let delta = card.delta {
+                    Text(delta)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(deltaColor(delta))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+    }
+}
+
+/// Delta tint by direction, read from the leading sign (verbatim token — we never parse the
+/// number): `+…` reads as the calm-green "up", `-…`/`−…` as the warm-red "down", anything
+/// else stays secondary. Deliberately shallow — the delta text is shown exactly as authored.
+private func deltaColor(_ delta: String) -> Color {
+    let t = delta.trimmingCharacters(in: .whitespaces)
+    if t.hasPrefix("+") { return .hcOk }
+    if t.hasPrefix("-") || t.hasPrefix("\u{2212}") { return .syncDanger } // -, − minus sign
+    return .hcSecondaryText
+}
+
+/// Speak a delta for VoiceOver: `+8` → "up 8", `-3` → "down 3", else verbatim.
+private func spokenDelta(_ delta: String) -> String {
+    let t = delta.trimmingCharacters(in: .whitespaces)
+    if t.hasPrefix("+") { return "up " + t.dropFirst().trimmingCharacters(in: .whitespaces) }
+    if t.hasPrefix("-") { return "down " + t.dropFirst().trimmingCharacters(in: .whitespaces) }
+    if t.hasPrefix("\u{2212}") { return "down " + t.dropFirst().trimmingCharacters(in: .whitespaces) }
+    return t
+}
+
+// MARK: chart
+
+/// Horizontal bars scaled to the fence's max value: label on the left, a coral bar whose
+/// length is `value / max`, the value at the bar's end. Plain `Capsule` + `Text` — no Swift
+/// Charts. Scaling happens here (the parser keeps raw `Double`s, §M9 9a).
+private struct ChartWidget: View {
+    let bars: [FenceWidget.ChartBar]
+
+    var body: some View {
+        // Scale to the max magnitude so a bar is never wider than its track. Guard the
+        // all-zero / empty case (denominator 0) — those bars render as an empty track.
+        let maxValue = bars.map { abs($0.value) }.max() ?? 0
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(bars.enumerated()), id: \.offset) { _, bar in
+                ChartBarView(bar: bar, fraction: maxValue > 0 ? abs(bar.value) / maxValue : 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.summary(bars))
+    }
+
+    /// A VoiceOver summary: "Bar chart, 3 bars: Mon 12; Tue 8; Wed 15".
+    static func summary(_ bars: [FenceWidget.ChartBar]) -> String {
+        let items = bars.map { "\($0.label) \(formatChartValue($0.value))" }
+        return "Bar chart, \(bars.count) bar\(bars.count == 1 ? "" : "s"): " + items.joined(separator: "; ")
+    }
+}
+
+/// One chart row: label (fixed-share on the left), a track with a filled coral bar, and the
+/// value at the bar's trailing edge. `GeometryReader` sizes the bar to the row's own width,
+/// so the same row works on a watch and a Mac — no hard-coded bar width.
+private struct ChartBarView: View {
+    let bar: FenceWidget.ChartBar
+    let fraction: Double
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(bar.label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.hcSecondaryText)
+                .lineLimit(1)
+                .frame(width: 72, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.hcCardBorder.opacity(0.35))
+                    Capsule()
+                        .fill(Color.hcAccent)
+                        // At least a sliver so a nonzero-but-tiny bar is visible; a true
+                        // zero (or an all-zero fence) stays empty.
+                        .frame(width: fraction > 0
+                               ? max(3, geo.size.width * CGFloat(fraction.clamped01))
+                               : 0)
+                }
+            }
+            .frame(height: 12)
+            Text(formatChartValue(bar.value))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.hcPrimaryText)
+                .lineLimit(1)
+                .frame(minWidth: 28, alignment: .trailing)
+        }
+    }
+}
+
+/// Format a chart value for display: drop a trailing `.0` so `12.0` reads `12`, keep real
+/// fractions (`3.5`). Locale-independent to match the parser's `.`-decimal reading.
+private func formatChartValue(_ value: Double) -> String {
+    if value == value.rounded() && abs(value) < 1e15 {
+        return String(Int(value))
+    }
+    return String(value)
+}
+
+// MARK: timeline
+
+/// A vertical dotted timeline: each entry is a dot on a rail, the `when` (verbatim), and the
+/// text. The rail is drawn as a coral dot plus a short dotted connector down the leading edge
+/// (dotted, not a solid line) so it reads as a timeline at a glance.
+private struct TimelineWidget: View {
+    let entries: [FenceWidget.TimelineEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                TimelineRow(entry: entry, isLast: index == entries.count - 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.summary(entries))
+    }
+
+    /// A VoiceOver summary: "Timeline, 3 entries: 09:00 Stand-up; 10:30 Review; …".
+    static func summary(_ entries: [FenceWidget.TimelineEntry]) -> String {
+        let items = entries.map { "\($0.when) \($0.text)" }
+        return "Timeline, \(entries.count) entr\(entries.count == 1 ? "y" : "ies"): "
+            + items.joined(separator: "; ")
+    }
+}
+
+/// One timeline entry: the rail (dot + a short dotted connector to the next entry) beside the
+/// `when` label and the entry text.
+private struct TimelineRow: View {
+    let entry: FenceWidget.TimelineEntry
+    let isLast: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            // The rail: a coral dot, then a dotted connector down to the next entry (small
+            // muted dots, omitted on the last row so the rail ends cleanly).
+            VStack(spacing: 3) {
+                Circle()
+                    .fill(Color.hcAccent)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 3)
+                if !isLast {
+                    VStack(spacing: 3) {
+                        ForEach(0..<3, id: \.self) { _ in
+                            Circle()
+                                .fill(Color.hcCardBorder)
+                                .frame(width: 2.5, height: 2.5)
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                }
+            }
+            .frame(width: 8)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.when)
+                    .font(.hcEyebrow(10))
+                    .tracking(0.4)
+                    .foregroundStyle(Color.hcAccent)
+                Text(entry.text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.hcPrimaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, isLast ? 0 : 10)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+// MARK: table
+
+/// A simple grid: header row bolded, thin hairline separators under the header and between
+/// rows. Uses SwiftUI `Grid` (macOS 14 / iOS 17 / watchOS 10). Ragged rows are padded to the
+/// header's column count (the parser keeps them as-authored, §M9 9a).
+private struct TableWidget: View {
+    let header: [String]
+    let rows: [[String]]
+
+    var body: some View {
+        let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 0) {
+            GridRow {
+                ForEach(0..<columnCount, id: \.self) { col in
+                    Text(cell(header, col))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Color.hcPrimaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 6)
+            Divider().overlay(Color.hcCardBorder)
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                GridRow {
+                    ForEach(0..<columnCount, id: \.self) { col in
+                        Text(cell(row, col))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Color.hcSecondaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 6)
+                if index < rows.count - 1 {
+                    Divider().overlay(Color.hcCardBorder.opacity(0.4))
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.summary(header: header, rows: rows))
+    }
+
+    /// Safe cell access — a ragged row shorter than the column count reads as an empty cell
+    /// (the parser keeps rows as-authored; the renderer pads, §M9 9a).
+    private func cell(_ row: [String], _ col: Int) -> String {
+        col < row.count ? row[col] : ""
+    }
+
+    /// A VoiceOver summary: "Table, 2 columns, 2 rows. Columns: Task, Owner.".
+    static func summary(header: [String], rows: [[String]]) -> String {
+        let cols = header.filter { !$0.isEmpty }
+        var s = "Table, \(header.count) column\(header.count == 1 ? "" : "s"), "
+            + "\(rows.count) row\(rows.count == 1 ? "" : "s")."
+        if !cols.isEmpty { s += " Columns: " + cols.joined(separator: ", ") + "." }
+        return s
+    }
+}
+
+// MARK: helpers
+
+private extension Double {
+    /// Clamp to `0...1` for a bar fraction — defensive against a stray value that slips past
+    /// the max scaling (e.g. a negative in an otherwise-positive fence).
+    var clamped01: Double { Swift.max(0, Swift.min(1, self)) }
 }

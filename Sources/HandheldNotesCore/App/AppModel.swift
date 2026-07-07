@@ -601,6 +601,22 @@ public final class AppModel: ObservableObject {
         saveAndReload()
     }
 
+    /// Restore an earlier view revision (plan §M8 8b, the "time machine"): append a new
+    /// revision copying the given revision's body, attributed `user-<surface>` (the
+    /// surface stamped from the build platform), then re-project (so the latest flips
+    /// and, on macOS, `views.jsonl` refreshes). History is append-only — the source
+    /// revision is untouched. An unknown `revisionId` is a safe no-op.
+    public func userRestore(viewName: String, revisionId: UUID) {
+        #if os(macOS)
+        let surface = "mac"
+        #else
+        let surface = "ios"
+        #endif
+        AgentLayerStore(context: modelContext)
+            .userRestore(viewName: viewName, revisionId: revisionId, surface: surface)
+        saveAndReload()
+    }
+
     /// Maintenance only (behind the `--wipe-all-notes` launch arg): delete every note
     /// + its audio so a shared library can be cleared of test/demo clutter.
     ///

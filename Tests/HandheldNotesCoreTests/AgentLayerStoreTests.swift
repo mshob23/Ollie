@@ -289,6 +289,74 @@ final class AgentLayerStoreTests: XCTestCase {
         XCTAssertTrue(store.revisions(viewName: "V").isEmpty)
     }
 
+    // MARK: - User restore (the "time machine" — plan §M8 8b)
+
+    func testUserRestoreAppendsCopyingOldBodyLatestWins() throws {
+        let (store, _, _) = makeStore()
+        let name = "Open loops"
+        try store.apply(.viewPublish(viewName: name, body: "v1 body",
+                                     agent: "claude-mac", ts: Date(timeIntervalSince1970: 100)))
+        try store.apply(.viewPublish(viewName: name, body: "v2 body",
+                                     agent: "claude-mac", ts: Date(timeIntervalSince1970: 200)))
+
+        // Restore the OLDEST revision (v1).
+        let before = store.revisions(viewName: name)
+        XCTAssertEqual(before.count, 2)
+        let v1 = try XCTUnwrap(before.first(where: { $0.body == "v1 body" }))
+
+        store.userRestore(viewName: name, revisionId: v1.id, surface: "mac")
+
+        // Append: count + 1, history never edited/reordered.
+        let after = store.revisions(viewName: name)
+        XCTAssertEqual(after.count, 3, "restore appends a new revision (count + 1)")
+
+        // Latest-wins now returns the restored body, attributed user-mac.
+        let latest = try XCTUnwrap(store.latestRevisions().first(where: { $0.viewName == name }))
+        XCTAssertEqual(latest.body, "v1 body", "the restored copy is now the newest")
+        XCTAssertEqual(latest.agentId, "user-mac", "a restore is user-<surface>, not an agent")
+        XCTAssertNotEqual(latest.id, v1.id, "the restored copy is a NEW record, not the source")
+    }
+
+    func testUserRestoreLeavesSourceRevisionByteIdentical() throws {
+        let (store, _, _) = makeStore()
+        let name = "This week"
+        try store.apply(.viewPublish(viewName: name, body: "original body",
+                                     agent: "claude-runner", ts: Date(timeIntervalSince1970: 100)))
+        try store.apply(.viewPublish(viewName: name, body: "newer body",
+                                     agent: "claude-mac", ts: Date(timeIntervalSince1970: 200)))
+        let source = try XCTUnwrap(store.revisions(viewName: name).first(where: { $0.body == "original body" }))
+
+        store.userRestore(viewName: name, revisionId: source.id, surface: "ios")
+
+        // The source revision is untouched — same id, body, agent, timestamp.
+        let stillThere = try XCTUnwrap(store.revisions(viewName: name).first(where: { $0.id == source.id }))
+        XCTAssertEqual(stillThere.body, "original body")
+        XCTAssertEqual(stillThere.agentId, "claude-runner")
+        XCTAssertEqual(stillThere.createdAt, Date(timeIntervalSince1970: 100))
+        // And the restored copy carries the ios surface.
+        let latest = try XCTUnwrap(store.latestRevisions().first(where: { $0.viewName == name }))
+        XCTAssertEqual(latest.agentId, "user-ios")
+        XCTAssertEqual(latest.body, "original body")
+    }
+
+    func testUserRestoreUnknownRevisionIsNoOp() throws {
+        let (store, _, _) = makeStore()
+        let name = "Nope"
+        try store.apply(.viewPublish(viewName: name, body: "only", agent: "claude-mac"))
+        let before = store.revisions(viewName: name).count
+
+        // A revisionId that isn't a revision of this view writes nothing and doesn't throw.
+        store.userRestore(viewName: name, revisionId: UUID(), surface: "mac")
+        XCTAssertEqual(store.revisions(viewName: name).count, before, "unknown id is a safe no-op")
+
+        // A real revisionId but the WRONG view name is also a no-op (the predicate keys on both).
+        try store.apply(.viewPublish(viewName: "Other", body: "elsewhere", agent: "claude-mac"))
+        let otherRev = try XCTUnwrap(store.revisions(viewName: "Other").first)
+        store.userRestore(viewName: name, revisionId: otherRev.id, surface: "mac")
+        XCTAssertEqual(store.revisions(viewName: name).count, before,
+                       "a revision id from a different view doesn't restore into this one")
+    }
+
     // MARK: - Note legacy decode (the new isRestricted field)
 
     func testNoteDecodesLegacyJSONWithoutIsRestricted() throws {
