@@ -33,22 +33,29 @@ set -uo pipefail
 #   passes an empty lastRunAt — the runbook treats that as "recent notes".
 #
 # INVOCATION
-#   "$CLAUDE_BIN" -p "<runbook>" --model "$CLAUDE_MODEL" --allowedTools "mcp__ollie__*"
+#   Runs from a FIXED workspace (Guard 4): cd "$OLLIE_WORKSPACE" (default
+#   ~/Ollie/agent-workspace), then
+#   "$CLAUDE_BIN" -p "<runbook>" --model "$CLAUDE_MODEL" --allowedTools "mcp__ollie,mcp__ollie__*"
 #   CLAUDE_BIN defaults to `claude` (override to shim/stub it — the tests point it at a
 #   script that just echoes its args). Output → ~/Ollie/agent-runs/<timestamp>.log;
 #   logs older than 30 days are pruned. The op writer stamps agentId from
 #   OLLIE_AGENT_ID, which we set to `claude-runner`.
 #
-# ONE-TIME PREREQ (not done here — external to this script)
-#   The `ollie` MCP server and its tool allowlist live in ~/.claude/settings.local.json.
-#   The write tools (mcp__ollie__tag_note, …) MUST be allowlisted there (or the whole
-#   server via "mcp__ollie__*") or the headless run stalls on a permission prompt. See
-#   docs/agent-contract.md §9 and mcp-server/README.md.
+# ONE-TIME PREREQS (C2 — external to this script; each is checked/diagnosed here)
+#   1. `claude` logged in (subscription): run `claude` interactively once → /login.
+#   2. `ollie` MCP registered USER-scope (visible from any cwd: `claude mcp list`).
+#   3. The workspace trusted in ~/.claude.json — headless claude IGNORES a
+#      workspace's permission allowlist when the cwd is untrusted, and -p mode
+#      cannot show the trust dialog. Guard 4 verifies and prints the exact remedy.
+#   The tool allowlist itself lives in $WORKSPACE/.claude/settings.local.json and
+#   is self-written by Guard 4 if missing. See docs/agent-contract.md §9 and
+#   mcp-server/README.md.
 #
 # ENV KNOBS
 #   CLAUDE_BIN     claude binary / shim            (default: claude)
 #   CLAUDE_MODEL   model passed to --model         (default: opus)
 #   OLLIE_DIR      corpus + state + logs root      (default: $HOME/Ollie)
+#   OLLIE_WORKSPACE fixed cwd for the claude session (default: $OLLIE_DIR/agent-workspace)
 #   RUNBOOK        prompt file                      (default: Scripts/ollie-runbook.md)
 #   MAX_CORPUS_AGE_HOURS  freshness ceiling         (default: 24)
 #   LOG_RETENTION_DAYS    log-prune horizon         (default: 30)
@@ -163,6 +170,66 @@ if (( AGE_SEC > MAX_AGE_SEC )); then
 fi
 log "corpus is fresh (exportedAt=$EXPORTED_AT, age $(( AGE_SEC / 60 ))m)."
 
+# ── Guard 4: fixed, trusted workspace for the headless session ───────────────
+# launchd provides no useful cwd, and claude IGNORES a workspace's permission
+# allowlist when the cwd is untrusted (-p cannot show the trust dialog) — the
+# run would proceed with its tools silently denied. So: always cd into one
+# dedicated workspace, self-heal its allowlist, and verify it is trusted in
+# ~/.claude.json, stopping with the exact remedy if not.
+WORKSPACE="${OLLIE_WORKSPACE:-$OLLIE_DIR/agent-workspace}"
+mkdir -p "$WORKSPACE/.claude"
+if [[ ! -f "$WORKSPACE/.claude/settings.local.json" ]]; then
+  cat > "$WORKSPACE/.claude/settings.local.json" <<'SETTINGS'
+{
+  "permissions": {
+    "allow": [
+      "mcp__ollie",
+      "mcp__ollie__search_notes",
+      "mcp__ollie__list_notes",
+      "mcp__ollie__recent_notes",
+      "mcp__ollie__get_note",
+      "mcp__ollie__corpus_stats",
+      "mcp__ollie__get_instructions",
+      "mcp__ollie__tag_vocabulary",
+      "mcp__ollie__notes_by_tag",
+      "mcp__ollie__read_memory",
+      "mcp__ollie__list_views",
+      "mcp__ollie__get_view",
+      "mcp__ollie__tag_note",
+      "mcp__ollie__untag_note",
+      "mcp__ollie__append_memory",
+      "mcp__ollie__retire_memory",
+      "mcp__ollie__publish_view"
+    ]
+  }
+}
+SETTINGS
+  log "wrote workspace allowlist: $WORKSPACE/.claude/settings.local.json"
+fi
+
+TRUSTED="unchecked"
+if command -v python3 >/dev/null 2>&1; then
+  TRUSTED="$(python3 - "$WORKSPACE" <<'PY' 2>/dev/null || echo unknown
+import json, os, sys
+ws = sys.argv[1]
+try:
+    cfg = json.load(open(os.path.expanduser("~/.claude.json")))
+    entry = cfg.get("projects", {}).get(ws, {})
+    print("yes" if entry.get("hasTrustDialogAccepted") else "no")
+except Exception:
+    print("unknown")
+PY
+)"
+  if [[ "$TRUSTED" == "no" ]]; then
+    log "STOP: workspace $WORKSPACE is NOT trusted — headless claude would ignore its tool allowlist."
+    log "Fix once: in ~/.claude.json set projects[\"$WORKSPACE\"].hasTrustDialogAccepted = true"
+    log "(or run claude interactively in that directory once and accept the trust dialog)."
+    exit 1
+  fi
+fi
+cd "$WORKSPACE" || { log "STOP: cannot cd into $WORKSPACE."; exit 1; }
+log "workspace: $WORKSPACE (trusted=$TRUSTED)"
+
 # ── State: read lastRunAt to hand the runbook ───────────────────────────────
 read_last_run_at() {
   [[ -f "$STATE_FILE" ]] || return 0   # first run: empty is fine
@@ -214,7 +281,7 @@ log "invoking Claude (model=$CLAUDE_MODEL) — output → $LOG_FILE"
 set +e
 "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$CLAUDE_MODEL" \
-  --allowedTools "mcp__ollie__*" \
+  --allowedTools "mcp__ollie,mcp__ollie__*" \
   >> "$LOG_FILE" 2>&1
 CLAUDE_RC=$?
 # (The whole script runs under `set -uo pipefail`, never `-e`, so a non-zero
