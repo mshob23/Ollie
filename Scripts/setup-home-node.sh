@@ -110,6 +110,25 @@ status() {
   fi
 
   echo
+  echo "Hub (the Mac app must run for the corpus/inbox to move):"
+  if pgrep -f "Ollie.app/Contents/MacOS" >/dev/null 2>&1; then
+    ok "Ollie app running"
+  else
+    bad "Ollie app NOT running — open /Applications/Ollie.app (a Login Item starts it at login)"
+  fi
+  local corpus="$HOME/Ollie/ollie.jsonl" age_h
+  if [[ -f "$corpus" ]]; then
+    age_h=$(( ( $(date +%s) - $(stat -f %m "$corpus") ) / 3600 ))
+    if [[ "$age_h" -lt 24 ]]; then
+      ok "corpus fresh (last export ${age_h}h ago)"
+    else
+      warn "corpus is ${age_h}h old — it only refreshes while the app runs"
+    fi
+  else
+    warn "no corpus at ~/Ollie/ollie.jsonl yet"
+  fi
+
+  echo
   echo "Manual settings (script can only check, not set):"
   local limit
   limit=$(ioreg -r -c AppleSmartBattery 2>/dev/null | grep -i -m1 '"ChargeLimit' || true)

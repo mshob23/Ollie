@@ -103,9 +103,14 @@ on this setup — the native Charge Limit replaced it.)
 
 - **Stay logged in; locking the screen is fine.** LaunchAgents and the Mac app run in
   your login session. Lock ≠ logout.
-- **After a reboot or power blip** (FileVault): nothing runs until one lid-open login.
-  Notes queue in CloudKit harmlessly and the agent catches up — graceful degradation,
-  not data loss.
+- **After a reboot or power blip, one lid-open login is the entire recovery ritual.**
+  FileVault means nothing user-level runs until that login; from there the node
+  self-restores: pmset values persist across reboots, the caffeinate LaunchAgent and the
+  agent runner re-arm via RunAtLoad, and **Ollie.app is a Login Item** (added
+  2026-07-07 — remove via System Settings → General → Login Items if ever unwanted).
+  Until the login happens, notes queue in CloudKit harmlessly and the agent catches up —
+  graceful degradation, not data loss. Run `--status` after login to confirm; it also
+  checks that the app is running and the corpus is fresh.
 - **The laptop travels.** Unplug and go; everything sleeps normally on battery. The hub
   is simply down until it's back on the charger — same graceful degradation. If the
   vision proves out, a used Mac mini is the permanent-hub upgrade path.
