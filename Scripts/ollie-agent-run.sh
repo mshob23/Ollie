@@ -56,7 +56,11 @@ set -uo pipefail
 #   CLAUDE_MODEL   model passed to --model         (default: opus)
 #   OLLIE_DIR      corpus + state + logs root      (default: $HOME/Ollie)
 #   OLLIE_WORKSPACE fixed cwd for the claude session (default: $OLLIE_DIR/agent-workspace)
-#   RUNBOOK        prompt file                      (default: Scripts/ollie-runbook.md)
+#   OLLIE_MCP_CONFIG deployed MCP config (default: $OLLIE_DIR/mcp/mcp-config.json;
+#                  if present, passed via --strict-mcp-config so the run uses the
+#                  DEPLOYED server copy — launchd cannot read the Desktop repo (TCC).
+#                  If absent, falls back to the user-scope `claude mcp` registration.)
+#   RUNBOOK        prompt file                      (default: <script dir>/ollie-runbook.md)
 #   MAX_CORPUS_AGE_HOURS  freshness ceiling         (default: 24)
 #   LOG_RETENTION_DAYS    log-prune horizon         (default: 30)
 #   OLLIE_AGENT_ID exported for the MCP op writer   (forced: claude-runner)
@@ -277,11 +281,26 @@ find "$LOG_DIR" -maxdepth 1 -type f -name '*.log' ! -name 'launchd.log' \
   echo "==============================="
 } > "$LOG_FILE"
 
+# Prefer the DEPLOYED MCP server (installed under ~/Ollie by
+# install-agent-runner.sh) via --strict-mcp-config: a launchd-spawned claude
+# cannot read the Desktop repo (TCC), so the user-scope registration pointing
+# there would fail to spawn. Without a deployed config, fall back to it
+# (dev/manual runs from a TCC-granted shell).
+MCP_CONFIG="${OLLIE_MCP_CONFIG:-$OLLIE_DIR/mcp/mcp-config.json}"
+MCP_ARGS=()
+if [[ -f "$MCP_CONFIG" ]]; then
+  MCP_ARGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG")
+  log "mcp: using deployed config $MCP_CONFIG"
+else
+  log "mcp: no deployed config at $MCP_CONFIG — relying on user-scope registration"
+fi
+
 log "invoking Claude (model=$CLAUDE_MODEL) — output → $LOG_FILE"
 set +e
 "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$CLAUDE_MODEL" \
   --allowedTools "mcp__ollie,mcp__ollie__*" \
+  ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
   >> "$LOG_FILE" 2>&1
 CLAUDE_RC=$?
 # (The whole script runs under `set -uo pipefail`, never `-e`, so a non-zero
