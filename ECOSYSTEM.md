@@ -1,10 +1,12 @@
 # Ollie — Ecosystem Status
 
-*Snapshot of the whole system, June 2026.*
+*Snapshot of the whole system, July 2026.*
 
 **The vision:** capture a spoken thought from whatever device is nearest — your Mac, your iPhone, or
-your wrist — and have it transcribed and filed into one notes library, with no fuss. The entire
-software stack for that vision exists and is verified; notes flow between the three apps over iCloud.
+your wrist — and have it transcribed and filed into one notes library, with no fuss; then let agents
+work that library and hand you back designed, glanceable answers on every screen. The entire loop
+exists and is verified on hardware: notes flow between the three apps over iCloud, a scheduled agent
+runner tags/answers/publishes, and its views render on Mac, iPhone, **and the watch**.
 
 ---
 
@@ -28,7 +30,7 @@ through **iCloud (CloudKit + SwiftData)**, so a note made on the phone shows up 
 
 | Repo | Stack | Role | Key paths |
 |---|---|---|---|
-| **HandheldNotes** | Swift / SwiftUI | The **shared core** + the **Mac app** | `Sources/HandheldNotesCore/` (model, store, transcription, theme, `AppModel`), `Sources/HandheldNotes/` (the macOS UI) |
+| **HandheldNotes** | Swift / SwiftUI / Python | The **shared core** + the **Mac app** + the **MCP server** + the **agent runner** | `Sources/HandheldNotesCore/` (model, store, transcription, agent layer, `MarkdownLite`/`FenceWidgets`, theme, `AppModel`), `Sources/HandheldNotes/` (the macOS UI), `mcp-server/`, `Scripts/` (runner + runbook) |
 | **HandheldNotesiOS** | Swift / SwiftUI | The **iPhone app** + the embedded **Apple Watch app** | `Sources/` (iOS UI + `WatchSessionReceiver`), `Watch/Sources/` (the watch app), `project.yml` (XcodeGen) |
 
 `HandheldNotesCore` is the keystone: the **same** notes model, storage, and transcription pipeline are
@@ -70,51 +72,48 @@ A single **iCloud / CloudKit** store, backed by SwiftData, is shared by the Mac 
 
 | Piece | Status |
 |---|---|
-| `HandheldNotesCore` shared library | ✅ extracted, public API, green tests |
-| Mac app | ✅ builds + runs; verified on screen |
-| iPhone app | ✅ builds + runs in the iOS 26 simulator |
-| Apple Watch app | ✅ builds + launches in the watchOS 26 simulator; UI verified |
-| iCloud / CloudKit shared store | ✅ Mac + iPhone sync one library (CloudKit + SwiftData) |
+| `HandheldNotesCore` shared library | ✅ extracted, public API, green tests (incl. schema golden gate) |
+| Mac app | ✅ Developer-ID build installed; capture + Views pane verified on screen |
+| iPhone app | ✅ TestFlight **build 32** (`VALID`); Notes / Views / Settings tabs on hardware |
+| Apple Watch app | ✅ on hardware: press-and-hold capture verified; pinned view renders on the wrist |
+| iCloud / CloudKit shared store | ✅ one library across all three (CloudKit + SwiftData, Production schema deployed) |
+| Agent layer (M0–M9) | ✅ tags · memory · views · gate · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets |
 
 ---
 
-## Not built yet (the honest gaps)
-
-1. **Watch live capture on hardware.** The record→transfer→note hop is code-complete and standard
-   WatchConnectivity, but the simulator can't synthesize the press-and-hold gesture — it's confirmable
-   only on a real watch.
-2. **Cosmetic:** the transcription-unavailable placeholder string is Mac-flavored ("install
-   whisper-cli") and should be made platform-aware.
-
----
-
-## The three layers (the agent layer, approved July 2026)
+## The three layers (the agent layer — SHIPPED July 2026)
 
 Ollie's thesis in one line: **capture is dumb, intelligence is rented, the data is owned.** The whole
-system sorts into three layers, and the *agent layer* is what's being built now (through **Views v1**):
+system sorts into three layers — all shipped (milestones M0–M9):
 
 | Layer | What it is | State |
 |---|---|---|
 | **Capture** | The three surfaces above → transcribe → save. Immediate, never waits on anything. | ✅ shipped |
-| **Owned store** | One CloudKit/SwiftData library. **Notes are immutable ground truth**; the agent layer (tags · memory · view revisions · instructions) is *derived, attributed, regenerable, disposable* data alongside them. | notes ✅ · agent layer 🔨 |
-| **Rented intelligence** | Agents (a Claude session / a scheduled Mac runner) read the corpus and write back through a validated inbox → the Mac app applies. Understanding is **cached**, not baked in. | 🔨 building |
+| **Owned store** | One CloudKit/SwiftData library. **Notes are immutable ground truth**; the agent layer (tags · memory · view revisions · interactions · instructions) is *derived, attributed, regenerable, disposable* data alongside them. | ✅ shipped |
+| **Rented intelligence** | Agents (a Claude session / the scheduled `claude-runner`) read the corpus over MCP and write back through a validated inbox → the Mac app applies. Understanding is **cached**, not baked in. | ✅ shipped |
 
-Three things make it safe and useful: agents **write back** tags + memory (owned judgment, not a
+What makes it safe and useful: agents **write back** tags + memory (owned judgment, not a
 one-off chat); a **gate** marks notes *restricted* so they and everything derived from them never
-leave the device; and **views** — named living documents agents publish as immutable revisions,
-rendered as a Views feed with history. A launchd-scheduled runner closes the loop: speak a question
-into the watch on the sidewalk, and the answer is in the Views tab by the time you're home.
+leave the device; **views** — named living documents agents publish as immutable revisions, rendered
+as a feed with history, tappable citations, and **fence widgets** (`metric`/`chart`/`timeline`/`table`
+render as real cards, bars, timelines, grids on every device); **checkboxes are a two-way channel**
+(a tick is consumed and acknowledged by the next run); the user can **restore** any earlier revision
+(append-only, attributed `user-mac`/`user-ios`); and a votable **"Ollie wishlist"** view lets agents
+propose — and the user approve — the next capability. The launchd runner closes the loop: speak a
+question into the watch on the sidewalk, and a designed answer is on your wrist by the time you're home.
 
 The canonical data contract every door conforms to is **[`docs/agent-contract.md`](docs/agent-contract.md)**;
-the implementation plan is [`AGENT_LAYER_PLAN.md`](AGENT_LAYER_PLAN.md); the rung breakdown (Rungs 5–8)
-is in [`BACKLOG.md`](BACKLOG.md).
+milestone specs + as-built notes are [`AGENT_LAYER_PLAN.md`](AGENT_LAYER_PLAN.md); agent-facing
+operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACKLOG.md).
 
 ---
 
 ## Roadmap / next (ordered)
 
-1. **Hardware verification of watch capture** — confirm the press-and-hold record → transfer → note
-   path on a real Apple Watch.
-2. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.
-3. **The agent layer** — tags · memory · gated export · Views, plus a scheduled Mac agent runner.
-   In progress; see the three-layer section above and [`docs/agent-contract.md`](docs/agent-contract.md).
+1. **Live-eval follow-ups (Jul 2026)** — a `diagram`/sketch fence (the wishlist's first user-approved
+   request), a min-baseline option for `chart` (tight-range series render as identical bars), and two
+   app fixes: capture-bar notes stamp `createdAt` at draft-session start (agents miss them), and feed
+   previews leak literal `**`. See BACKLOG.md.
+2. **C2 — headless `claude` auth** for the launchd runner (needs the user; runner currently works
+   only from an interactive login).
+3. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.

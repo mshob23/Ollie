@@ -45,7 +45,7 @@ derived from it).
 | `notes_by_tag(tag, limit)` | Notes carrying a tag (case-insensitive), newest first |
 | `read_memory(include_retired)` | The agent codebook (durable facts); retired hidden by default |
 | `list_views()` | Named views (living documents), most-recently-updated first |
-| `get_view(name, revision_limit)` | A view's latest markdown body + recent revision metadata |
+| `get_view(name, revision_limit)` | A view's latest markdown body + recent revision metadata + `interactions` — the user's still-applying checkbox ticks (only rows newer than the latest revision; **republishing the view is how you acknowledge/retire them**) |
 
 **Writes — agent layer** (each *queues* an op and returns `{"requestId", "status": "queued"}`; the Mac app applies it on its next cycle):
 

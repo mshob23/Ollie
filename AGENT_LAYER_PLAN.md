@@ -13,6 +13,13 @@ interaction layer**, designed in [`docs/views-v2-interaction-spec.md`](docs/view
 (the design contract for M7; on conflict with this plan's task list, the spec wins on design, the
 plan on process). Fenced interactive blocks (`checklist`/`metric`/`chart`/`timeline`) stay deferred.
 
+**Scope extension (2026-07-07):** M7, **M8** (watch views + revision restore + double-title fix)
+and **M9** (render-only fence widgets `metric`/`chart`/`timeline`/`table` + authoring guidance +
+capability wishlist) are all **shipped** — the 2026-07-05 deferrals of the watch view surface and
+the display-only fences were superseded by the executed `docs/roadmap-next.md`. Still deferred:
+the *interactive* `checklist` fence (`cl2:` ids), photo notes, the on-device agent, and watch
+checkbox interaction (§6).
+
 ---
 
 ## 0. Context — what this adds and why

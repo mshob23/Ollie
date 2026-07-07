@@ -98,8 +98,10 @@ canary; deploy per step 2 above). Then:
    Only after `VALID` is the build installable — tell the user to update *then*.
 4. **`NSCameraUsageDescription` is required even though Ollie has no camera** (ITMS-90683):
    shared Core's `MicCaptureService` references `AVCaptureDevice` (audio-only) and the symbol
-   reference alone trips the App Store scanner. The string is in `project.yml`; don't remove
-   it until `MicCaptureService` is `#if os(macOS)`-guarded out of the iOS binary.
+   reference alone trips the App Store scanner. The string is in `project.yml`. As of Jul 2026
+   `MicCaptureService` IS `#if os(macOS)`-guarded out of the iOS binary (C1, shipped in
+   build 32 — which still carried the string), so the string should now be removable: delete
+   it only after a build **later than 32** reaches `VALID` without it.
 
 ## After an incident
 

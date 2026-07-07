@@ -2,22 +2,37 @@
 
 A living, prioritized list of what's next, ordered by **leverage, not size**.
 Product thesis: *"do little, expose flexibly"* (see the exposability ladder in the
-project notes). Rungs 0 (frictionless capture) and 2 (App Intents + Spotlight) are
-shipped on TestFlight build 7 + the notarized Mac `.dmg`.
+project notes). Rungs 0 (frictionless capture), 2 (App Intents + Spotlight), and the
+whole agent layer (Rungs 4–8 + M7–M9, below) are shipped — currently TestFlight
+build 32 + the notarized Mac `.dmg`.
 
-## Now — cheap, high-leverage
+## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 
-- **Rung 3 — export the corpus to plain files.** Mirror every note to a user-owned
-  iCloud Drive folder: Markdown (frontmatter + body) for humans/Obsidian, JSONL (one
-  record/line) for machines/LLMs. Cheap — `Note` is already `Codable`. This is the
-  whole "you own it / expose flexibly" thesis, and it delivers *intelligent search
-  today*: point ChatGPT/Claude at the folder and "notes related to Hassan" works
-  semantically, with zero in-app AI. Also unblocks Rung 4 (MCP).
+- **`diagram` / sketch fence widget.** The first user-approved entry in the "Ollie
+  wishlist" — agents already hit the dialect's wall wanting to draw (they fall back to
+  ASCII art in the monospaced panel, which works but is a poor-man's canvas). Same
+  renderer-only pattern as M9. This is the wishlist loop doing its job: build it.
+- **Fix: capture-bar notes carry the draft-session start `createdAt`, not send time.**
+  A note sent at 02:39 can be stamped 02:30 — agents' `list_notes(since:)` silently
+  misses it (bit two of three eval runs; the runbook has a workaround, the app should
+  stamp send time).
+- **Fix: feed previews leak literal `**`.** The snippet helper strips markdown pairs
+  incompletely; detail rendering is fine.
+- **`chart` min-baseline option.** A tight-range series (183→178) renders as six
+  visually identical zero-scaled bars — tracking data needs a baseline (or auto-baseline
+  when the range is tight) for the story to show.
+- **`metric` delta-sentiment hint.** `(-5)` tints danger-red, but in a weight cut minus
+  is *good*; guidance says "write `(5 down)`" for now — an explicit sentiment hint in
+  the grammar would be nicer.
 
 - **Finish the Find result.** `FindNotesIntent` returns a count ("Found 3 notes") but
   not the notes themselves. Show the matched notes (headline + preview) in the Siri /
   Shortcuts result and let the user open one (a `SnippetView` and/or an open-note
   intent). Completes the Rung 2 feature already shipped.
+
+- **Rung 3 remainder — human-facing Markdown mirror.** The machine half shipped (the
+  `~/Ollie` JSONL export feeds the MCP server); the Obsidian-style per-note Markdown
+  mirror to a user-owned iCloud Drive folder is still open.
 
 ## Next — the big bet
 
@@ -47,38 +62,23 @@ shipped on TestFlight build 7 + the notarized Mac `.dmg`.
   doesn't run the metadata extraction, so Mac Siri/Shortcuts discovery is limited.
   Add an extraction step (or a small Xcode project) for the Mac app. iOS is fully wired.
 
-## Rung 4 — later
+## The agent layer (Rungs 4–8) — ✅ SHIPPED (July 2026)
 
-- **MCP server over the exported folder (Mac).** Lets Claude/agents query the corpus
-  directly as a tool. Natural once Rung 3 export exists.
+*All of it: the MCP server over the exported corpus (Rung 4), agent write-back of tags +
+memory (Rung 5), the contagious restriction gate (Rung 6), views v1 with the Views
+tab/pane (Rung 7), and the launchd agent runner (Rung 8) — plus what was originally
+deferred: **M7** interactive checkboxes (two-way views), **M8** watch views + revision
+restore, and **M9** fence widgets (`metric`/`chart`/`timeline`/`table`) + the authoring
+style guide + the capability wishlist. Shipped as iOS TestFlight build 32 + the
+Developer-ID Mac app, and proven end-to-end in three live agent-run evaluations (the
+"Now" items above are those runs' findings). Specs + as-built notes:
+[`AGENT_LAYER_PLAN.md`](./AGENT_LAYER_PLAN.md); canonical contract:
+[`docs/agent-contract.md`](docs/agent-contract.md). Still deferred with names reserved:
+the `checklist`/`cl2:` fence, photo notes, the on-device FoundationModels agent, watch
+checkbox interaction (plan §6).*
 
-## The agent layer (Rungs 5–8) — in progress
-
-*Approved July 2026. Turns rented intelligence into cached, owned understanding written
-back into the store — tags + memory + views, gated so restricted notes never leave the
-device. Full spec: [`AGENT_LAYER_PLAN.md`](./AGENT_LAYER_PLAN.md); the canonical data
-contract is [`docs/agent-contract.md`](docs/agent-contract.md). Scope: build through
-Views v1; defer watch views, Views v2 interactive blocks, photo notes, and the on-device
-agent (schemas reserve room for all four).*
-
-- **Rung 5 — agent write-back.** *In progress.* Agents write **tags** (cached judgment)
-  and **memory** (a codebook of shorthand/preferences/dead-ends) back into the store as
-  append-only, attributed records. New SwiftData entities + `AgentLayerStore` choke point
-  (plan M1), an inbox op protocol the Mac app validates and applies (M3), and MCP write
-  tools + read-your-writes overlay (M4). Notes stay immutable ground truth; the layer is
-  derived and disposable.
-- **Rung 6 — the gate.** *Planned.* A note can be marked *restricted*; it and everything
-  derived from it (its tag lines, its `.md`) are filtered out of everything under
-  `~/Ollie/`. Restriction is contagious, encoded once in `CorpusGate`. Export v3 (plan
-  M2) + a restriction toggle in the apps (M5b).
-- **Rung 7 — views v1.** *Planned.* Agents publish named living documents ("Open loops",
-  "This week") as immutable revisions; the apps render a **Views** feed with history and
-  tappable `ollie://note/<uuid>` citations. Shared `MarkdownLite` renderer + a Views tab
-  on iOS and a Views pane on Mac (plan M5a/M5e/M5f).
-- **Rung 8 — the agent runner (the loop).** *Planned.* A launchd-scheduled headless
-  Claude session on the Mac periodically tags new notes, fulfills request-notes ("Ollie,
-  look into…"), and refreshes views. Speak into the watch on the sidewalk; the answer is
-  in the Views tab by the time you're home (plan M6).
+Operational remainder: **C2 — headless `claude` auth** for the launchd runner (needs the
+user; the runner otherwise guards itself).
 
 ## Consider
 
