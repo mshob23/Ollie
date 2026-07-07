@@ -1,5 +1,12 @@
 # Roadmap — the next awesome point (Jul 2026)
 
+> **STATUS: ✅ EXECUTED (Jul 2026).** F1–F9 and C1 all shipped — implemented by an Opus agent
+> fleet (2-stage impl with disjoint file ownership → verify → 3-lens adversarial review, zero
+> confirmed findings, builds green on round 1), shipped as iOS TestFlight **build 32** + a
+> rebuilt Mac Developer-ID app. Only **C2** (headless `claude` auth for the launchd runner)
+> remains, and it needs the user. Milestone as-built notes: `AGENT_LAYER_PLAN.md` §M8/§M9.
+> The acceptance demo below is the manual hardware pass to run.
+
 *The orchestration-facing plan for the next implementation push. Milestone mechanics live in
 [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) (§M8, §M9) — this doc is the feature inventory,
 sequencing, and verification map an implementing agent (or agent fleet) should work from.*

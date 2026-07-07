@@ -243,12 +243,18 @@ reads. The conventions agents follow, summarized (normative source is the runboo
 - **No leading H1 repeating the view name** (the app shows the name; M8 adds renderer suppression).
 - **A published checkbox is a contract** (M7) — the agent only publishes `- [ ]` items it will act on
   when ticked, including the *approval pattern* ("- [ ] Archive these 12 stale notes?" → tick = yes).
-- **Fence widgets** — agents may label fenced blocks with the reserved names (`metric`, `chart`,
-  `timeline`, `table`) and fill them with simple line-oriented text (`Label: value` rows, bars,
-  sparklines). Today these render as monospaced panels (the §6 pass-through); M9
-  (`AGENT_LAYER_PLAN.md` §M9) upgrades them to real widgets **in place** — same stored bytes.
-  Content must stay legible as plain text, because the panel *is* the permanent fallback rendering
-  (older builds, malformed content).
+- **Fence widgets — ✅ real renderers shipped (M9, Jul 2026).** Labeling a fenced block `metric`,
+  `chart`, `timeline`, or `table` renders a themed widget on Mac, iPhone, and watch; any other
+  label — or ANY malformed line — falls the whole fence back to the monospaced panel (never
+  stripped, never an error; `FenceWidget.parse` returning `nil` *is* the §6 pass-through).
+  Content must stay legible as plain text, because the panel is the permanent fallback rendering
+  (older builds, malformed content). Grammar, per nonblank line:
+  - ` ```metric ` — `Label: value` with optional trailing `(delta)` → big-number cards.
+  - ` ```chart ` — `Label: number` (C-locale decimal, finite) → horizontal bars scaled to the max.
+  - ` ```timeline ` — `<when> — <text>` (em/en dash, or space-padded hyphen; first separator
+    wins; `when` displayed verbatim) → vertical dotted timeline.
+  - ` ```table ` — pipe rows, first row = header, an optional `|---|` separator row is skipped
+    → simple grid.
 
 ---
 
@@ -276,11 +282,11 @@ on `media`, colliding a reserved id) is a regression.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent
   is working through (addressed to Ollie, or a clear task). A convention agents follow via the
   runbook, **not** an app feature; nothing in the app special-cases these tag strings.
-- **Reserved fence names** — `checklist`, `metric`, `chart`, `timeline`, `table` (`table` added
-  Jul 2026). Today they render as monospaced panels like any unknown fence (§6). `metric` / `chart`
-  / `timeline` / `table` are **scheduled**: real widget renderers, renderer-only (no schema change),
-  planned as `AGENT_LAYER_PLAN.md` §M9 with the fence content grammar defined there. `checklist` (and
-  `cl2:` explicit-id items inside fences) stays reserved beyond M9.
+- **Fence names** — `metric` / `chart` / `timeline` / `table`: ✅ **shipped as real widgets in M9**
+  (Jul 2026, renderer-only — no schema change; grammar + fallback rule in §6.1,
+  `FenceWidgets.swift` + the `MarkdownLite` codeBlock arm). Still reserved: the **`checklist`**
+  fence and explicit-id checklist items (`cl2:` prefix) inside fenced blocks — plain-markdown
+  checklists already interact via M7 (`cl1:`); do not collide these ids.
 - **Wishlist convention** — the standing view named **"Ollie wishlist"** plus `wish:`-prefixed
   memory entries: agents log view-dialect capabilities they lacked (one checklist line per wish);
   the user *ticks* a wish to request it, and the agent moves it under `## Requested` on the next
@@ -295,10 +301,9 @@ on `media`, colliding a reserved id) is a regression.
 
 For the full deferred list see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6. In brief:
 
-- **Views v2 fence widgets** — real renderers for `metric` / `chart` / `timeline` / `table`,
-  planned as `AGENT_LAYER_PLAN.md` §M9 (renderer-only; the checkbox interaction layer already
-  shipped in M7). The renderer already passes unknown fences through untouched, so bodies written
-  today upgrade in place.
+- **Views v2 fence widgets** — ✅ shipped in M9 (Jul 2026): `metric` / `chart` / `timeline` /
+  `table` render as real widgets (§6.1); the checkbox interaction layer shipped in M7. Still
+  ahead here: the interactive `checklist` fence with explicit `cl2:` ids.
 - **Watch views** — the pinned view's latest revision on the wrist (one more
   `updateApplicationContext` payload).
 - **Photo notes** — `CaptureKind.photo`, per-note media, OCR/caption at capture, the reserved `media`

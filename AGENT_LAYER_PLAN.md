@@ -542,7 +542,14 @@ overlay stopped applying.
 `Scripts/verify-prod-schema.sh` reports **31/31** — then bump the build. Same runbook as the M1
 deploy (see `docs/cloudkit-sync-troubleshooting.md`).
 
-### M8 — Watch views + views polish (time machine, double-title)
+### M8 — Watch views + views polish (time machine, double-title) ✅ SHIPPED (Jul 2026)
+
+*As built (Opus agent fleet, Jul 2026 — iOS TestFlight build 32 + Mac Developer-ID build): all
+three parts landed as specced. 8a: pinned-view payload rides `updateApplicationContext` AND the
+`requestSnapshot` reply (24 KB UTF-8 byte-budget truncation on grapheme boundaries); watch renders
+via path-referenced MarkdownLite + FenceWidgets in a new `WatchViewScreen` (third verticalPage).
+8b: `userRestore` + AppModel bridge + Restore-with-confirm context actions on both platforms.
+8c: `suppressLeadingHeading` wired in both detail panes and reused by the watch screen.*
 
 **Goal:** the pinned view's latest revision readable on the wrist; users can restore an earlier
 view revision; the view-name/H1 duplication is gone. **No schema change** — nothing here touches
@@ -590,7 +597,14 @@ follows via sync; publish a view whose body opens with its own name as H1 → re
 
 ---
 
-### M9 — Views expressivity: fence widgets + authoring guidance (renderer-only)
+### M9 — Views expressivity: fence widgets + authoring guidance (renderer-only) ✅ SHIPPED (Jul 2026)
+
+*As built (same fleet + ship as M8): `FenceWidgets.swift` pure parser (nil = panel fallback; one
+malformed line fails the whole fence back; non-finite chart values rejected so NaN/∞ never reach
+frame math) + four themed watch-safe renderers inline in MarkdownLite (inline on purpose — the
+watch target path-references only MarkdownLite + FenceWidgets). 240 package tests green incl. the
+all-four-fences-plus-malformed demo body; grammar documented in contract §6.1. 9d (guidance +
+wishlist) had shipped ahead as docs.*
 
 **Goal:** views stop looking like plain text. The reserved fence labels render as real widgets;
 agents author to a style guide (glance budget, checkbox-as-contract, fence widgets) and log the

@@ -116,10 +116,11 @@ The first screenful is the product. Views render on a phone (and soon a watch), 
 - **Names are feed rows.** Short noun phrases ("Heat pump project", not "Notes and
   analysis regarding…"). Standing views keep stable names forever (revision history
   accrues); don't put dates in names.
-- **Fence widgets.** Fenced blocks render as monospaced panels, so aligned text IS a
-  graphic. Use the reserved labels — `metric`, `chart`, `timeline`, `table` — for
-  content that fits them; when real widget rendering ships, those exact bodies
-  upgrade in place. Keep panels ≤ ~8 lines and legible as plain text. Patterns:
+- **Fence widgets.** Fenced blocks labeled `metric`, `chart`, `timeline`, or `table`
+  render as REAL widgets (big-number cards, bar charts, timelines, grids) on every
+  device; any other label — or any malformed line — shows as a plain monospaced
+  panel instead. So keep fence content ≤ ~8 lines and legible as plain text (the
+  panel is the fallback, and older builds only ever see the panel). Patterns:
 
   ```metric
   Captured this week: 23  (+8)
