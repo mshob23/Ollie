@@ -98,6 +98,7 @@ swift test                          # 240+ tests, includes the schema golden gat
 | `RELEASE.md` | Ship discipline, both platforms; the "declared done but never verified" traps |
 | `Scripts/ollie-runbook.md` | The scheduled agent's prompt (7 steps + view style guide) |
 | `docs/views-v2-interaction-spec.md` | M7 checkbox design contract (blockId derivation, overlay semantics) |
+| `docs/home-node.md` | Running the user's MacBook as the always-on hub — power profile script (`Scripts/setup-home-node.sh`), clamshell test, native 80% charge limit |
 | `docs/roadmap-next.md` | The executed Jul-2026 roadmap (historical record) |
 | `ECOSYSTEM.md` / `BACKLOG.md` | Cross-repo overview / what's next |
 | `docs/cloudkit-sync-troubleshooting.md` | Sync incidents — start with `Scripts/diagnose-sync.sh` |

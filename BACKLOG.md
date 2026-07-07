@@ -37,8 +37,13 @@ build 32 + the notarized Mac `.dmg`.
 ## The home-node track — closing the loop away from the desk (2026-07-07, see VISION.md)
 
 Goal: speak into the watch anywhere → a view lands back on the wrist minutes later, with
-the always-on Mac standing in for the future on-device agent. Gated on **C2** (headless
-`claude` auth — needs the user); then, in order:
+the always-on Mac standing in for the future on-device agent.
+
+*Machine half shipped 2026-07-07:* `Scripts/setup-home-node.sh` + `docs/home-node.md` —
+awake-on-AC/sleep-on-battery pmset profile, `caffeinate -s` LaunchAgent for clamshell
+(zero third-party; Amphetamine documented as fallback), native macOS 26.4 Charge Limit
+at 80% instead of AlDente. The *agent half* is gated on **C2** (headless `claude` auth —
+needs the user); then, in order:
 
 - **Event-driven runner.** The Mac app already receives CloudKit pushes for arriving
   notes; debounce ~90 s (a walk's worth of thoughts batches into one run) and kick the
