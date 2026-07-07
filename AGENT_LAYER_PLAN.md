@@ -590,6 +590,62 @@ follows via sync; publish a view whose body opens with its own name as H1 → re
 
 ---
 
+### M9 — Views expressivity: fence widgets + authoring guidance (renderer-only)
+
+**Goal:** views stop looking like plain text. The reserved fence labels render as real widgets;
+agents author to a style guide (glance budget, checkbox-as-contract, fence widgets) and log the
+capabilities they lacked into a user-votable **wishlist**, so the next capability we build is
+demand-driven. **No schema change anywhere in this milestone** — a fence is just characters inside
+the existing `ViewRevisionEntity.body` string. No golden regen, no CloudKit Production deploy, no
+`SCHEMA_DEPLOYED` dance; old builds degrade gracefully (they keep showing the monospaced panel).
+
+**Ordering:** independent of M8, but both touch `MarkdownLite` — run **M8 first** (or rebase 9b on
+it). Either way every widget view must be **watch-safe** (no `.textSelection`, no AppKit/UIKit-only
+API) because M8 path-references MarkdownLite into the watch target.
+
+**9a. Fence grammar + parser (Core, pure).** New `Sources/HandheldNotesCore/AgentViews/FenceWidgets.swift`:
+a pure, `Equatable`, unit-testable `FenceWidget.parse(info:code:) -> FenceWidget?` where `nil` means
+"render today's monospaced panel". Tolerant line grammar — malformed content degrades to the panel,
+**never an error, never stripped** (the contract §6 forward-compat invariant is load-bearing):
+- ` ```metric ` — each line `Label: value` with optional trailing `(delta)`, e.g.
+  `Captured this week: 23 (+8)` → big-number cards (wrap 2–3 per row).
+- ` ```chart ` — each line `Label: number` → horizontal bars scaled to the max value, value at
+  the bar end.
+- ` ```timeline ` — each line `<when> — <text>` (en/em dash or hyphen separator) → vertical
+  dotted timeline; `<when>` is displayed verbatim (no date parsing).
+- ` ```table ` — GitHub-style pipe rows, first row = header, optional `|---|` separator row
+  tolerated and skipped → simple grid (header bolded).
+- **Not in scope:** the `checklist` fence and `cl2:` explicit-id items — still reserved
+  (plain-markdown checklists already interact via M7). Do not collide with `cl1:` blockIds.
+- Tests: per-grammar goldens, malformed → `nil`, mixed valid/garbage lines, empty fence, the
+  fence-with-no-info case unchanged.
+
+**9b. Widget renderers in MarkdownLite.** The `.codeBlock(info:code:)` arm consults the parser;
+`nil` renders the existing panel byte-for-byte unchanged. SwiftUI only — plain shapes + `Text`
+(no Swift Charts dependency), cross-platform macOS 14 / iOS 17 / watchOS 10, theme fonts/colors
+from `Theme.swift`. Each widget gets an accessibility label summarizing its data. Tests: widget
+selection logic (which fence info → which widget), fallback-on-nil.
+
+**9c. Doc + contract sync.** `docs/agent-contract.md` §6.1/§7: move `metric`/`chart`/`timeline`/
+`table` from "scheduled" to shipped, with the grammar documented in §6.1; runbook style-guide
+examples double as the canonical sample bodies. Add a demo body to the golden test fixtures so a
+grammar regression is caught mechanically.
+
+**9d. Authoring guidance + wishlist channel — ✅ docs shipped ahead (Jul 2026, this commit).**
+Runbook v2: portfolio step (standing views + topic-dossier trigger at 4+ related notes + ~8-view
+cap with retirement + delta lines + no no-op republishes + the read-interactions-before-republish
+invariant), the **style guide** (glance budget, lead-with-takeaway, checkbox-as-contract /
+approval pattern, fence-widget patterns), and step 6: the **"Ollie wishlist"** view + `wish:`
+memory convention (user ticks a wish → agent moves it to `## Requested`). Contract §6.1 + §7
+updated to match. M9's remaining doc work is only the 9c sync above.
+
+**Verify:** `swift test` green; iOS **and** watch app build (`-destination` only, never `-sdk`).
+Manual: publish one demo view exercising all four fences + one deliberately malformed fence (must
+render as a plain panel) → check Mac, iPhone, and (post-M8) watch; tick a wish in "Ollie wishlist"
+→ next agent pass moves it under `## Requested`.
+
+---
+
 ## 5. End-to-end acceptance (after M6)
 
 The demo that proves the vision, on real hardware:
@@ -611,11 +667,11 @@ Production deploy done before any release build (`SCHEMA_DEPLOYED=1` gate enforc
 
 ## 6. Deferred, with names reserved (do not build; do not break)
 
-- **Views v2 fenced blocks**: interactive fenced blocks (`checklist`, `metric`, `chart`,
-  `timeline`) with explicit item ids (`cl2:` prefix reserved). Renderer already passes unknown
-  fences through as monospaced panels. *(The plain-markdown checkbox interaction layer is no
-  longer deferred — it is **M7**, designed in `docs/views-v2-interaction-spec.md`, which also
-  supersedes the old `InteractionEventEntity` name with `InteractionStateEntity`.)*
+- ~~**Views v2 fenced blocks**~~ — mostly no longer deferred: `metric` / `chart` / `timeline` /
+  `table` widget rendering is now **M9** (renderer-only). Still deferred from that set: the
+  `checklist` fence with explicit item ids (`cl2:` prefix reserved). *(The plain-markdown checkbox
+  interaction layer shipped as **M7** — `docs/views-v2-interaction-spec.md`, which also superseded
+  the old `InteractionEventEntity` name with `InteractionStateEntity`.)*
 - ~~**Watch views**~~ — no longer deferred: now **M8** (read-only pinned view on the wrist).
   Watch *interaction* (tapping checkboxes on the wrist) remains deferred.
 - **Photo notes**: `CaptureKind.photo`, per-note media attachments, render-to-text (OCR/caption)

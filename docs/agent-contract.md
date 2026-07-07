@@ -228,6 +228,23 @@ on:
   plain monospaced blocks **today**. They are **never stripped, never errored**. This is the reserved
   growth path for Views v2 interactive blocks.
 
+### 6.1 Authoring style + fence-widget conventions (advisory)
+
+The two bullets above are the *mechanical* contract; **style** is guidance and lives in the runbook
+(`Scripts/ollie-runbook.md` → "View style guide"), which is the prompt every scheduled run actually
+reads. The conventions agents follow, summarized (normative source is the runbook):
+
+- **Glance budget** — first screenful carries the point; first ~10 lines are the wrist-sized version.
+- **No leading H1 repeating the view name** (the app shows the name; M8 adds renderer suppression).
+- **A published checkbox is a contract** (M7) — the agent only publishes `- [ ]` items it will act on
+  when ticked, including the *approval pattern* ("- [ ] Archive these 12 stale notes?" → tick = yes).
+- **Fence widgets** — agents may label fenced blocks with the reserved names (`metric`, `chart`,
+  `timeline`, `table`) and fill them with simple line-oriented text (`Label: value` rows, bars,
+  sparklines). Today these render as monospaced panels (the §6 pass-through); M9
+  (`AGENT_LAYER_PLAN.md` §M9) upgrades them to real widgets **in place** — same stored bytes.
+  Content must stay legible as plain text, because the panel *is* the permanent fallback rendering
+  (older builds, malformed content).
+
 ---
 
 ## 7. Reserved for later (do not build; do not break)
@@ -254,8 +271,16 @@ on `media`, colliding a reserved id) is a regression.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent
   is working through (addressed to Ollie, or a clear task). A convention agents follow via the
   runbook, **not** an app feature; nothing in the app special-cases these tag strings.
-- **Reserved fence names** — `checklist`, `metric`, `chart`, `timeline`. Reserved for Views v2
-  interactive blocks; today they render as monospaced panels like any unknown fence (§6).
+- **Reserved fence names** — `checklist`, `metric`, `chart`, `timeline`, `table` (`table` added
+  Jul 2026). Today they render as monospaced panels like any unknown fence (§6). `metric` / `chart`
+  / `timeline` / `table` are **scheduled**: real widget renderers, renderer-only (no schema change),
+  planned as `AGENT_LAYER_PLAN.md` §M9 with the fence content grammar defined there. `checklist` (and
+  `cl2:` explicit-id items inside fences) stays reserved beyond M9.
+- **Wishlist convention** — the standing view named **"Ollie wishlist"** plus `wish:`-prefixed
+  memory entries: agents log view-dialect capabilities they lacked (one checklist line per wish);
+  the user *ticks* a wish to request it, and the agent moves it under `## Requested` on the next
+  republish. This is the demand signal for which reserved capability to build next. A runbook
+  convention like the request-lifecycle tags — nothing in the app special-cases these strings.
 - **Reserved `agentId`s** — `ondevice-fm` (on-device FoundationModels agent), `siri`.
 - **Reserved `via` doors** — `app-intent`, `in-process` (§1).
 
@@ -265,8 +290,10 @@ on `media`, colliding a reserved id) is a regression.
 
 For the full deferred list see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6. In brief:
 
-- **Views v2** — interactive fenced blocks (`checklist` / `metric` / `chart` / `timeline`) +
-  `InteractionEventEntity`. The renderer already passes unknown fences through untouched.
+- **Views v2 fence widgets** — real renderers for `metric` / `chart` / `timeline` / `table`,
+  planned as `AGENT_LAYER_PLAN.md` §M9 (renderer-only; the checkbox interaction layer already
+  shipped in M7). The renderer already passes unknown fences through untouched, so bodies written
+  today upgrade in place.
 - **Watch views** — the pinned view's latest revision on the wrist (one more
   `updateApplicationContext` payload).
 - **Photo notes** — `CaptureKind.photo`, per-note media, OCR/caption at capture, the reserved `media`
