@@ -18,6 +18,11 @@ Work through these seven steps in order, then stop.
    tags with `tag_note(id, tag)`. Call `tag_vocabulary()` FIRST and **reuse an existing
    tag before inventing a new one** — a sprawling vocabulary is useless. Tags are
    freeform; the `key:value` convention (e.g. `topic:heat-pump`) is fine but optional.
+   Two edge rules: a note's `createdAt` can predate its actual capture (a draft holds
+   its session start time), so ALSO skim `recent_notes()` for untagged stragglers the
+   `since` boundary missed; and **backfilling an older note is sanctioned** when a new
+   thread needs it (e.g. a new request cites a thread whose earliest note was never
+   tagged).
 
 4. **Handle request-notes.** A request-note is one addressed to Ollie ("Ollie, look
    into…") or that clearly reads as a task/question. For each:
@@ -60,7 +65,9 @@ Work through these seven steps in order, then stop.
    - **Topic dossiers** — when **4+ notes share a live topic** (same `topic:*` tag or
      an obvious thread) and the thread is still moving, publish a dossier view named
      for it (e.g. "Heat pump project"): current state, decisions made, open questions,
-     citations. Update it while the thread lives.
+     citations. Update it while the thread lives. When a request-note's answer and a
+     topic dossier would substantially overlap, publish **one** view serving both —
+     never two near-duplicates.
    - **Retire, don't sprawl** — keep at most **~8 live views**. When a dossier goes
      quiet, fold its one-line remainder into "Open loops" and stop republishing it.
      A stale view is worse than none; the same rule as tag vocabulary.
@@ -68,7 +75,12 @@ Work through these seven steps in order, then stop.
      with a bold one-liner: `**New since last run:** …`.
    - **No no-op republishes** — if a view's content wouldn't change, don't republish
      it. Every revision reorders the feed and retires checkbox state; publish only
-     when there is something new to say.
+     when there is something new to say. A **correction counts** (a broken citation or
+     factual typo is worth a republish — verify UUIDs from tool results, never from
+     memory). And when a view's latest revision is the **user's own restore**
+     (`user-<surface>` agentId), the bar is higher than "content differs": their
+     restore was a deliberate choice — republish over it only for a delta that
+     genuinely matters.
 
 6. **Log capability wishes.** When this run wanted to express something the view
    dialect could not (a real table, an image, a layout, a chart type…):
@@ -133,5 +145,19 @@ The first screenful is the product. Views render on a phone (and soon a watch), 
   Wed: 12
   ```
 
-  Inside any fence, bars `▓▓▓▓▓░░░░░ 50%`, sparklines `▁▂▃▅▇`, and space-aligned
-  columns all read well on every device.
+  ```table
+  Option | Price | Catch
+  Acrylic | $180 | brittle
+  Polycarbonate | $240 | pricier
+  ```
+
+  ```timeline
+  Aug 14 — fly out, check in 3pm
+  Aug 15 — Japanese Garden, morning
+  ```
+
+  A comparison of two-plus options across two-plus attributes belongs in a `table`
+  fence (pipe-separated, first row is the header) — not a bullet list. A dated or
+  ordered sequence belongs in a `timeline` fence (`when — what` per line). Inside
+  any fence, bars `▓▓▓▓▓░░░░░ 50%`, sparklines `▁▂▃▅▇`, and space-aligned columns
+  also read well on every device.
