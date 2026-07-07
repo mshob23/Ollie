@@ -44,15 +44,22 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # ---- helpers ---------------------------------------------------------------
 
+# NOTE: this script runs under pipefail, so no pipeline stage may exit before
+# its upstream finishes writing (grep -q / head -1 / awk exit all can — the
+# upstream then dies of SIGPIPE and the *matched* pipeline reports failure).
+# Every pmset pipeline below therefore consumes its whole stream.
+
 # get_pm <Battery|AC> <key> — read one value from `pmset -g custom`
 get_pm() {
   pmset -g custom | awk -v sec="$1" -v key="$2" '
     /^Battery Power:/ { cur = "Battery" }
     /^AC Power:/      { cur = "AC" }
-    cur == sec && $1 == key { print $2; exit }'
+    cur == sec && $1 == key && !done { print $2; done = 1 }'
 }
 
-on_ac() { pmset -g ps | head -1 | grep -q "AC Power"; }
+on_ac() { pmset -g ps 2>/dev/null | awk 'NR == 1 && /AC Power/ { f = 1 } END { exit !f }'; }
+
+caffeinate_asserting() { pmset -g assertions 2>/dev/null | grep "caffeinate" >/dev/null; }
 
 agent_loaded() { launchctl print "$GUI_DOMAIN/$AGENT_LABEL" >/dev/null 2>&1; }
 
@@ -93,7 +100,7 @@ status() {
   if [[ -f "$AGENT_PLIST" ]]; then ok "LaunchAgent installed"; else bad "LaunchAgent not installed — run --apply"; fi
   if agent_loaded; then ok "LaunchAgent loaded"; else bad "LaunchAgent not loaded — run --apply"; fi
   if on_ac; then
-    if pmset -g assertions 2>/dev/null | grep -q "caffeinate"; then
+    if caffeinate_asserting; then
       ok "caffeinate assertion active (on AC now)"
     else
       bad "on AC but no caffeinate assertion visible"
@@ -175,6 +182,15 @@ apply() {
 PLIST
   launchctl bootout "$GUI_DOMAIN/$AGENT_LABEL" 2>/dev/null || true
   launchctl bootstrap "$GUI_DOMAIN" "$AGENT_PLIST"
+
+  # caffeinate takes a beat to register its assertion with powerd — don't let
+  # the immediate status read below race it and report a false ✗.
+  if on_ac; then
+    for _ in $(seq 1 10); do
+      caffeinate_asserting && break
+      sleep 0.5
+    done
+  fi
 
   echo
   status || true
