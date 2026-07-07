@@ -29,8 +29,10 @@ as-built notes): tags/memory/views + restriction gate + MCP server + scheduled r
 interactive checkboxes (M7), watch views + revision restore + double-title fix (M8), and the
 fence widgets `metric`/`chart`/`timeline`/`table` (M9, renderer-only). Shipped as iOS
 TestFlight **build 32** + a Developer-ID Mac app. `checklist` and `cl2:` ids remain **reserved,
-unbuilt** (contract §7). Only C2 (headless `claude` auth for the launchd runner) is pending,
-and it needs the user.
+unbuilt** (contract §7). **C2 closed 2026-07-07**: the launchd runner does unattended passes
+(first verified run: 72 tags, 8 views, 2 request-notes answered). The RUNTIME is deployed to
+`~/Ollie/{bin,mcp}` by `Scripts/install-agent-runner.sh` — launchd cannot read this Desktop
+repo (TCC), so **re-run the installer after editing the runner, runbook, or MCP server**.
 
 ## Build & test
 
