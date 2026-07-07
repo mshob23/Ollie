@@ -41,9 +41,10 @@ the always-on Mac standing in for the future on-device agent.
 
 *Machine half shipped 2026-07-07:* `Scripts/setup-home-node.sh` + `docs/home-node.md` —
 awake-on-AC/sleep-on-battery pmset profile, `caffeinate -s` LaunchAgent for clamshell
-(zero third-party; Amphetamine documented as fallback), native macOS 26.4 Charge Limit
-at 80% instead of AlDente. The *agent half* is gated on **C2** (headless `claude` auth —
-needs the user); then, in order:
+(zero third-party; Amphetamine documented as fallback — unused: clamshell lid-test
+PASSED on-device 2026-07-07), native macOS 26.4 Charge Limit at 80% instead of AlDente.
+The *agent half* is gated on **C2** (headless `claude` auth — needs the user); then, in
+order:
 
 - **Event-driven runner.** The Mac app already receives CloudKit pushes for arriving
   notes; debounce ~90 s (a walk's worth of thoughts batches into one run) and kick the

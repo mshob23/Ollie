@@ -61,6 +61,11 @@ heartbeat file (a gap means the machine actually slept) and `pmset -g log`'s own
 ```
 
 - **STAYED AWAKE** → clamshell works with zero third-party software. Done.
+
+  > **Verified on this hardware 2026-07-07** (M2 MacBook Pro, macOS 26.5.1):
+  > STAYED AWAKE — 46 beats over 3m46s, max gap 6s, no `Entering Sleep` in
+  > `pmset -g log`. The Amphetamine fallback below is therefore **unused**.
+
 - **SLEPT** → two options:
   - Run the node **lid-open** (display sleeps at 10 min anyway; the panel is LCD — a
     dark screen has no burn-in risk). Zero extra software.
