@@ -17,6 +17,11 @@ own CLAUDE.md). It consumes Core by relative path, so **a Core change is not don
 BOTH apps are rebuilt and reinstalled** — testing against a stale installed binary is the
 classic phantom-bug trap here (RELEASE.md).
 
+**Product-shaped decision?** (new surface, new dependency, anything touching cost, custody,
+or how agents connect) — read `VISION.md` first. It defines what Ollie is *and refuses to
+be* (no vendor server, no chat surface, one gate, one store writer, agent-agnostic file
+contract). A change that fights it needs the vision updated deliberately, not worked around.
+
 ## State of the world (July 2026)
 
 Agent-layer milestones **M0–M9 are all shipped** (see `AGENT_LAYER_PLAN.md` §M-headers for
@@ -87,7 +92,8 @@ swift test                          # 240+ tests, includes the schema golden gat
 
 | Doc | Role |
 |---|---|
-| `docs/agent-contract.md` | **Canonical data contract** — entities, export layout, inbox ops, fence grammar (§6.1), reserved names (§7), agentId conventions (§1, incl. `user-<surface>` restores), runner ops (§9). On conflict, this wins. |
+| `VISION.md` | **The soul** — what Ollie is / refuses to be, trust + cost model, north-star scenes. Governs *product intent*; consult before product-shaped decisions. |
+| `docs/agent-contract.md` | **Canonical data contract** — entities, export layout, inbox ops, fence grammar (§6.1), reserved names (§7), agentId conventions (§1, incl. `user-<surface>` restores), runner ops (§9). On conflict over mechanics, this wins. |
 | `AGENT_LAYER_PLAN.md` | Milestone specs M0–M9 with as-built notes — written as implementable specs; point implementing agents at the relevant § |
 | `RELEASE.md` | Ship discipline, both platforms; the "declared done but never verified" traps |
 | `Scripts/ollie-runbook.md` | The scheduled agent's prompt (7 steps + view style guide) |

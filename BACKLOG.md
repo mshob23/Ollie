@@ -34,6 +34,32 @@ build 32 + the notarized Mac `.dmg`.
   `~/Ollie` JSONL export feeds the MCP server); the Obsidian-style per-note Markdown
   mirror to a user-owned iCloud Drive folder is still open.
 
+## The home-node track — closing the loop away from the desk (2026-07-07, see VISION.md)
+
+Goal: speak into the watch anywhere → a view lands back on the wrist minutes later, with
+the always-on Mac standing in for the future on-device agent. Gated on **C2** (headless
+`claude` auth — needs the user); then, in order:
+
+- **Event-driven runner.** The Mac app already receives CloudKit pushes for arriving
+  notes; debounce ~90 s (a walk's worth of thoughts batches into one run) and kick the
+  launchd runner, keeping the schedule as backstop. Target end-to-end latency 2–5 min.
+- **Arrival-time coverage, not event-time.** Stamp `ingestedAt` (when the note reached the
+  Mac store) at export; the runner's since-cursor should move over `ingestedAt`, advancing
+  **only on successful run completion**. This closes the whole "missed note" class in one
+  move: the capture-bar `createdAt` bug *and* late-syncing watch notes (created 3 h ago,
+  arriving now) both stop being coverage hazards.
+- **`runs.jsonl` work log.** Each run appends `{runId, agentId, startedAt, finishedAt,
+  coveredThrough, notesSeen, viewsTouched}`. Advisory context for the next agent (and
+  renderable as a view for the user) — never access control (VISION.md). Prefer this over
+  per-note "seen" flags: notes are immutable + append-only, so a high-water mark gives
+  exact coverage without n× bookkeeping writes; idempotent writes make any re-processing
+  harmless anyway.
+- **Runbook: decay + reflection guidance.** A line on weighting notes by recency (an old
+  note surfaces only if strongly relevant), plus a periodic reflection pass over the aging
+  tail (never tagged, never cited in a view, > N days) that promotes anything durable to
+  memory — after which the raw note cools out of the working window naturally. Fade by
+  distillation, never deletion.
+
 ## Next — the big bet
 
 - **Rung 1a — on-device semantic search: BUILT + SHELVED (June 2026).** Works
