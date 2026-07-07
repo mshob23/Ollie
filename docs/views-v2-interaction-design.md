@@ -1,10 +1,10 @@
 # Views v2 — user interaction design brief
 
-*Status: **RESOLVED** — the six open questions below are answered in
-[`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) (2026-07-06), which is the
-implementable spec. This brief is kept as the problem statement / rationale record. Originally
-deferred from Views v1 (see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6 and
-[`agent-contract.md`](agent-contract.md) §7).*
+*Status: ✅ **RESOLVED → BUILT & SHIPPED** (M7, Jul 2026). The six open questions below are answered
+in [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md), which was implemented and verified
+end-to-end on hardware (iOS build 31 + Mac). This brief is kept as the problem-statement / rationale
+record — read the spec for the as-built reference. Originally deferred from Views v1 (see
+[`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6 and [`agent-contract.md`](agent-contract.md) §7).*
 
 ## The problem
 

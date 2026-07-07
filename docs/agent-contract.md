@@ -108,11 +108,14 @@ projection (`AgentTag`, `AgentMemory`, `AgentViewRevision`). Upsert-by-`id` in c
 - **Instructions**: a **single** user-authored record (fixed well-known UUID, upsert), edited
   in-app, synced like everything else.
 
-> **Every entity change in this plan lands in one batch (Milestone 1).** Do not add entities
-> piecemeal in later milestones — the schema golden gate
-> (`Tests/HandheldNotesCoreTests/SchemaGoldenTests.swift`) fails by design on any `@Model` change,
-> and CloudKit **Production** must be deployed once for the whole set. See
-> [`RELEASE.md`](../RELEASE.md) and [`docs/cloudkit-sync-troubleshooting.md`](cloudkit-sync-troubleshooting.md).
+> **The M1 entity batch above shipped as one CloudKit Production deploy.** A **fifth** entity,
+> **`InteractionStateEntity`**, shipped later in **M7** (Views v2 checkbox layer) as its own single
+> batched deploy — see [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) §2 and the
+> **Interaction state** entry in §7. The rule stands: any *new* `@Model`/field trips the schema
+> golden gate (`Tests/HandheldNotesCoreTests/SchemaGoldenTests.swift`) by design, and CloudKit
+> **Production** must be deployed (Dev import → Dashboard promote → `verify-prod-schema.sh`) before
+> the release build — batch it, don't add entities piecemeal. See [`RELEASE.md`](../RELEASE.md) and
+> [`docs/cloudkit-sync-troubleshooting.md`](cloudkit-sync-troubleshooting.md).
 
 ---
 
@@ -189,6 +192,7 @@ Existing files: `ollie.jsonl`, `notes/<id>.md`, `.ollie.meta.json`, `backups/`. 
 | `memory.jsonl` | `{"id","text","agentId","createdAt","retired","retiredAt"?}` (retired entries included, flagged) |
 | `views.jsonl` | `{"id","viewName","body","agentId","createdAt"}` — every revision, **full body** (snapshots, not diffs) |
 | `instructions.md` | plain markdown, the instructions text |
+| `interactions.jsonl` | `{"viewName","blockId","blockText","kind","value","revisionId","surface","updatedAt"}` — **M7**, one line per live checkbox-interaction record (see [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) §6) |
 
 ### Gate rules (apply to every exported artifact)
 
@@ -232,15 +236,19 @@ Named now so schemas leave room and renderers pass them through — but **out of
 Building any of these is scope creep; breaking the reservation (stripping an unknown fence, erroring
 on `media`, colliding a reserved id) is a regression.
 
-- **Interaction state** — a synced `InteractionStateEntity` (user toggles a view checkbox → upserted
-  per-block state → export → agent acts next run) for interactive view blocks. **Designed, not yet
-  built** — the full spec is [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md)
-  (supersedes the earlier `InteractionEventEntity` reservation; rationale in
-  [`views-v2-interaction-design.md`](views-v2-interaction-design.md)). Key invariant: user
-  interaction never mutates a view revision; interaction state is a separate, user-authored,
-  app-written, debounced end-state per-block layer (at most one durable write per settle), and a
-  newer revision supersedes older interaction state — publishing is the acknowledgment. Explicit-id
-  checklist items inside fenced blocks stay reserved (`cl2:` prefix).
+- **Interaction state** — ✅ **SHIPPED in M7** (Jul 2026), no longer reserved. A synced
+  `InteractionStateEntity` (user toggles a view checkbox → debounced upserted per-block state →
+  `interactions.jsonl` + `get_view.interactions` → agent acts next run and republishes). Full spec:
+  [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) (superseded the earlier
+  `InteractionEventEntity` name; rationale in
+  [`views-v2-interaction-design.md`](views-v2-interaction-design.md)). **Load-bearing invariants that
+  must not regress:** (a) user interaction never mutates a `ViewRevisionEntity`; interaction state is
+  a separate, user-authored, app-written, debounced end-state per-block layer — at most one durable
+  write per settle; (b) a newer revision supersedes older interaction state — **publishing is the
+  acknowledgment**; (c) `ViewInteractionModel.resolved()` runs during SwiftUI render, so it must
+  mutate **no** observed state (`@ObservationIgnored`) or it infinite-loops the render (0x8BADF00D) —
+  see [`ollie-swiftui-render-loop`]. Still reserved on top of this: explicit-id checklist items inside
+  fenced blocks (`cl2:` prefix) and the interactive fence names below.
 - **`media: [String]?`** on `ExportRecord` — reserved for per-note photo/audio attachments; always
   `nil` today.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent

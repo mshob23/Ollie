@@ -464,7 +464,14 @@ is unreliable — acceptable to verify sync on hardware and UI-with-local-data i
 gain tags; "This week" view appears on Mac and (hardware) iPhone. Then `launchctl kickstart` the
 job and confirm one scheduled run completes.
 
-### M7 — Views v2: checkbox interaction layer
+### M7 — Views v2: checkbox interaction layer ✅ SHIPPED (Jul 2026)
+
+**Status:** built and verified end-to-end on hardware — iOS TestFlight build **31**, Mac Developer-ID
+build, CloudKit Production schema deployed (**31/31** fields), full round-trip confirmed (taps on
+phone + Mac → synced `interactions.jsonl` → agent consumed checks and republished "Open loops", which
+auto-superseded them). Two on-device-only bugs were found and fixed post-first-build (per-render
+SwiftData fetch `f2d46c6`; `@Observable`-mutation-during-render loop `97ec866`) — see the spec's
+§10 "Post-ship notes". The task list below is the as-executed record.
 
 **Goal:** checklist items in views become tappable; the settled end-state syncs; the agent
 consumes checks on its next run. **Design contract:** [`docs/views-v2-interaction-spec.md`](docs/views-v2-interaction-spec.md)

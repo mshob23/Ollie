@@ -1,9 +1,15 @@
 # Views v2 — interaction spec (checkbox layer)
 
-*Status: **designed, not yet built**. This resolves the six open questions in
-[`views-v2-interaction-design.md`](views-v2-interaction-design.md) and is the implementable spec
-for the first interactive block: the checkbox. It is written to be carried out as one milestone
-(**M7**) by an implementing agent, following the same conventions as `AGENT_LAYER_PLAN.md` §4.
+*Status: ✅ **BUILT & SHIPPED as M7** (Jul 2026) — iOS TestFlight build 31, Mac Developer-ID build,
+CloudKit Production schema deployed (31/31 fields), and verified end-to-end on hardware (taps on
+phone + Mac → synced `interactions.jsonl` → agent consumed the checks and republished "Open loops",
+which auto-superseded them). This doc is now the **as-built reference**; the milestone task list is
+`AGENT_LAYER_PLAN.md` §4 M7. Below resolves the six open questions from
+[`views-v2-interaction-design.md`](views-v2-interaction-design.md) — the implementation followed it,
+with two field-learned corrections captured in §"Post-ship notes" at the end.*
+
+*Original framing (kept for context): the implementable spec for the first interactive block, the
+checkbox, carried out as one milestone (**M7**) following `AGENT_LAYER_PLAN.md` §4 conventions.*
 On conflict, the invariants in [`agent-contract.md`](agent-contract.md) §0 win.*
 
 ---
@@ -270,3 +276,28 @@ reserved.
 
 **Non-goals (unchanged reservations):** fenced ` ```checklist `/`metric`/`chart`/`timeline`
 interactivity, watch interaction, an interaction inbox op, per-tap event history.
+
+---
+
+## 10. Post-ship notes (field-learned corrections, Jul 2026)
+
+Two bugs surfaced only on-device (not in the 182 unit tests, which exercise `resolved()` outside any
+SwiftUI observation transaction). Both are fixed and guarded; a future editor of `ViewInteractionModel`
+/ `MarkdownLite` must not reintroduce them. See [`ollie-swiftui-render-loop`] for the full write-up.
+
+1. **`resolved()` must not do a per-call store fetch.** It runs for every checklist glyph on every
+   layout pass; fetching `store.interactions()` per call meant O(items × re-renders) synchronous
+   main-thread SwiftData fetches, which collided with a fresh-install CloudKit import and tripped the
+   iOS scene-update watchdog (**0x8BADF00D**). Fix (`f2d46c6`): cache the overlay fetch once per model
+   lifetime, invalidate on a writing commit.
+
+2. **`resolved()` must not mutate *observed* state during render.** It records `bodyDefaults` and lazy-
+   loads `overlayCache`; while those were observed, the mid-render write re-dirtied the SwiftUI graph →
+   infinite update loop (iOS **0x8BADF00D** watchdog kill / macOS endless beachball). Fix (`97ec866`):
+   mark every render-mutated property `@ObservationIgnored`; keep **only** `pending` observed (it is
+   mutated solely by taps + boundary commits, never during render). Guard test:
+   `testResolvedTriggersNoObservationDuringRender` asserts `resolved()` fires no observation `onChange`.
+
+**Also learned (process, now in `RELEASE.md`):** a shared-`HandheldNotesCore` fix requires rebuilding
+**and reinstalling both apps** before re-testing (a stale Mac binary masked the fix for an hour); and
+TestFlight `altool` "UPLOAD SUCCEEDED" ≠ installable — verify `processingState` reaches **VALID**.
