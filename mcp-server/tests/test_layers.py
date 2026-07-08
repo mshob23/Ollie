@@ -187,6 +187,9 @@ def test_pending_ops_skips_undecodable(ollie_dir):
 # ── Vocabulary counting ──────────────────────────────────────────────────────────
 
 def test_tag_vocabulary_counts_and_orders(ollie_dir, write_jsonl):
+    # Both notes exist in the corpus so every tag resolves (vocabulary counts only tags
+    # whose note is present — the same join notes_by_tag uses).
+    write_jsonl(ollie_dir / "ollie.jsonl", [_note(N1, "a"), _note(N2, "b")])
     write_jsonl(ollie_dir / "tags.jsonl", [
         {"noteId": N1, "tag": "topic:heat", "agentId": "a",
          "createdAt": "2026-07-06T05:00:00Z"},
@@ -205,6 +208,7 @@ def test_tag_vocabulary_counts_and_orders(ollie_dir, write_jsonl):
 
 
 def test_tag_vocabulary_groups_case_insensitively(ollie_dir, write_jsonl):
+    write_jsonl(ollie_dir / "ollie.jsonl", [_note(N1, "a"), _note(N2, "b")])
     write_jsonl(ollie_dir / "tags.jsonl", [
         {"noteId": N1, "tag": "Heat-Pump", "agentId": "a",
          "createdAt": "2026-07-06T05:00:00Z"},
@@ -217,10 +221,54 @@ def test_tag_vocabulary_groups_case_insensitively(ollie_dir, write_jsonl):
     assert vocab[0]["tag"] == "heat-pump"   # newest spelling wins as display form
 
 
-def test_tag_vocabulary_includes_pending(ollie_dir):
+def test_tag_vocabulary_includes_pending(ollie_dir, write_jsonl):
+    # A pending tag counts (read-your-writes) — but only because its note is resolvable
+    # in the corpus (the note-membership join, same as notes_by_tag).
+    write_jsonl(ollie_dir / "ollie.jsonl", [_note(N1, "note text")])
     _drop_raw_op(ollie_dir, _tag_op(N1, "brand-new"))
     vocab = L.tag_vocabulary()
     assert any(v["tag"] == "brand-new" and v["count"] == 1 for v in vocab)
+
+
+def test_tag_vocabulary_excludes_orphan_tags(ollie_dir, write_jsonl):
+    """Regression guard for the first-unattended-run bug: `tag_vocabulary` reported counts
+    for tags (`topic:printer-enclosure`, `fitness`, …) whose notes were gone, while
+    `notes_by_tag` returned EMPTY for each. Vocabulary must count only tags that resolve to
+    a note in the corpus — the SAME join notes_by_tag uses — so the two can't disagree."""
+    write_jsonl(ollie_dir / "ollie.jsonl", [_note(N1, "live note")])
+    write_jsonl(ollie_dir / "tags.jsonl", [
+        # A live tag (its note is in the corpus) — counted.
+        {"noteId": N1, "tag": "kept", "agentId": "a", "createdAt": "2026-07-06T05:00:00Z"},
+        # Orphan rows: notes deleted/restricted, absent from ollie.jsonl — NOT counted.
+        {"noteId": N2, "tag": "topic:printer-enclosure", "agentId": "a",
+         "createdAt": "2026-07-06T05:00:00Z"},
+        {"noteId": N2, "tag": "fitness", "agentId": "a", "createdAt": "2026-07-06T05:00:00Z"},
+    ])
+    vocab = L.tag_vocabulary()
+    assert {v["tag"] for v in vocab} == {"kept"}, "orphan tags must not appear in the vocabulary"
+    # The two tools now agree: every vocab tag resolves via notes_by_tag, and every orphan
+    # tag notes_by_tag drops is likewise absent from the vocabulary.
+    for v in vocab:
+        assert L.notes_by_tag(v["tag"]), f"{v['tag']!r} in vocab but notes_by_tag empty"
+    assert L.notes_by_tag("topic:printer-enclosure") == []
+    assert L.notes_by_tag("fitness") == []
+
+
+def test_tag_vocabulary_count_is_distinct_notes_not_rows(ollie_dir, write_jsonl):
+    """`count` is distinct resolvable notes (matching notes_by_tag's per-note dedup): two
+    live notes carrying `topic:heat` count 2; a duplicate (noteId,tag) row doesn't inflate."""
+    write_jsonl(ollie_dir / "ollie.jsonl", [_note(N1, "a"), _note(N2, "b")])
+    write_jsonl(ollie_dir / "tags.jsonl", [
+        {"noteId": N1, "tag": "topic:heat", "agentId": "a", "createdAt": "2026-07-06T05:00:00Z"},
+        {"noteId": N2, "tag": "topic:heat", "agentId": "a", "createdAt": "2026-07-06T06:00:00Z"},
+        # A duplicate row for (N1, topic:heat) must not double-count N1.
+        {"noteId": N1, "tag": "topic:heat", "agentId": "a", "createdAt": "2026-07-06T07:00:00Z"},
+    ])
+    vocab = L.tag_vocabulary()
+    assert len(vocab) == 1
+    assert vocab[0]["tag"] == "topic:heat"
+    assert vocab[0]["count"] == 2, "count is distinct notes, not raw tag rows"
+    assert vocab[0]["lastUsed"] == "2026-07-06T07:00:00Z", "latest createdAt across rows"
 
 
 # ── notes_by_tag joins to the corpus ─────────────────────────────────────────────

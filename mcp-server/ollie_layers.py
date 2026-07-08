@@ -350,25 +350,46 @@ def tag_vocabulary(inbox: Path | None = None) -> list[dict]:
     was last used, most-used first (ties broken by most-recent). Keys per row:
     `tag`, `count`, `lastUsed`. Tags are grouped case-insensitively; the most recent
     spelling is the display form. This is the "reuse before inventing" surface — an
-    agent checks it before minting a new tag."""
-    tags = effective_tags(inbox)
+    agent checks it before minting a new tag.
+
+    **Counts only tags that resolve to a note in the corpus** — the SAME note-membership
+    join ``notes_by_tag`` applies. A tag record whose `noteId` is absent from
+    `ollie.jsonl` (its note was deleted, or is restricted-and-gated) is an **orphan**: it
+    contributes nothing here, exactly as `notes_by_tag` returns nothing for it. Defense in
+    depth against a stale/racy export where an orphan row lingers in `tags.jsonl` — the
+    Mac app's export gate should already drop such rows, but deriving both tools from one
+    join means `tag_vocabulary` and `notes_by_tag` can **never** contradict each other
+    (the bug: vocabulary reporting a count for a tag `notes_by_tag` returns empty for).
+    `count` is therefore the number of **distinct resolvable notes**, not raw tag rows."""
+    # The live note ids in the corpus — the membership set the join keys on.
+    note_ids = {n.get("id") for n in c.load()}
     # Group case-insensitively; keep the spelling with the newest createdAt as canon.
+    # De-dup per (tag, noteId) too, so `count` is distinct notes even if a note somehow
+    # carries the same tag twice (matches `notes_by_tag`'s per-note dedup).
     groups: dict[str, dict] = {}
-    for t in tags:
+    for t in effective_tags(inbox):
         raw = str(t.get("tag", "")).strip()
         if not raw:
+            continue
+        nid = str(t.get("noteId", ""))
+        if nid not in note_ids:      # orphan tag — no resolvable note → not counted
             continue
         key = raw.casefold()
         created = str(t.get("createdAt", ""))
         g = groups.get(key)
         if g is None:
-            groups[key] = {"tag": raw, "count": 1, "lastUsed": created}
-        else:
+            groups[key] = {"tag": raw, "count": 1, "lastUsed": created, "_notes": {nid}}
+        elif nid not in g["_notes"]:
+            g["_notes"].add(nid)
             g["count"] += 1
             if created > g["lastUsed"]:
                 g["lastUsed"] = created
                 g["tag"] = raw  # newest spelling wins as the display form
-    rows = list(groups.values())
+        elif created > g["lastUsed"]:
+            g["lastUsed"] = created
+            g["tag"] = raw
+    rows = [{"tag": g["tag"], "count": g["count"], "lastUsed": g["lastUsed"]}
+            for g in groups.values()]
     rows.sort(key=lambda r: (r["count"], r["lastUsed"]), reverse=True)
     return rows
 

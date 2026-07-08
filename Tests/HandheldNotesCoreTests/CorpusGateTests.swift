@@ -2,11 +2,12 @@ import Foundation
 import XCTest
 @testable import HandheldNotesCore
 
-/// Directly exercises `CorpusGate` — the pure, side-effect-free encoding of the
-/// "restriction is contagious" invariant (contract §0, §5). The end-to-end gate
-/// behavior is covered through the exporter in `CorpusExporterGuardTests`; these tests
-/// pin the pure functions in isolation (no container, no I/O), including the boundary
-/// cases the exporter path can't easily isolate.
+/// Directly exercises `CorpusGate` — the pure, side-effect-free export boundary: the
+/// "restriction is contagious" invariant (contract §0, §5) plus the subset-join rule
+/// that a tag only exports when its note does (dropping deleted-note orphans too). The
+/// end-to-end gate behavior is covered through the exporter in `CorpusExporterGuardTests`;
+/// these tests pin the pure functions in isolation (no container, no I/O), including the
+/// boundary cases the exporter path can't easily isolate.
 final class CorpusGateTests: XCTestCase {
 
     private func note(_ id: UUID = UUID(), restricted: Bool = false) -> Note {
@@ -51,15 +52,19 @@ final class CorpusGateTests: XCTestCase {
         XCTAssertEqual(out.count, 2, "no restricted notes → every tag is exportable")
     }
 
-    /// The documented boundary: a tag whose `noteId` matches no note (an orphan left
-    /// after a delete) is KEPT — the gate gates on restriction, not existence.
-    func testExportableTagsKeepsOrphanTagWhoseNoteIsAbsent() {
+    /// The boundary, corrected (first-unattended-run orphan-tag fix): a tag whose
+    /// `noteId` matches NO note in the set — an **orphan** left after a delete, since
+    /// tags aren't cascade-deleted — is now **dropped**. `tags.jsonl` must be a strict
+    /// subset-join of the exported notes, or `tag_vocabulary` (which counts tag rows) and
+    /// `notes_by_tag` (which joins tags→notes) disagree, and the deleted note's tag text
+    /// leaks out. The gate keeps a tag iff its note is in ``exportableNotes(_:)``.
+    func testExportableTagsDropsOrphanTagWhoseNoteIsAbsent() {
         let present = note(restricted: false)
-        let orphanNoteId = UUID()   // no matching note in `notes`
+        let orphanNoteId = UUID()   // no matching note in `notes` → deleted
         let tags = [tag(on: present.id, "live"), tag(on: orphanNoteId, "orphan")]
         let out = CorpusGate.exportableTags(tags, notes: [present])
-        XCTAssertEqual(Set(out.map(\.tag)), ["live", "orphan"],
-                       "an orphan tag (note absent, not restricted) is not dropped by the gate")
+        XCTAssertEqual(out.map(\.tag), ["live"],
+                       "an orphan tag whose note is absent (deleted) is dropped by the gate")
     }
 
     /// But an orphan whose (absent) note id happens to also be a *restricted* note's id

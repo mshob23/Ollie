@@ -13,7 +13,9 @@ import Foundation
 ///
 /// **What the gate drops (contract §5):**
 ///   • notes with `isRestricted` — omitted from `ollie.jsonl` and `notes/`;
-///   • tags whose subject note is restricted — omitted from `tags.jsonl`.
+///   • tags whose subject note is restricted **or deleted** — omitted from
+///     `tags.jsonl` (only tags of an actually-exported note survive, so the tag file
+///     is always a subset-join of the note corpus — no orphan rows).
 ///
 /// **What the gate deliberately does NOT touch:** views and memory. They are
 /// agent-authored from an *already-filtered* corpus, so a revision or a memory entry
@@ -29,26 +31,34 @@ public enum CorpusGate {
         notes.filter { !$0.isRestricted }
     }
 
-    /// The tags that are safe to export: every tag **except** those whose subject
-    /// note is restricted (contract §5 — "tags whose `noteId` is restricted are
-    /// omitted"). Restriction is derived from `notes`, the authoritative note set, so
-    /// a tag inherits its note's restriction (contagion) without the tag record
-    /// needing its own flag.
+    /// The tags that are safe to export: only those whose subject note is **actually
+    /// exported**. A tag is dropped when its `noteId` names a note that
+    ///   • is `isRestricted` (contract §5 — "tags whose `noteId` is restricted are
+    ///     omitted"; restriction is contagious, so the derived tag stays home), **or**
+    ///   • is absent from `notes` entirely — an **orphan** left behind when the note was
+    ///     deleted (the store links tags to notes by a bare `noteId`, with no cascade, so
+    ///     `AppModel.delete` removes the `NoteEntity` but leaves its `TagEntity` rows).
+    ///
+    /// Both are the same boundary rule: **a tag record never leaves the device unless the
+    /// note it points at is in the exported note set.** This makes `tags.jsonl` a strict
+    /// subset-join of `ollie.jsonl`, so the two MCP tools that read them (`tag_vocabulary`
+    /// counts tags; `notes_by_tag` joins tags→notes) can never disagree, and a deleted
+    /// note's tag text (a privacy surface, identical to the restriction leak the gate
+    /// exists to prevent) can't straggle out.
     ///
     /// - Parameters:
     ///   - tags: every tag in the store (the `allTags()` snapshot).
     ///   - notes: the authoritative note set — **the full set, before restriction
-    ///     filtering** — used only to determine which note ids are restricted.
-    /// - Returns: the tags whose subject note is not restricted.
+    ///     filtering** — from which the exportable (non-restricted, existing) note ids
+    ///     are derived.
+    /// - Returns: the tags whose subject note is in ``exportableNotes(_:)``.
     ///
-    /// A tag whose `noteId` matches *no* note (an orphan left after a note delete) is
-    /// **kept** here: the rule gates on restriction, not existence, and such orphans
-    /// are a separate concern the store's own deletes handle. The gate stays a narrow,
-    /// literal encoding of the contagion rule.
+    /// The store's own orphan prune (``AgentLayerStore/pruneOrphanedTags(existingNoteIDs:)``)
+    /// hard-deletes deleted-note tags so they don't accumulate; this gate is the
+    /// belt-and-suspenders boundary that also holds when a stale export races a delete.
     public static func exportableTags(_ tags: [AgentTag], notes: [Note]) -> [AgentTag] {
-        let restricted = restrictedNoteIDs(notes)
-        guard !restricted.isEmpty else { return tags }
-        return tags.filter { !restricted.contains($0.noteId) }
+        let exportableIDs = Set(exportableNotes(notes).map(\.id))
+        return tags.filter { exportableIDs.contains($0.noteId) }
     }
 
     /// The ids of the restricted notes in `notes` — the contagion source set. Exposed

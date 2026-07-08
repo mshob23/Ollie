@@ -286,6 +286,43 @@ public struct AgentLayerStore {
         }
     }
 
+    /// Hard-delete the tag records left **orphaned by a note deletion** — the store-side
+    /// analogue of the exporter's orphan prune (Views v2 spec §6 does the same for
+    /// interaction records of deleted views). Tags are linked to notes only by a bare
+    /// `noteId` (no SwiftData relationship, so no delete cascade), so `AppModel.delete`
+    /// removes the `NoteEntity` but leaves its `TagEntity` rows behind forever; those
+    /// stragglers grow the store, sync out over CloudKit as dead records, and (until the
+    /// export gate also drops them) leak the deleted note's tag text into `tags.jsonl`.
+    /// This removes them so the store self-heals.
+    ///
+    /// **Deleted only, never restricted.** `existingNoteIDs` must be the ids of **all**
+    /// notes currently in the store — *including restricted ones* (a restricted note
+    /// still has a `NoteEntity`; only its export is suppressed). A tag survives iff its
+    /// note still exists; a restricted note's tags are therefore **kept** (restriction is
+    /// reversible — un-restricting the note must bring its tags back), while a truly
+    /// deleted note's tags are pruned. This is the crucial distinction the export-time
+    /// filter can't make on its own (from the exporter's vantage a restricted and a
+    /// deleted note look identical — both absent from the exported set), so the hard
+    /// prune keys on *store existence*, not exportability.
+    ///
+    /// Idempotent and save-once: no-op (no save) when nothing is orphaned. Returns the
+    /// number of tag records deleted (0 when clean) so callers/tests can assert.
+    @discardableResult
+    public func pruneOrphanedTags(existingNoteIDs: Set<UUID>) -> Int {
+        let orphans = allTagEntities().filter { !existingNoteIDs.contains($0.noteId) }
+        guard !orphans.isEmpty else { return 0 }
+        for e in orphans { context.delete(e) }
+        try? context.save()
+        return orphans.count
+    }
+
+    /// Every `TagEntity` in the store (live objects, for mutation/prune). The value-type
+    /// ``allTags()`` is for reads; this returns the entities so a prune can delete them.
+    private func allTagEntities() -> [TagEntity] {
+        let d = FetchDescriptor<TagEntity>()
+        return (try? context.fetch(d)) ?? []
+    }
+
     /// User hard-delete of a memory entry (removes it outright, distinct from an
     /// agent `retire` which only tombstones).
     public func userDelete(memory: AgentMemory) {

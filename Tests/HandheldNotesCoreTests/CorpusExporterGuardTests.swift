@@ -190,6 +190,51 @@ final class CorpusExporterGuardTests: XCTestCase {
         XCTAssertEqual(counts?["tags"] as? Int, 1, "layerCounts.tags is the GATED count")
     }
 
+    /// A tag whose subject note is **deleted** (absent from the export's note set — the
+    /// straggler `AppModel.delete` leaves behind, since tags aren't cascade-deleted) is
+    /// omitted from `tags.jsonl`. This is the first-unattended-run bug at the export
+    /// boundary: without this, the deleted note's tag text (`topic:printer-enclosure`,
+    /// …) leaked into the file, `tag_vocabulary` counted it, and `notes_by_tag` returned
+    /// empty. `tags.jsonl` must stay a strict subset-join of `ollie.jsonl`.
+    func testTagsOfDeletedNoteAreOmitted() {
+        let live = note("still here")
+        let deletedNoteId = UUID()   // a note id NOT in the export set → deleted
+        let layer = CorpusExporter.LayerSnapshot(tags: [
+            tag("keep-me", on: live.id),
+            tag("topic:printer-enclosure", on: deletedNoteId),
+            tag("fitness", on: deletedNoteId),
+        ])
+        CorpusExporter.export([live], layer: layer)   // deletedNoteId's note is not passed
+
+        let tagLines = lines(tagsURL)
+        XCTAssertEqual(tagLines.count, 1, "only the live note's tag is exported")
+        XCTAssertTrue(text(tagsURL).contains("keep-me"))
+        XCTAssertFalse(text(tagsURL).contains("topic:printer-enclosure"),
+                       "a tag whose note was deleted must not straggle into tags.jsonl")
+        XCTAssertFalse(text(tagsURL).contains("fitness"))
+        XCTAssertFalse(text(tagsURL).contains(deletedNoteId.uuidString),
+                       "the deleted note's id must not leak via tags.jsonl")
+        let counts = meta()?["layerCounts"] as? [String: Any]
+        XCTAssertEqual(counts?["tags"] as? Int, 1, "layerCounts.tags is the joined count")
+    }
+
+    /// The pure gate function directly: `exportableTags` keeps a tag iff its note is in
+    /// the exportable set — dropping tags of both restricted AND absent (deleted) notes,
+    /// keeping tags of ordinary notes. One assertion of the whole rule.
+    func testExportableTagsKeepsOnlyTagsOfExportedNotes() {
+        let open = note("open")
+        let secret = note("secret", restricted: true)
+        let deletedId = UUID()
+        let tags = [
+            tag("keep", on: open.id),
+            tag("restricted-drop", on: secret.id),
+            tag("deleted-drop", on: deletedId),
+        ]
+        let kept = CorpusGate.exportableTags(tags, notes: [open, secret])
+        XCTAssertEqual(kept.map(\.tag), ["keep"],
+                       "only the open note's tag survives; restricted + deleted-note tags drop")
+    }
+
     /// When every note is restricted, the gated corpus is legitimately empty and must
     /// write through (this is NOT the transient-empty-projection case the guard blocks).
     func testAllNotesRestrictedWritesAnEmptyCorpusThrough() {

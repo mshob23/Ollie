@@ -93,6 +93,63 @@ final class AgentLayerStoreTests: XCTestCase {
         XCTAssertEqual(Set(store.allTags().map(\.tag)), ["a", "b"])
     }
 
+    // MARK: - Orphan-tag prune (store-side hygiene for deleted notes)
+
+    /// `pruneOrphanedTags` hard-deletes tags whose note is **gone** (deleted — no
+    /// `NoteEntity`), the store-side complement to the export gate. It keys on `NoteEntity`
+    /// existence, so the caller passes the ids of all notes still in the store.
+    func testPruneRemovesTagsOfDeletedNote() throws {
+        let (store, context, keptNoteId) = makeStore()
+        let deletedNoteId = UUID()
+        context.insert(NoteEntity(note: Note(id: deletedNoteId, transcript: "Doomed.", source: .phone)))
+        try? context.save()
+
+        try store.apply(.tag(noteId: keptNoteId, tag: "keep", agent: "claude-mac"))
+        try store.apply(.tag(noteId: deletedNoteId, tag: "topic:printer-enclosure", agent: "claude-runner"))
+        try store.apply(.tag(noteId: deletedNoteId, tag: "fitness", agent: "claude-runner"))
+        XCTAssertEqual(store.allTags().count, 3)
+
+        // Simulate the delete: remove the NoteEntity (tags are NOT cascade-deleted).
+        let did = deletedNoteId
+        var d = FetchDescriptor<NoteEntity>(predicate: #Predicate { $0.id == did })
+        d.fetchLimit = 1
+        if let e = try? context.fetch(d).first { context.delete(e); try? context.save() }
+
+        // Prune against the surviving note set (only keptNoteId remains).
+        let removed = store.pruneOrphanedTags(existingNoteIDs: [keptNoteId])
+        XCTAssertEqual(removed, 2, "both tags of the deleted note are pruned")
+        XCTAssertEqual(store.allTags().map(\.tag), ["keep"],
+                       "only the surviving note's tag remains")
+    }
+
+    /// A **restricted** note's tags must NOT be pruned — restriction is reversible, so
+    /// its `NoteEntity` still exists and its id is in `existingNoteIDs`; un-restricting
+    /// must bring the tags back. The prune keys on existence, not exportability, so it
+    /// never touches them (only the *export* suppresses restricted-note tags).
+    func testPruneKeepsTagsOfRestrictedNote() throws {
+        let (store, context, openNoteId) = makeStore()
+        let restrictedId = UUID()
+        context.insert(NoteEntity(note: Note(id: restrictedId, transcript: "Private.",
+                                             source: .phone, isRestricted: true)))
+        try? context.save()
+
+        try store.apply(.tag(noteId: openNoteId, tag: "open", agent: "claude-mac"))
+        try store.apply(.tag(noteId: restrictedId, tag: "secret-topic", agent: "claude-mac"))
+
+        // Both notes still exist in the store → both ids are "existing".
+        let removed = store.pruneOrphanedTags(existingNoteIDs: [openNoteId, restrictedId])
+        XCTAssertEqual(removed, 0, "a restricted note's tags are kept (restriction is reversible)")
+        XCTAssertEqual(Set(store.allTags().map(\.tag)), ["open", "secret-topic"])
+    }
+
+    /// Idempotent + save-once: a clean store (no orphans) prunes nothing and reports 0.
+    func testPruneIsNoOpWhenNoOrphans() throws {
+        let (store, _, noteId) = makeStore()
+        try store.apply(.tag(noteId: noteId, tag: "a", agent: "claude-mac"))
+        XCTAssertEqual(store.pruneOrphanedTags(existingNoteIDs: [noteId]), 0)
+        XCTAssertEqual(store.allTags().map(\.tag), ["a"])
+    }
+
     // MARK: - Memory: append + retire
 
     func testMemoryAppendThenRetireFlipsTombstone() throws {
