@@ -127,10 +127,27 @@ def _dt(note: dict) -> datetime | None:
     return parse_dt(note.get("createdAt", ""))
 
 
+def _ingested_dt(note: dict) -> datetime | None:
+    """The note's ARRIVAL time at the hub store (`ingestedAt`, M13), falling back to
+    `createdAt` when the field is absent — an OLD export written before ingestedAt
+    existed. Keying coverage on this (not `createdAt`) is what catches a note that
+    synced in late: its `createdAt` is old, but its `ingestedAt` is when it actually
+    landed, so an `ingested_since` window still includes it."""
+    return parse_dt(note.get("ingestedAt", "")) or _dt(note)
+
+
 def slim(note: dict) -> dict:
-    """Compact view for list results — full `text` included (it's the point)."""
+    """Compact view for list results — full `text` included (it's the point).
+
+    Carries `ingestedAt` (M13, the note's arrival time at the hub) when the export
+    provides it, so a caller filtering with `ingested_since` can also SEE each note's
+    arrival; omitted for older exports that predate the field (a reader falls back to
+    `createdAt`)."""
     keep = ("id", "createdAt", "source", "kind", "place")
-    return {k: note.get(k) for k in keep} | {"text": note.get("text", "")}
+    out = {k: note.get(k) for k in keep} | {"text": note.get("text", "")}
+    if note.get("ingestedAt") is not None:
+        out["ingestedAt"] = note.get("ingestedAt")
+    return out
 
 
 def search(notes: list[dict], query: str, limit: int = 20) -> list[dict]:
@@ -145,8 +162,17 @@ def search(notes: list[dict], query: str, limit: int = 20) -> list[dict]:
 
 
 def in_range(notes: list[dict], since: str = "", until: str = "",
-             source: str = "", limit: int = 50) -> list[dict]:
+             source: str = "", limit: int = 50, ingested_since: str = "") -> list[dict]:
+    """Filter notes to a date range, newest first.
+
+    `since`/`until` bound on `createdAt` (event time). `ingested_since` — the
+    coverage-correct filter (M13) — bounds on the note's ARRIVAL time (`ingestedAt`,
+    falling back to `createdAt` for old exports); a note that syncs in late has an old
+    `createdAt` but a recent `ingestedAt`, so `ingested_since` catches it where `since`
+    would silently miss it. All three compose (a note must satisfy every supplied
+    bound)."""
     lo, hi = parse_dt(since), parse_dt(until, end_of_day=True)
+    ing_lo = parse_dt(ingested_since)
     out: list[dict] = []
     for n in notes:
         dt = _dt(n)
@@ -154,6 +180,10 @@ def in_range(notes: list[dict], since: str = "", until: str = "",
             continue
         if hi and (dt is None or dt > hi):
             continue
+        if ing_lo:
+            idt = _ingested_dt(n)
+            if idt is None or idt < ing_lo:
+                continue
         if source and n.get("source") != source:
             continue
         out.append(n)

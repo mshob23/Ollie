@@ -101,6 +101,12 @@ def inbox_dir() -> Path:
     return _ollie_dir() / "inbox"
 
 
+def runs_path() -> Path:
+    """The runner's append-only work log `~/Ollie/agent-runs/runs.jsonl` (M13,
+    contract §9). One JSON line per past `ollie-agent-run.sh` invocation."""
+    return _ollie_dir() / "agent-runs" / "runs.jsonl"
+
+
 # ── Low-level readers (fresh every call — the app rewrites these files whole) ─────
 def _load_jsonl(path: Path) -> list[dict]:
     """Read one-JSON-object-per-line, skipping blanks and any line that doesn't
@@ -199,6 +205,43 @@ def pending_count(inbox: Path | None = None) -> int:
     can tell its writes are still queued (the Mac app applies them on its next
     ingest cycle; if this stays >0 for long the app is probably closed)."""
     return len(pending_ops(inbox))
+
+
+# ── Runner work log (M13, contract §9) ───────────────────────────────────────────
+def recent_runs(limit: int = 10) -> list[dict]:
+    """The most recent agent-runner passes, NEWEST FIRST, from
+    `~/Ollie/agent-runs/runs.jsonl` (contract §9). Each line the runner appended is one
+    past invocation: `{runId, agentId, startedAt, finishedAt, since, corpusExportedAt,
+    rc, ok, logFile}` — both successes and failures.
+
+    Advisory only (never access control): a run reads this to see what prior runs
+    already covered (which `since` window, when, ok?). Degrades gracefully — a missing
+    file yields `[]`, and any single malformed/blank line is skipped (not fatal), so a
+    partially-written or hand-edited log never breaks the read. The file is
+    append-ordered (oldest first on disk), so we reverse to return newest first and cap
+    at `limit`."""
+    p = runs_path()
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue          # skip a malformed line, keep the rest
+        if isinstance(obj, dict):
+            rows.append(obj)
+    rows.reverse()            # append-order on disk → newest first
+    if limit is not None and limit >= 0:
+        rows = rows[:limit]
+    return rows
 
 
 # ── Overlay: apply pending ops onto reads (read-your-writes) ──────────────────────

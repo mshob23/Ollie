@@ -31,7 +31,7 @@ derived from it).
 | Tool | What it does |
 |---|---|
 | `search_notes(query, limit)` | Case-insensitive substring search over text + place |
-| `list_notes(since, until, source, limit)` | Date-range list (e.g. "the last week") |
+| `list_notes(since, until, source, limit, ingested_since)` | Date-range list (e.g. "the last week"). `since`/`until` bound on `createdAt` (event time); **`ingested_since`** bounds on `ingestedAt` — the note's ARRIVAL at the hub — the coverage-correct filter that catches a late-syncing note `since` would miss |
 | `recent_notes(limit)` | The newest notes |
 | `get_note(id)` | One full note record |
 | `corpus_stats()` | Count, date span, per-source breakdown, agent-layer sizes (`layerCounts`), and queued-write count (`pendingOps`) |
@@ -46,6 +46,7 @@ derived from it).
 | `read_memory(include_retired)` | The agent codebook (durable facts); retired hidden by default |
 | `list_views()` | Named views (living documents), most-recently-updated first |
 | `get_view(name, revision_limit)` | A view's latest markdown body + recent revision metadata + `interactions` — the user's still-applying checkbox ticks (only rows newer than the latest revision; **republishing the view is how you acknowledge/retire them**) |
+| `recent_runs(limit)` | What PAST agent-runner passes did (newest first, from `agent-runs/runs.jsonl`): `{runId, startedAt, finishedAt, since, rc, ok, logFile}` per run, successes and failures. Advisory context — read it to see what prior runs already covered |
 
 **Writes — agent layer** (each *queues* an op and returns `{"requestId", "status": "queued"}`; the Mac app applies it on its next cycle):
 

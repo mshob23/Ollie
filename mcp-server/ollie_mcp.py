@@ -40,16 +40,27 @@ def search_notes(query: str, limit: int = 20) -> list[dict]:
 
 
 @mcp.tool()
-def list_notes(since: str = "", until: str = "", source: str = "", limit: int = 50) -> list[dict]:
+def list_notes(since: str = "", until: str = "", source: str = "", limit: int = 50,
+               ingested_since: str = "") -> list[dict]:
     """List the user's notes in a date range, newest first — the right tool for any
     time-scoped question ("this week", "yesterday", "while I was in Houston last
     month" → combine with place from the results).
 
     `since`/`until` accept YYYY-MM-DD or full ISO-8601, interpreted as UTC; either
-    may be omitted. `source` optionally filters by capture device: "watch" (voice
-    memos spoken on the Apple Watch), "phone" (typed/dictated on iPhone), or
-    "computer" (dictated on the Mac). Returns the same record shape as search_notes."""
-    return c.in_range(c.load(), since, until, source, limit)
+    may be omitted. They bound on `createdAt` (when the note was CAPTURED — event
+    time). `source` optionally filters by capture device: "watch" (voice memos spoken
+    on the Apple Watch), "phone" (typed/dictated on iPhone), or "computer" (dictated
+    on the Mac).
+
+    `ingested_since` (ISO-8601 UTC) bounds instead on each note's `ingestedAt` — when
+    it first ARRIVED at the Mac hub store — falling back to `createdAt` for notes from
+    an older export that predates the field. This is the COVERAGE-CORRECT filter for
+    "what's new since my last pass": a note spoken on the watch can sync to the Mac
+    hours after it was created, so it carries an OLD `createdAt` but a recent arrival;
+    `since` (createdAt) would let it fall silently outside every window forever, while
+    `ingested_since` catches it the moment it lands. All bounds compose. Returns the
+    same record shape as search_notes (each row also carries `ingestedAt`)."""
+    return c.in_range(c.load(), since, until, source, limit, ingested_since)
 
 
 @mcp.tool()
@@ -160,6 +171,22 @@ def get_view(name: str, revision_limit: int = 5) -> dict:
     acknowledgment (it retires the consumed state). NEVER write or delete interaction
     records; there is no tool for that by design (they are user-authored)."""
     return layers.get_view(name, revision_limit)
+
+
+@mcp.tool()
+def recent_runs(limit: int = 10) -> list[dict]:
+    """What PAST agent-runner passes did — newest first, from the runner's work log
+    (contract §9). Each row is one past invocation: `{runId, agentId, startedAt,
+    finishedAt, since, corpusExportedAt, rc, ok, logFile}`, including both successes
+    (`ok:true`) and failures (`ok:false`).
+
+    Advisory context only — NOT access control. Read this at the START of a run to see
+    what recent passes already covered: the `since` window each used, when they ran,
+    and whether they succeeded. It tells you what's likely already been looked at so you
+    don't redo it (and, on a first pass or after failures, how far back coverage really
+    reaches). Empty list if no runs have been logged yet (or the log is missing); a
+    malformed line is skipped, never fatal."""
+    return layers.recent_runs(limit)
 
 
 # ── Agent-layer WRITES (the contribution surface) ────────────────────────────────

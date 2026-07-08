@@ -113,9 +113,12 @@ public enum CorpusExporter {
     public static func exportInBackground(
         _ notes: [Note],
         layer: LayerSnapshot = .empty,
-        allowEmpty: Bool = false
+        allowEmpty: Bool = false,
+        ingestedAt: [UUID: Date] = [:]
     ) {
-        Task.detached(priority: .medium) { export(notes, layer: layer, allowEmpty: allowEmpty) }
+        Task.detached(priority: .medium) {
+            export(notes, layer: layer, allowEmpty: allowEmpty, ingestedAt: ingestedAt)
+        }
     }
 
     /// Mirror the corpus + agent layer to disk. Safe on a background thread.
@@ -128,7 +131,19 @@ public enum CorpusExporter {
     ///   - allowEmpty: pass `true` ONLY for a genuine wipe (`deleteAllNotes`). By
     ///     default a zero-note export is REFUSED when a non-empty corpus already exists
     ///     on disk (see the guard below).
-    public static func export(_ notes: [Note], layer: LayerSnapshot = .empty, allowEmpty: Bool = false) {
+    ///   - ingestedAt: the `noteId → firstSeenAt` map from `IngestIndex` (M13). Each
+    ///     exported note row gets an `ingestedAt` field = `ingestedAt[id] ?? createdAt`
+    ///     — its ARRIVAL time at this hub store, the coverage-correct key for the runner
+    ///     (a late-syncing note has an old `createdAt` but a fresh arrival). Looked up
+    ///     **only** for gate-passing notes, so a restricted note's arrival is never
+    ///     emitted. An empty map (default / old callers) → every row falls back to
+    ///     `createdAt`.
+    public static func export(
+        _ notes: [Note],
+        layer: LayerSnapshot = .empty,
+        allowEmpty: Bool = false,
+        ingestedAt: [UUID: Date] = [:]
+    ) {
         // De-dup by id first — CloudKit mirroring can briefly surface duplicate-id
         // rows, and the corpus an LLM reads shouldn't contain the same note twice.
         var seen = Set<UUID>()
@@ -184,7 +199,7 @@ public enum CorpusExporter {
         // `written` is the count ACTUALLY serialized (a record that fails to encode is
         // dropped), so `meta.noteCount` matches the JSONL line count exactly — a reader
         // that compares them never sees a phantom mismatch.
-        let (jsonl, written) = jsonlString(for: exportableNotes)
+        let (jsonl, written) = jsonlString(for: exportableNotes, ingestedAt: ingestedAt)
         do {
             try jsonl.write(to: jsonlURL, atomically: true, encoding: .utf8)
             jsonlOK = true
@@ -522,6 +537,14 @@ public enum CorpusExporter {
     private struct ExportRecord: Encodable {
         let id: String
         let createdAt: Date
+        /// **Arrival time at this hub store** (M13, contract §2) — when the note first
+        /// became visible here, which for a note that syncs in late is *later* than its
+        /// `createdAt` (event time). Sourced from `IngestIndex`, falling back to
+        /// `createdAt` when the index has no entry (an old export, or a note that predates
+        /// the index). This is the field the runner filters on (`ingested_since`) so a
+        /// late arrival is covered instead of falling silently outside every `createdAt`
+        /// window. Always present (unlike the reserved, omitted `media`).
+        let ingestedAt: Date
         let updatedAt: Date
         let source: String
         let kind: String
@@ -541,9 +564,12 @@ public enum CorpusExporter {
         /// photo notes ship. Documented here so readers know the shape it will take.
         let media: [String]?
 
-        init(_ n: Note) {
+        /// - Parameter ingestedAt: the note's resolved arrival time (`firstSeen ??
+        ///   createdAt`), computed by the caller from the `IngestIndex` snapshot.
+        init(_ n: Note, ingestedAt: Date) {
             id = n.id.uuidString
             createdAt = n.createdAt
+            self.ingestedAt = ingestedAt
             updatedAt = n.updatedAt
             source = n.source.rawValue
             kind = n.kind.rawValue
@@ -563,14 +589,21 @@ public enum CorpusExporter {
     /// Returns the text AND the count actually written, so `meta.noteCount` can reflect
     /// the real line count rather than the input count (a record that fails to encode
     /// is silently dropped from the text — the two must not disagree).
-    private static func jsonlString(for notes: [Note]) -> (text: String, written: Int) {
+    ///
+    /// - Parameter ingestedAt: the `noteId → firstSeenAt` map (M13). Each row's
+    ///   `ingestedAt` field resolves to `ingestedAt[id] ?? note.createdAt` — the
+    ///   fallback keeps `backup` and old callers (empty map) writing a valid row.
+    private static func jsonlString(
+        for notes: [Note], ingestedAt: [UUID: Date] = [:]
+    ) -> (text: String, written: Int) {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]   // NOT prettyPrinted: one line each
         var lines: [String] = []
         lines.reserveCapacity(notes.count)
         for note in notes {
-            if let data = try? enc.encode(ExportRecord(note)),
+            let arrival = ingestedAt[note.id] ?? note.createdAt
+            if let data = try? enc.encode(ExportRecord(note, ingestedAt: arrival)),
                let line = String(data: data, encoding: .utf8) {
                 lines.append(line)
             }

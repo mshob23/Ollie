@@ -526,4 +526,99 @@ final class CorpusExporterGuardTests: XCTestCase {
         XCTAssertEqual(kept.count, 1,
                        "a toggle newer than the latest revision still applies — never pruned")
     }
+
+    // MARK: - M13: ingestedAt (arrival-time coverage)
+
+    /// Parse the exported JSONL back into `[id: row-dict]` so a test can read the
+    /// `ingestedAt` field per note without brittle substring matching.
+    private func rowsByID() -> [String: [String: Any]] {
+        var out: [String: [String: Any]] = [:]
+        for line in lines(jsonlURL) {
+            guard let d = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let id = obj["id"] as? String else { continue }
+            out[id] = obj
+        }
+        return out
+    }
+    private func ingestedAt(_ id: UUID) -> String? {
+        rowsByID()[id.uuidString]?["ingestedAt"] as? String
+    }
+    private func createdAtField(_ id: UUID) -> String? {
+        rowsByID()[id.uuidString]?["createdAt"] as? String
+    }
+
+    private func note(_ text: String, createdAt: Date, restricted: Bool = false) -> Note {
+        Note(id: UUID(), transcript: text, createdAt: createdAt, source: .watch,
+             isRestricted: restricted)
+    }
+    private func iso(_ d: Date) -> String { ISO8601DateFormatter().string(from: d) }
+
+    /// The exporter emits an `ingestedAt` field on every exported note row, using the
+    /// supplied index value (the note's ARRIVAL at the hub) — distinct from `createdAt`
+    /// (event time) for a note that synced in late.
+    func testIngestedAtUsesIndexValueWhenPresent() {
+        let created = Date(timeIntervalSince1970: 1_000)           // spoken long ago
+        let arrived = Date(timeIntervalSince1970: 5_000_000)       // synced in hours later
+        let n = note("late watch note", createdAt: created)
+        CorpusExporter.export([n], ingestedAt: [n.id: arrived])
+
+        XCTAssertEqual(ingestedAt(n.id), iso(arrived),
+                       "ingestedAt reflects the index arrival time, not createdAt")
+        XCTAssertEqual(createdAtField(n.id), iso(created),
+                       "createdAt is unchanged — the two are distinct fields")
+        XCTAssertNotEqual(ingestedAt(n.id), createdAtField(n.id),
+                          "a late-syncing note has ingestedAt > createdAt")
+    }
+
+    /// FALLBACK: when the index has no entry for a note (an old export, or a note that
+    /// predates the index), `ingestedAt` falls back to the note's `createdAt` — the row
+    /// is always well-formed.
+    func testIngestedAtFallsBackToCreatedAtWhenIndexMissing() {
+        let created = Date(timeIntervalSince1970: 3_333)
+        let n = note("no index entry", createdAt: created)
+        CorpusExporter.export([n], ingestedAt: [:])   // empty map — nothing known
+        XCTAssertEqual(ingestedAt(n.id), iso(created),
+                       "with no index entry, ingestedAt falls back to createdAt")
+        XCTAssertEqual(ingestedAt(n.id), createdAtField(n.id))
+    }
+
+    /// A default export (no `ingestedAt:` argument at all — the `backup` path / old
+    /// callers) still emits the field, defaulting to `createdAt`. The field is always
+    /// present so a reader never has to special-case its absence on a fresh export.
+    func testIngestedAtIsAlwaysEmittedDefaultingToCreatedAt() {
+        let created = Date(timeIntervalSince1970: 7_777)
+        let n = note("default call", createdAt: created)
+        CorpusExporter.export([n])   // no ingestedAt argument
+        XCTAssertEqual(ingestedAt(n.id), iso(created),
+                       "the ingestedAt field is emitted even with no map, = createdAt")
+    }
+
+    /// THE PRIVACY ASSERTION (contract §0, §5 — restriction is contagious, even the bare
+    /// UUID): a restricted note is dropped from the corpus, so NO row — and therefore no
+    /// `ingestedAt`, and crucially no arrival-time index entry for it — is ever emitted,
+    /// even though the index map we pass DOES contain that restricted note's id + arrival.
+    /// The exporter must look the index up only for gate-passing notes.
+    func testRestrictedNoteNeverEmitsIngestedAtEntry() {
+        let open = note("public", createdAt: Date(timeIntervalSince1970: 1_000))
+        let secret = note("private", createdAt: Date(timeIntervalSince1970: 2_000),
+                          restricted: true)
+        let secretArrival = Date(timeIntervalSince1970: 8_888_888)
+        // The index map carries BOTH ids (the index doesn't know about restriction).
+        CorpusExporter.export([open, secret],
+                              ingestedAt: [open.id: Date(timeIntervalSince1970: 4_000),
+                                           secret.id: secretArrival])
+
+        let body = jsonl()
+        // The restricted note's id, transcript, and its arrival timestamp must ALL be absent.
+        XCTAssertFalse(body.contains(secret.id.uuidString),
+                       "the restricted note's UUID must not leak into the corpus")
+        XCTAssertFalse(body.contains("private"),
+                       "the restricted transcript must never reach the corpus")
+        XCTAssertFalse(body.contains(iso(secretArrival)),
+                       "the restricted note's arrival time must not leak via ingestedAt")
+        XCTAssertNil(ingestedAt(secret.id), "no row exists for the restricted note")
+        // The open note is exported with its arrival intact.
+        XCTAssertEqual(ingestedAt(open.id), iso(Date(timeIntervalSince1970: 4_000)))
+    }
 }

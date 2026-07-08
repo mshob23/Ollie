@@ -330,6 +330,17 @@ public final class AppModel: ObservableObject {
     /// not treated as a flood of arrivals; only inserts observed *after* the seed
     /// nudge the trigger. `nil` until the seed pass runs.
     private var seenNoteIDs: Set<Note.ID>?
+
+    /// **Arrival-time coverage** (M13): the persisted `noteId → firstSeenAt` map that
+    /// records when each note first became visible to *this Mac's* store. The exporter
+    /// stamps each exported note's `ingestedAt` from it, and the runner filters on
+    /// `ingested_since` so a note that syncs in hours late (old `createdAt`, fresh
+    /// arrival) is still covered instead of falling silently outside every window. Lives
+    /// in Application Support — explicitly NOT `~/Ollie` (a restricted note's UUID lands
+    /// here too; even a bare id must not cross the export boundary — see `IngestIndex`).
+    /// Nil in tests via `inMemoryStore`, same as `runnerTrigger`, so a test store never
+    /// writes the real App Support file. Populated on the reload path (see `reloadNotes`).
+    private var ingestIndex: IngestIndex?
     #endif
 
     // Persistence. `AppModel` owns the SwiftData container + context; the public
@@ -381,11 +392,22 @@ public final class AppModel: ObservableObject {
         // forever (no events); a CloudKit store starts at idle-with-no-success.
         self.syncHealth = NotesDataStore.isCloudKitActive ? .idle(lastSuccess: nil) : .localOnly
 
+        #if os(macOS)
+        // Arm the arrival-time index (M13) BEFORE the seed reload below, so the first
+        // `reloadNotes` pass can seed each pre-existing note's arrival at its own
+        // `createdAt` (see the seed branch in `reloadNotes`). Nil in tests via
+        // `inMemoryStore` — a test store must never write the real Application Support
+        // file (and `CorpusExporter.exportDirectoryOverride` governs the export side).
+        if !inMemoryStore {
+            ingestIndex = IngestIndex()
+        }
+        #endif
+
         // Migration + seed run against the store, THEN project into `notes`.
         importLegacyNotesIfNeeded()
         if CommandLine.arguments.contains("--wipe-all-notes") { deleteAllNotes() }
         seedDemoNotesIfNeeded()
-        reloadNotes()   // seeds `seenNoteIDs` (macOS) — this first pass never fires the trigger
+        reloadNotes()   // seeds `seenNoteIDs` + the ingest index (macOS) — this first pass never fires the trigger
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
 
         #if os(macOS)
@@ -830,7 +852,8 @@ public final class AppModel: ObservableObject {
         // every CloudKit remote-change batch, inbox applies, wake backoff). A tag
         // can only become orphaned when a note disappears, so prune only on the
         // first pass (historical cleanup) or when the note-id set SHRANK.
-        var shouldPruneOrphanedTags = seenNoteIDs == nil
+        let isFirstPass = seenNoteIDs == nil
+        var shouldPruneOrphanedTags = isFirstPass
         if let previous = seenNoteIDs {
             let arrivals = currentIDs.subtracting(previous)
             if !arrivals.isEmpty {
@@ -842,6 +865,44 @@ public final class AppModel: ObservableObject {
             }
         }
         seenNoteIDs = currentIDs
+
+        // ── Arrival-time coverage (M13): keep the ingest index in step with this pass.
+        //    Same diff, same passes — piggybacking `reloadNotes` means every path that
+        //    surfaces a note (local capture, CloudKit import, inbox apply, wake retry)
+        //    stamps its arrival, and a late-syncing watch note is stamped at the moment
+        //    it actually lands here (fresh `ingestedAt`), not its stale `createdAt`.
+        if let ingestIndex {
+            var indexChanged = false
+            if isFirstPass {
+                // The store already holds the whole historical corpus. Seed each note at
+                // its OWN `createdAt`, NOT `now` — stamping all of them "now" would make
+                // the corpus look ingested today and the runner would re-read everything
+                // on its next `ingested_since` window. Old notes belong in the past.
+                for note in notes {
+                    if ingestIndex.seedIfAbsent(note.id, at: note.createdAt) { indexChanged = true }
+                }
+            } else {
+                // Later passes: a genuinely new id is a real arrival → stamp it `now`
+                // (first-seen wins inside the index, so a re-arrival after a transient
+                // delete keeps its original stamp). We record every current id that the
+                // index hasn't seen — covering both the diffed arrivals and any note that
+                // slipped in without a prior-pass baseline entry (belt-and-suspenders).
+                for id in currentIDs where !ingestIndex.contains(id) {
+                    if ingestIndex.recordArrival(id) { indexChanged = true }
+                }
+            }
+            // Prune index entries for notes no longer in the store, piggybacking the
+            // same trigger as the orphan-tag prune (a note-id set that shrank / first
+            // pass) so the map can't grow unbounded as notes are deleted.
+            if shouldPruneOrphanedTags {
+                let pruned = ingestIndex.prune(keeping: currentIDs)
+                if pruned > 0 {
+                    indexChanged = true
+                    Diag.log("HNDIAG IngestIndex pruned \(pruned) entr(ies) for removed notes")
+                }
+            }
+            if indexChanged { ingestIndex.save() }
+        }
         #endif
 
         // Project the agent layer from the SAME fresh read context — so a layer record
@@ -910,7 +971,15 @@ public final class AppModel: ObservableObject {
             viewRevisions: allRevisions,
             instructions: layerStore.instructions(),
             interactions: layerStore.allInteractions())
-        CorpusExporter.exportInBackground(notes, layer: layer)
+        // Arrival-time coverage (M13): hand the exporter the note→firstSeen map so it can
+        // stamp `ingestedAt` on each EXPORTED note row (value = firstSeen ?? createdAt).
+        // Passed as a plain `[UUID: Date]` snapshot (Sendable) so it rides into the
+        // detached export task; the exporter only reads it for gate-passing notes, so a
+        // restricted note's arrival is looked up but never emitted. Nil index (never on
+        // macOS-with-store, but defensively) → empty map → every row falls back to
+        // `createdAt`, exactly like an old export.
+        let ingestedAt = ingestIndex?.snapshot() ?? [:]
+        CorpusExporter.exportInBackground(notes, layer: layer, ingestedAt: ingestedAt)
         #endif
     }
 

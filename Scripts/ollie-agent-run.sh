@@ -28,9 +28,19 @@ set -uo pipefail
 #
 # STATE
 #   ~/Ollie/.agent-state.json  {"lastRunAt": "<ISO8601 UTC>"}. Read at start and
-#   interpolated into the prompt (the runbook works `list_notes(since=lastRunAt)`),
+#   interpolated into the prompt (the runbook works `list_notes(ingested_since=lastRunAt)`),
 #   rewritten with the new timestamp only after a successful run. First run (no state)
 #   passes an empty lastRunAt — the runbook treats that as "recent notes".
+#
+# WORK LOG (M13)
+#   ~/Ollie/agent-runs/runs.jsonl — ONE JSON line appended after EVERY claude
+#   invocation (success AND failure), append-only (contract §9):
+#     {"runId","agentId","startedAt","finishedAt","since","corpusExportedAt",
+#      "rc","ok","logFile"}
+#   Advisory context only, never access control: a later run reads it (via the MCP
+#   `recent_runs` tool) to see what prior runs covered. Built as a whole line then
+#   appended with a single `>>` (no partial lines). `lastRunAt` still advances on
+#   success only; this log records both outcomes.
 #
 # INVOCATION
 #   Runs from a FIXED workspace (Guard 4): cd "$OLLIE_WORKSPACE" (default
@@ -296,6 +306,7 @@ else
 fi
 
 log "invoking Claude (model=$CLAUDE_MODEL) — output → $LOG_FILE"
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$CLAUDE_MODEL" \
@@ -303,8 +314,31 @@ set +e
   ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
   >> "$LOG_FILE" 2>&1
 CLAUDE_RC=$?
+RUN_FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # (The whole script runs under `set -uo pipefail`, never `-e`, so a non-zero
 # claude rc doesn't abort — we branch on $CLAUDE_RC explicitly below.)
+
+# ── Work log: append ONE line to runs.jsonl (contract §9) — SUCCESS AND FAILURE ──
+# Advisory only (never access control): lets a later run — and the user — see what
+# past runs covered (which `since`, how long, ok?), so the agent can decide what's
+# already been looked at. Written with the same care as the state file: build the
+# whole line first, then a SINGLE `>>` append (no partial lines if the process dies
+# mid-write). `ok` is the boolean form of `rc == 0`; `logFile` is the log's basename
+# so a reader can find it under agent-runs/ without an absolute path leaking. lastRunAt
+# semantics are unchanged (advanced on success only, below) — this log records BOTH.
+append_run_log() {
+  local rc="$1" started="$2" finished="$3"
+  local ok="false"; (( rc == 0 )) && ok="true"
+  local runs_file="$LOG_DIR/runs.jsonl"
+  # Assemble the line fully, THEN append once. Fields mirror contract §9. All values
+  # here are shell-controlled (timestamps, our own ids, an int rc) — no user text — so
+  # a hand-built JSON string is safe; jq is not required on the box.
+  local line
+  line="$(printf '{"runId":"%s","agentId":"%s","startedAt":"%s","finishedAt":"%s","since":"%s","corpusExportedAt":"%s","rc":%d,"ok":%s,"logFile":"%s"}' \
+    "$RUN_TS" "$OLLIE_AGENT_ID" "$started" "$finished" "$SINCE_VALUE" "$EXPORTED_AT" "$rc" "$ok" "$RUN_TS.log")"
+  printf '%s\n' "$line" >> "$runs_file"
+}
+append_run_log "$CLAUDE_RC" "$RUN_STARTED_AT" "$RUN_FINISHED_AT"
 
 if (( CLAUDE_RC != 0 )); then
   log "STOP: Claude exited non-zero (rc=$CLAUDE_RC). See $LOG_FILE."

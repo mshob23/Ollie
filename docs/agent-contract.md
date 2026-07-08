@@ -101,6 +101,23 @@ projection (`AgentTag`, `AgentMemory`, `AgentViewRevision`). Upsert-by-`id` in c
 `NoteEntity` gains one field: `public var isRestricted: Bool = false` (mirrored on `Note`, default
 `false`, tolerant decode; `Note.currentSchemaVersion` bumps 2 → 3).
 
+**Exported note rows carry `ingestedAt`** (M13) — the note's **first arrival at the hub store**
+(this Mac), not its capture time. It is *export-only*: **no `@Model` field, no schema change**,
+derived from a private on-device index, so it does **not** trip the schema golden gate. Semantics:
+`list_notes(since:)` filters on `createdAt` — *event* time — but a watch note can sync to the Mac
+**hours** after it was spoken, carrying an old `createdAt` that has already fallen outside every
+future `since` window; it is then never seen. `ingestedAt` is the **coverage-correct** key: it
+records when the note actually *landed here*, so a late arrival still falls inside an `ingested_since`
+window (§9). Value = the note's arrival timestamp, **falling back to `createdAt`** when it is unknown
+(an export written before M13, or a note that predates the index). The arrival timestamps live in a
+persisted `noteId → firstSeenAt` map (`IngestIndex`) in the app's **Application Support** directory —
+**deliberately not under `~/Ollie/`**: a *restricted* note's UUID lands in that index too, and
+"restriction is contagious" (§0) forbids even a bare id from crossing the export boundary. The
+exporter looks the index up **only for gate-passing notes**, so a restricted note's arrival is never
+emitted. On the first reload the index seeds each pre-existing note at its own `createdAt` (not
+"now"), so the historical corpus sits in the past and the runner doesn't re-read all of it; only notes
+arriving *after* that seed are stamped at arrival time.
+
 ### Semantics
 
 - **Tags** are a **set per note**. Applying an existing `(noteId, tag)` pair is a **no-op**
@@ -217,8 +234,14 @@ The contagion rule lives in **one** Core function so future doors reuse it:
 
 - `ExportRecord` (in `CorpusExporter`) gains a **reserved** optional `media: [String]?` — always
   `nil`/omitted today, documented for photo notes later (see §8).
-- `.ollie.meta.json` keeps its shape; `schemaVersion` becomes **3** and gains
-  `"layerCounts": {"tags":N,"memory":N,"viewRevisions":N}`.
+- `ExportRecord` also carries **`ingestedAt`** (M13, §2) — the note's arrival time at the hub,
+  `firstSeen ?? createdAt`. Always present on a fresh export; emitted **only** for gated/exported
+  notes. This is an **additive export-format field**, not a schema change — so `schemaVersion` is
+  **not** bumped for it (same convention as the M7 `interactions` addition below). Old readers ignore
+  the extra key; new readers that filter on it fall back to `createdAt` where it's absent.
+- `.ollie.meta.json` keeps its shape; `schemaVersion` is **3** (it tracks the CloudKit `@Model`
+  schema — last bumped 2 → 3 for `isRestricted`; **M13 changes no `@Model`, so it stays 3**) and
+  carries `"layerCounts": {"tags":N,"memory":N,"viewRevisions":N,"interactions":N}`.
 
 ---
 
@@ -396,10 +419,27 @@ stop (stale corpus, missing runbook, or the Claude invocation failed).
 model, `agentId`, `since`, and corpus age). Logs older than **30 days** are pruned on each run;
 `launchd.log` is never pruned.
 
+**Work log (`runs.jsonl`, M13):** after **every** `claude` invocation — success *and* failure — the
+runner appends **one** JSON line to `~/Ollie/agent-runs/runs.jsonl`:
+
+```json
+{"runId":"<RUN_TS>","agentId":"claude-runner","startedAt":"<ISO8601>","finishedAt":"<ISO8601>",
+ "since":"<SINCE_VALUE>","corpusExportedAt":"<ISO8601>","rc":<int>,"ok":<bool>,"logFile":"<basename>"}
+```
+
+Append-only, one line per run, built whole then written with a single `>>` (never a partial line —
+the same care as the state file). `ok` is `rc == 0`; `logFile` is the run log's basename (found under
+`agent-runs/`). It is **advisory context, never access control**: a later run reads it (via the MCP
+read tool **`recent_runs(limit=10)`** — newest first) to see what prior passes already covered —
+which `since` window each used, when, and whether it succeeded — so it needn't redo work. Unlike
+`lastRunAt` (advanced on success only), this log records **both** outcomes. The read tolerates a
+missing file (empty list) and skips any malformed line.
+
 **State:** `~/Ollie/.agent-state.json` holds `{"lastRunAt":"<ISO8601 UTC>"}`, written only on a
-successful run and fed into the prompt so step 3 works `list_notes(since=lastRunAt)` — the run only
-looks at notes since it last succeeded. A failed run does **not** advance it, so the next run re-covers
-the same window.
+successful run and fed into the prompt so step 3 works `list_notes(ingested_since=lastRunAt)` — the
+run looks at notes that **arrived** (not merely were created) since it last succeeded, so a
+late-syncing watch note is covered instead of falling silently outside the window (§2 `ingestedAt`).
+A failed run does **not** advance `lastRunAt`, so the next run re-covers the same window.
 
 ### The prompt
 
