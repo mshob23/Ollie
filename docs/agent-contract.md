@@ -277,10 +277,12 @@ reads. The conventions agents follow, summarized (normative source is the runboo
     after the number inside the parens (`(-5 good)`, `(+2 bad)`, M12) OVERRIDES that sign tint —
     for a metric where "down is good" (a weight cut, a bug count): `good` → green, `bad` → red,
     regardless of sign. The number is still shown verbatim; only the color changes. The hint
-    word must be exactly `good` or `bad` — a number followed by any **other** word in that slot
-    (e.g. the old `(5 down)` workaround) is malformed and falls the whole fence back to the
-    panel. Absent → today's sign-based tint, unchanged. (A bare `(good)`/`(bad)` with no number
-    is just a verbatim free-text delta, not a hint.)
+    word is `good` or `bad`, **case-insensitive** — a number followed by any **other** word in
+    that slot (e.g. the old `(5 down)` workaround) is malformed and falls the whole fence back
+    to the panel. A Unicode minus (`−`, U+2212) on the number is accepted exactly like ASCII
+    `-` (both for the tint and for opening the hint slot). Absent → today's sign-based tint,
+    unchanged. (A bare `(good)`/`(bad)` with no number is just a verbatim free-text delta,
+    not a hint.)
   - ` ```chart ` — `Label: number` (C-locale decimal, finite) → horizontal bars. By default
     bars scale from **zero** to the max. A truncated **baseline** (M12) makes a tight series
     legible (a `183 → 178` run otherwise renders as identical full-height bars):

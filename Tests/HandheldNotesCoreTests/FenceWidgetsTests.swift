@@ -107,12 +107,31 @@ final class FenceWidgetsTests: XCTestCase {
     }
 
     func testMetricUnknownHintWordDegradesToNil() {
-        // A number then a trailing word that ISN'T exactly good/bad occupies the hint slot and
+        // A number then a trailing word that ISN'T good/bad occupies the hint slot and
         // is strictly malformed → whole fence nil (this deprecates the old "(5 down)" workaround).
         XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (5 down)"))
         XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (-5 great)"))
-        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (2 Good)"))   // case-sensitive
         XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (5 good extra)")) // number + 2 words
+    }
+
+    func testMetricSentimentHardenings() {
+        // Review hardenings (Jul 2026), both shrink self-inflicted-void surfaces:
+        // 1. The hint word is CASE-INSENSITIVE — "(2 Good)" is an obvious hint, not a
+        //    reason to void the whole widget.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "A: 1 (2 Good)"), .metric([
+            .init(label: "A", value: "1", delta: "2", sentiment: .good),
+        ]))
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "A: 1 (-3 BAD)"), .metric([
+            .init(label: "A", value: "1", delta: "-3", sentiment: .bad),
+        ]))
+        // 2. A Unicode-minus (U+2212) delta opens the hint slot exactly like ASCII "-"
+        //    (the tint path already understood it; the hint path must agree). The delta
+        //    keeps the author's original glyph.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "Weight: 182 (\u{2212}5 good)"), .metric([
+            .init(label: "Weight", value: "182", delta: "\u{2212}5", sentiment: .good),
+        ]))
+        // Unknown words after a Unicode-minus number are malformed like any other.
+        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (\u{2212}5 down)"))
     }
 
     func testMetricNoHintIsUnchanged() {

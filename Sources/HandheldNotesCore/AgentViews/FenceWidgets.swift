@@ -511,9 +511,15 @@ public enum FenceWidget: Equatable, Sendable {
         let head = String(inner[..<firstSpace])
         let tail = inner[inner.index(after: firstSpace)...].trimmingCharacters(in: .whitespaces)
         // Only a *numeric* head opens the hint slot. A non-numeric head (a multi-word
-        // free-text delta) is kept verbatim, unchanged from pre-M12.
-        guard parseNumber(head) != nil, !tail.isEmpty else { return (inner, nil) }
-        switch tail {
+        // free-text delta) is kept verbatim, unchanged from pre-M12. Agents emit the
+        // Unicode minus (U+2212) — the tint path (`deltaColor`) already understands it,
+        // so the hint path must too (review, Jul 2026): normalize for the numeric CHECK
+        // only; the returned delta keeps the author's original glyph.
+        let numericHead = head.replacingOccurrences(of: "\u{2212}", with: "-")
+        guard parseNumber(numericHead) != nil, !tail.isEmpty else { return (inner, nil) }
+        // Case-insensitive: `(-5 Good)` is an obvious hint, not a reason to void the
+        // whole widget (review, Jul 2026). Any OTHER word here is still strict-malformed.
+        switch tail.lowercased() {
         case "good": return (head, .good)
         case "bad":  return (head, .bad)
         default:     return nil   // number then a non-hint word → strict malformed.
