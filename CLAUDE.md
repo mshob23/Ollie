@@ -27,9 +27,13 @@ contract). A change that fights it needs the vision updated deliberately, not wo
 Agent-layer milestones **M0–M9 are all shipped** (see `AGENT_LAYER_PLAN.md` §M-headers for
 as-built notes): tags/memory/views + restriction gate + MCP server + scheduled runner (M0–M6),
 interactive checkboxes (M7), watch views + revision restore + double-title fix (M8), the
-fence widgets `metric`/`chart`/`timeline`/`table` (M9, renderer-only), and a watch-face
-complication (WidgetKit, tap → capture). Shipped as iOS TestFlight **build 33** + a
-Developer-ID Mac app; 33 also validated deleting `NSCameraUsageDescription` (C1 closed). `checklist` and `cl2:` ids remain **reserved,
+fence widgets `metric`/`chart`/`timeline`/`table` (M9, renderer-only) **+ `diagram` (M10)**,
+a watch-face complication (WidgetKit, tap → capture), and the **event-driven runner (M11)**:
+note arrivals debounce 90 s → `~/Ollie/.runner-trigger` → launchd `WatchPaths` fires the
+runner (4 h interval as backstop; loop-safe — only `NoteEntity` inserts trigger). Shipped as
+iOS TestFlight **build 33** + a Developer-ID Mac app; 33 also validated deleting
+`NSCameraUsageDescription` (C1 closed). The capture-bar `createdAt` bug and the orphaned-tag
+vocabulary leak are fixed (Jul 2026). `checklist` and `cl2:` ids remain **reserved,
 unbuilt** (contract §7). **C2 closed 2026-07-07**: the launchd runner does unattended passes
 (first verified run: 72 tags, 8 views, 2 request-notes answered). The RUNTIME is deployed to
 `~/Ollie/{bin,mcp}` by `Scripts/install-agent-runner.sh` — launchd cannot read this Desktop
@@ -88,8 +92,11 @@ swift test                          # 240+ tests, includes the schema golden gat
 - The runtime corpus (`~/Ollie/ollie.jsonl`, `tags/memory/views/interactions.jsonl`,
   `.ollie.meta.json`, `inbox/`) **only refreshes while the Mac app is running** — it is also
   your best verification surface (authoritative record of saves, ticks, publishes).
-- Known app bug until fixed: a capture-bar note's `createdAt` is the *draft session start*,
-  not send time — `list_notes(since:)` can miss fresh notes; the runbook works around it.
+- **Constructing an `AppModel` in a test fires the REAL macOS `~/Ollie` export**
+  (`inMemoryStore` gates the container, not the export). `CorpusExporter` fail-safes to a
+  per-process temp dir under XCTest (Jul 2026 — a 1-note fixture export once clobbered the
+  live corpus, past the zero-note guard), but still set `exportDirectoryOverride` explicitly
+  whenever a test asserts export contents.
 
 ## Docs map (where the truth lives)
 

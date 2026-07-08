@@ -114,8 +114,8 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
    request), a min-baseline option for `chart` (tight-range series render as identical bars), and two
    app fixes: capture-bar notes stamp `createdAt` at draft-session start (agents miss them), and feed
    previews leak literal `**`. See BACKLOG.md.
-2. **Event-driven runner** — C2 closed 2026-07-07 (headless runner live, every 4 h, runtime
-   deployed to `~/Ollie`); next make the Mac app kick it on CloudKit note arrival (debounced)
-   instead of only the timer, with the arrival-time coverage cursor + `runs.jsonl` work log
-   (BACKLOG.md §home-node track).
+2. **Home-node track remainder** — the event-driven runner **shipped (M11, 2026-07-07)**:
+   note arrival → 90 s debounce → `WatchPaths` → run in ~2 min, 4 h backstop. Still open:
+   the arrival-time (`ingestedAt`) coverage cursor + `runs.jsonl` work log + runbook decay
+   guidance (BACKLOG.md §home-node track).
 3. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.

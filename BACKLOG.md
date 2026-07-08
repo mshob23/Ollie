@@ -9,14 +9,14 @@ Mac `.dmg`.
 
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 
-- **`diagram` / sketch fence widget.** The first user-approved entry in the "Ollie
-  wishlist" — agents already hit the dialect's wall wanting to draw (they fall back to
-  ASCII art in the monospaced panel, which works but is a poor-man's canvas). Same
-  renderer-only pattern as M9. This is the wishlist loop doing its job: build it.
-- **Fix: capture-bar notes carry the draft-session start `createdAt`, not send time.**
-  A note sent at 02:39 can be stamped 02:30 — agents' `list_notes(since:)` silently
-  misses it (bit two of three eval runs; the runbook has a workaround, the app should
-  stamp send time).
+- ~~**`diagram` / sketch fence widget.**~~ ✅ **Shipped (M10, 2026-07-07)** — vertical
+  topological-flow renderer, contract §6.1 grammar, runbook example. V2 refinements
+  parked below (Polish): flow-wrap for wide fan-outs, per-connector label geometry,
+  self-loop label cosmetics.
+- ~~**Fix: capture-bar `createdAt`.**~~ ✅ **Fixed (2026-07-07)** — `Draft.makeNote()`
+  now stamps at send time (also cured a spurious "edited" badge on fresh capture-bar
+  notes). The runbook's skim-recent-notes workaround stays: late-syncing watch notes
+  still justify it.
 - **Fix: feed previews leak literal `**`.** The snippet helper strips markdown pairs
   incompletely; detail rendering is fine.
 - **`chart` min-baseline option.** A tight-range series (183→178) renders as six
@@ -50,9 +50,12 @@ deployed to `~/Ollie/{bin,mcp}` (TCC blocks launchd from the Desktop repo), firs
 unattended launchd pass verified end-to-end (72 tags, 8 views, 2 requests answered,
 wishlist tick consumed, 0 rejected ops). Next, in order:
 
-- **Event-driven runner.** The Mac app already receives CloudKit pushes for arriving
-  notes; debounce ~90 s (a walk's worth of thoughts batches into one run) and kick the
-  launchd runner, keeping the schedule as backstop. Target end-to-end latency 2–5 min.
+- ~~**Event-driven runner.**~~ ✅ **Shipped (M11, 2026-07-07)** — note arrivals (CloudKit
+  imports or local captures) debounce 90 s in the Mac app, then touch
+  `~/Ollie/.runner-trigger`; launchd `WatchPaths` fires the guarded runner (4 h interval
+  kept as backstop). Loop-safe by construction: only `NoteEntity` inserts trigger, and
+  no agent path inserts a note (adversarially re-verified, incl. a live launchd
+  WatchPaths probe). See docs/home-node.md §Event-driven runs.
 - **Arrival-time coverage, not event-time.** Stamp `ingestedAt` (when the note reached the
   Mac store) at export; the runner's since-cursor should move over `ingestedAt`, advancing
   **only on successful run completion**. This closes the whole "missed note" class in one
