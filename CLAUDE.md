@@ -28,12 +28,17 @@ Agent-layer milestones **M0–M9 are all shipped** (see `AGENT_LAYER_PLAN.md` §
 as-built notes): tags/memory/views + restriction gate + MCP server + scheduled runner (M0–M6),
 interactive checkboxes (M7), watch views + revision restore + double-title fix (M8), the
 fence widgets `metric`/`chart`/`timeline`/`table` (M9, renderer-only) **+ `diagram` (M10)**,
-a watch-face complication (WidgetKit, tap → capture), and the **event-driven runner (M11)**:
+a watch-face complication (WidgetKit, tap → capture), the **event-driven runner (M11)**:
 note arrivals debounce 90 s → `~/Ollie/.runner-trigger` → launchd `WatchPaths` fires the
-runner (4 h interval as backstop; loop-safe — only `NoteEntity` inserts trigger). Shipped as
-iOS TestFlight **build 33** + a Developer-ID Mac app; 33 also validated deleting
-`NSCameraUsageDescription` (C1 closed). The capture-bar `createdAt` bug and the orphaned-tag
-vocabulary leak are fixed (Jul 2026). `checklist` and `cl2:` ids remain **reserved,
+runner (4 h interval as backstop; loop-safe — only `NoteEntity` inserts trigger),
+**fence widgets v2 (M12)**: chart `min:`/auto-baseline (labeled axis, never silent),
+metric `good`/`bad` sentiment hints, diagram wrap/label/self-loop polish, and
+**arrival-time coverage (M13)**: `IngestIndex` (App Support — restricted UUIDs never cross
+the export boundary) → `ingestedAt` on exported rows → `list_notes(ingested_since=)`,
+runner scan-START checkpoint, `runs.jsonl` + `recent_runs()`. Shipped as iOS TestFlight
+**build 33** + a Developer-ID Mac app; 33 also validated deleting `NSCameraUsageDescription`
+(C1 closed). The capture-bar `createdAt` bug, the orphaned-tag vocabulary leak, and the
+feed-preview `**` leak are fixed (Jul 2026). `checklist` and `cl2:` ids remain **reserved,
 unbuilt** (contract §7). **C2 closed 2026-07-07**: the launchd runner does unattended passes
 (first verified run: 72 tags, 8 views, 2 request-notes answered). The RUNTIME is deployed to
 `~/Ollie/{bin,mcp}` by `Scripts/install-agent-runner.sh` — launchd cannot read this Desktop

@@ -10,21 +10,21 @@ Mac `.dmg`.
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 
 - ~~**`diagram` / sketch fence widget.**~~ ✅ **Shipped (M10, 2026-07-07)** — vertical
-  topological-flow renderer, contract §6.1 grammar, runbook example. V2 refinements
-  parked below (Polish): flow-wrap for wide fan-outs, per-connector label geometry,
-  self-loop label cosmetics.
+  topological-flow renderer, contract §6.1 grammar, runbook example. **V2 polish shipped
+  (M12, 2026-07-08):** wide layers wrap at 3 nodes/row, multi-label connectors render
+  `from → to: label`, self-loop labels become `↺` node badges.
 - ~~**Fix: capture-bar `createdAt`.**~~ ✅ **Fixed (2026-07-07)** — `Draft.makeNote()`
   now stamps at send time (also cured a spurious "edited" badge on fresh capture-bar
   notes). The runbook's skim-recent-notes workaround stays: late-syncing watch notes
   still justify it.
-- **Fix: feed previews leak literal `**`.** The snippet helper strips markdown pairs
-  incompletely; detail rendering is fine.
-- **`chart` min-baseline option.** A tight-range series (183→178) renders as six
-  visually identical zero-scaled bars — tracking data needs a baseline (or auto-baseline
-  when the range is tight) for the story to show.
-- **`metric` delta-sentiment hint.** `(-5)` tints danger-red, but in a weight cut minus
-  is *good*; guidance says "write `(5 down)`" for now — an explicit sentiment hint in
-  the grammar would be nicer.
+- ~~**Fix: feed previews leak literal `**`.**~~ ✅ **Fixed (2026-07-08)** — one shared
+  `ViewPreviewSnippet` helper replaced the duplicated per-platform stripper; fence-leading
+  bodies now preview their first prose line.
+- ~~**`chart` min-baseline option.**~~ ✅ **Shipped (M12, 2026-07-08)** — explicit `min:`
+  (over-declared clamps to data) + auto-baseline on tight all-positive spreads; any active
+  baseline draws a labeled axis so a truncated chart is never silent.
+- ~~**`metric` delta-sentiment hint.**~~ ✅ **Shipped (M12, 2026-07-08)** — `(-5 good)` /
+  `(+2 bad)` (case-insensitive, Unicode-minus tolerant) overrides sign tinting.
 
 - **Finish the Find result.** `FindNotesIntent` returns a count ("Found 3 notes") but
   not the notes themselves. Show the matched notes (headline + preview) in the Siri /
@@ -56,22 +56,18 @@ wishlist tick consumed, 0 rejected ops). Next, in order:
   kept as backstop). Loop-safe by construction: only `NoteEntity` inserts trigger, and
   no agent path inserts a note (adversarially re-verified, incl. a live launchd
   WatchPaths probe). See docs/home-node.md §Event-driven runs.
-- **Arrival-time coverage, not event-time.** Stamp `ingestedAt` (when the note reached the
-  Mac store) at export; the runner's since-cursor should move over `ingestedAt`, advancing
-  **only on successful run completion**. This closes the whole "missed note" class in one
-  move: the capture-bar `createdAt` bug *and* late-syncing watch notes (created 3 h ago,
-  arriving now) both stop being coverage hazards.
-- **`runs.jsonl` work log.** Each run appends `{runId, agentId, startedAt, finishedAt,
-  coveredThrough, notesSeen, viewsTouched}`. Advisory context for the next agent (and
-  renderable as a view for the user) — never access control (VISION.md). Prefer this over
-  per-note "seen" flags: notes are immutable + append-only, so a high-water mark gives
-  exact coverage without n× bookkeeping writes; idempotent writes make any re-processing
-  harmless anyway.
-- **Runbook: decay + reflection guidance.** A line on weighting notes by recency (an old
-  note surfaces only if strongly relevant), plus a periodic reflection pass over the aging
-  tail (never tagged, never cited in a view, > N days) that promotes anything durable to
-  memory — after which the raw note cools out of the working window naturally. Fade by
-  distillation, never deletion.
+- ~~**Arrival-time coverage.**~~ ✅ **Shipped (M13, 2026-07-08)** — `IngestIndex`
+  (App Support, never `~/Ollie` — even restricted UUIDs stay behind the boundary) stamps
+  first-arrival; exported rows carry `ingestedAt` (createdAt fallback); the runbook filters
+  `list_notes(ingested_since=lastRunAt)`; the runner checkpoints at run **start**
+  (review-caught: a completion-time cursor silently dropped mid-run arrivals to the 4 h
+  backstop).
+- ~~**`runs.jsonl` work log.**~~ ✅ **Shipped (M13, 2026-07-08)** — the runner appends one
+  line per invocation (success and failure); agents read it via `recent_runs()` (runbook
+  step 1). Advisory, never access control.
+- ~~**Runbook: decay + reflection guidance.**~~ ✅ **Shipped (2026-07-08)** — the "Weight
+  by recency; let the old tail fade" section: fade by distillation (promote durable facts
+  to memory), never deletion.
 
 ## Next — the big bet
 

@@ -110,12 +110,11 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
 
 ## Roadmap / next (ordered)
 
-1. **Live-eval follow-ups (Jul 2026)** — a `diagram`/sketch fence (the wishlist's first user-approved
-   request), a min-baseline option for `chart` (tight-range series render as identical bars), and two
-   app fixes: capture-bar notes stamp `createdAt` at draft-session start (agents miss them), and feed
-   previews leak literal `**`. See BACKLOG.md.
-2. **Home-node track remainder** — the event-driven runner **shipped (M11, 2026-07-07)**:
-   note arrival → 90 s debounce → `WatchPaths` → run in ~2 min, 4 h backstop. Still open:
-   the arrival-time (`ingestedAt`) coverage cursor + `runs.jsonl` work log + runbook decay
-   guidance (BACKLOG.md §home-node track).
+1. ~~Live-eval follow-ups~~ / ~~home-node track~~ — **all shipped (M10–M13, Jul 7–8 2026)**:
+   diagram fence (+v2 polish), chart baseline, metric sentiment, capture-bar `createdAt` fix,
+   feed-preview fix, event-driven runner (~2 min latency, 4 h backstop), arrival-time coverage
+   (`ingestedAt` + scan-start checkpoint), `runs.jsonl`/`recent_runs()`, runbook recency/fade
+   guidance. See BACKLOG.md for the per-item records.
+2. **Polish next** (BACKLOG §Polish) — Find-result display, forgiving search, Spotlight
+   deep-link, Rung 3's human-facing Markdown mirror.
 3. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.
