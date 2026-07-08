@@ -101,8 +101,11 @@ struct ViewsFeedPane: View {
 
     /// One feed row (M18: shared by the ungrouped list and every section so grouping
     /// changes only where a row sits, never how it renders). The unread dot (M16) is
-    /// driven by a pure read of the published snapshot; selecting the row marks the
-    /// view seen from the tap ACTION (never during render — landmine).
+    /// driven by a pure read of the published snapshot. The tap only SELECTS — the
+    /// mark-seen lives in the detail pane's lifecycle (`markSeenForShown`, .onAppear +
+    /// .onChange of shown id), which covers both open paths exactly once; marking here
+    /// too double-wrote the stamp (two reloads + two corpus exports per open —
+    /// review lens 1, Jul 2026). iOS rows behave the same way.
     @ViewBuilder
     private func row(for rev: AgentViewRevision) -> some View {
         ViewFeedRow(revision: rev,
@@ -111,10 +114,6 @@ struct ViewsFeedPane: View {
                     isUnread: model.agentViews.isUnread(rev.viewName))
             .onTapGesture {
                 selectedViewName = rev.viewName
-                // Opening a view to read it clears its unread dot live (M16). Safe:
-                // this is a user action, not render — `markViewSeen` re-projects the
-                // snapshot itself.
-                model.markViewSeen(rev.viewName, surface: "mac")
             }
             .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
             .listRowSeparator(.hidden)

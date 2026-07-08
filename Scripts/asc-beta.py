@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""ASC beta-tester ops for app 6785293567 (same stdlib+openssl JWT as asc_poll.py).
+"""ASC beta-tester ops for app 6785293567 (pure stdlib + openssl-CLI ES256 JWT).
 
 Usage:
-  asc_beta.py groups                 # list beta groups (id | name | internal?)
-  asc_beta.py testers                # list current testers
-  asc_beta.py groupbuilds GROUP_ID   # builds attached to a group
-  asc_beta.py add EMAIL GROUP_ID     # create tester + attach to group (sends invite)
+  asc-beta.py groups                        # list beta groups (id | name | internal?)
+  asc-beta.py testers                       # list current testers
+  asc-beta.py grouptesters GROUP_ID         # members of one group
+  asc-beta.py groupbuilds GROUP_ID          # builds attached to a group
+  asc-beta.py buildid N                     # ASC build id for build number N
+  asc-beta.py attachbuild GROUP_ID BUILD_ID # attach a build to a group
+  asc-beta.py submitreview BUILD_ID         # submit for Beta App Review (external needs it)
+  asc-beta.py reviewstate BUILD_ID          # WAITING_FOR_REVIEW -> APPROVED
+  asc-beta.py add EMAIL GROUP_ID            # create tester + attach to group (sends invite)
+
+RELEASE.md §iOS step 4 documents the per-ship sequence (buildid -> attachbuild ->
+submitreview) — external testers only see builds explicitly attached to their group.
+Key expected at ~/.appstoreconnect/private_keys/AuthKey_V2S345C7SB.p8.
 """
 import base64, json, os, subprocess, sys, time, urllib.request, urllib.error
 

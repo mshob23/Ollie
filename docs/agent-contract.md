@@ -372,9 +372,9 @@ on `media`, colliding a reserved id) is a regression.
   editing it* (views stay agent-authored; append-only revisions). An annotation-note is an ordinary
   note whose **first line begins** `re: view "<name>"` — `<name>` is the text between the first `"`
   and the next `"` (so view names must not contain `"` — they never should; they're feed-row noun
-  phrases). Everything after the closing quote plus any later lines is the user's comment. The apps'
-  **Annotate** button prefills exactly this prefix into the normal capture composer; capture never
-  waits. Handling is runbook-driven (correct + republish the view; promote durable decodings to
+  phrases). Everything after the closing quote plus any later lines is the user's comment. The
+  **Mac and iPhone** apps' **Annotate** button prefills exactly this prefix into the normal capture
+  composer (the watch is glance-only — annotating from the wrist is deferred); capture never waits. Handling is runbook-driven (correct + republish the view; promote durable decodings to
   memory; `request:open`/`request:done` lifecycle applies). Nothing in the app parses the grammar —
   like request-notes, it is a convention the agent honors.
 - **Receipts convention — the standing view named `inbox` (M19, Jul 2026)** — the mailbox half of

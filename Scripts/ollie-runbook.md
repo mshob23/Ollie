@@ -33,8 +33,8 @@ Work through these seven steps in order, then stop.
 4. **Handle request-notes and annotation-notes.** A request-note is one addressed to
    Ollie ("Ollie, look into…") or that clearly reads as a task/question. An
    **annotation-note** is the user commenting on a view you published — its first line
-   begins `re: view "<name>"` (the apps' Annotate button prefills that; the comment
-   follows after the closing quote and/or on later lines). For each:
+   begins `re: view "<name>"` (the Mac and iPhone apps' Annotate button prefills that;
+   the comment follows after the closing quote and/or on later lines). For each:
    - Tag it `request:open` with `tag_note`.
    - **Annotation-notes first:** read the named view (`get_view`) and apply what the
      comment asks — usually a correction ("actually Endor, not indoor") — by
