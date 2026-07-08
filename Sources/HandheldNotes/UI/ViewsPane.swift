@@ -171,18 +171,12 @@ private struct ViewFeedRow: View {
         .animation(.easeInOut(duration: 0.12), value: hovering)
     }
 
-    /// A compact, single-block preview of the body: the first non-blank, non-heading
-    /// line's plain text (markdown markers stripped for the list glance).
+    /// A compact, single-block preview of the body: the first meaningful line rendered as
+    /// markdown-free plain text (leading + inline markdown stripped, leading fences
+    /// skipped) via the shared ``ViewPreviewSnippet`` — so `**Open loops**` glances as
+    /// `Open loops`, not with the asterisks showing.
     private var bodyPreview: String {
-        for raw in revision.body.split(whereSeparator: \.isNewline) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty else { continue }
-            // Strip common leading markers for a cleaner preview.
-            let stripped = line.drop { "#-*+> ".contains($0) }
-            let text = stripped.isEmpty ? line : String(stripped)
-            return text
-        }
-        return "Empty view"
+        ViewPreviewSnippet.make(from: revision.body)
     }
 }
 
