@@ -841,6 +841,21 @@ public final class AppModel: ObservableObject {
         // (note-detail tag chips, the AI-memory screen) on every platform, and (macOS)
         // the ~/Ollie export. `AgentLayerStore` is MainActor (we're on it).
         let layerStore = AgentLayerStore(context: readContext)
+        #if os(macOS)
+        // Store hygiene (orphan-tag fix, Jul 2026): hard-delete tag records whose note
+        // no longer EXISTS in the store — AppModel.delete() removes the NoteEntity but
+        // tags carry only a bare noteId (no cascade), so they accumulated forever and
+        // leaked into tags.jsonl as phantom vocabulary. Keyed on the RAW projection
+        // (restricted included): a restricted note's tags stay in-store (restriction is
+        // reversible) and are excluded from export by CorpusGate instead. Mac-only —
+        // the hub is the store janitor; the deletes propagate to other devices via
+        // CloudKit sync. Runs before allTags below so this pass's projection + export
+        // already see the pruned state.
+        let prunedTagCount = layerStore.pruneOrphanedTags(existingNoteIDs: Set(notes.map(\.id)))
+        if prunedTagCount > 0 {
+            Diag.log("HNDIAG pruned \(prunedTagCount) orphaned tag record(s) (deleted notes)")
+        }
+        #endif
         let allTags = layerStore.allTags()
         let allMemory = layerStore.memory(includeRetired: true)
         agentTags = allTags
