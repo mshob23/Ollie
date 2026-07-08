@@ -214,7 +214,7 @@ Existing files: `ollie.jsonl`, `notes/<id>.md`, `.ollie.meta.json`, `backups/`. 
 | `memory.jsonl` | `{"id","text","agentId","createdAt","retired","retiredAt"?}` (retired entries included, flagged) |
 | `views.jsonl` | `{"id","viewName","body","agentId","createdAt"}` — every revision, **full body** (snapshots, not diffs) |
 | `instructions.md` | plain markdown, the instructions text |
-| `interactions.jsonl` | `{"viewName","blockId","blockText","kind","value","revisionId","surface","updatedAt"}` — **M7**, one line per live checkbox-interaction record (see [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) §6) |
+| `interactions.jsonl` | `{"viewName","blockId","blockText","kind","value","revisionId","surface","updatedAt"}` — **M7**, one line per live checkbox-interaction record (see [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md) §6). **Agent-facing kinds only** (`checkbox` today): `kind:"seen"` rows (M16 per-view read stamps) are app-internal UI state and are **never exported** here nor returned by `get_view.interactions` |
 
 ### Gate rules (apply to every exported artifact)
 
@@ -345,6 +345,14 @@ on `media`, colliding a reserved id) is a regression.
   mutate **no** observed state (`@ObservationIgnored`) or it infinite-loops the render (0x8BADF00D) —
   see [`ollie-swiftui-render-loop`]. Still reserved on top of this: explicit-id checklist items inside
   fenced blocks (`cl2:` prefix) and the interactive fence names below.
+  **The `seen` kind (M16, Jul 2026):** per-view read stamps reuse this entity exactly as the M7
+  design anticipated ("future kinds reuse this entity with no further schema change") —
+  `kind:"seen"`, sentinel `blockId:"__view__"` (do not collide it), `value` = the seen revision's
+  UUID string, upserted by the apps when the user opens a view. A view is **unread** when its latest
+  revision's `createdAt` is newer than the seen stamp's `updatedAt` (or no stamp exists) — the same
+  time-comparison idiom as the checkbox overlay. `seen` rows are **app-internal**: excluded from
+  `interactions.jsonl` and from `get_view.interactions` (§5); the agent-facing interaction contract
+  stays checkbox-only.
 - **`media: [String]?`** on `ExportRecord` — reserved for per-note photo/audio attachments; always
   `nil` today.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent
@@ -360,6 +368,29 @@ on `media`, colliding a reserved id) is a regression.
   the user *ticks* a wish to request it, and the agent moves it under `## Requested` on the next
   republish. This is the demand signal for which reserved capability to build next. A runbook
   convention like the request-lifecycle tags — nothing in the app special-cases these strings.
+- **Annotation-note convention (M17, Jul 2026)** — the user comments on a published view *without
+  editing it* (views stay agent-authored; append-only revisions). An annotation-note is an ordinary
+  note whose **first line begins** `re: view "<name>"` — `<name>` is the text between the first `"`
+  and the next `"` (so view names must not contain `"` — they never should; they're feed-row noun
+  phrases). Everything after the closing quote plus any later lines is the user's comment. The apps'
+  **Annotate** button prefills exactly this prefix into the normal capture composer; capture never
+  waits. Handling is runbook-driven (correct + republish the view; promote durable decodings to
+  memory; `request:open`/`request:done` lifecycle applies). Nothing in the app parses the grammar —
+  like request-notes, it is a convention the agent honors.
+- **Receipts convention — the standing view named `inbox` (M19, Jul 2026)** — the mailbox half of
+  "a mailbox and a bulletin board" (VISION.md): one-line, *ephemeral* acknowledgments for completed
+  work that has nothing view-worthy to show. Each receipt is one checkbox line
+  (`- [ ] Jul 8 — fixed "Endor" (was 'indoor')`); a **tick means dismiss** — the next republish
+  DROPS ticked lines (never rewrites them `- [x]`), and unticked lines age out after ~7 days.
+  Receipts, not conversation: no threads, no reply affordance (replying = capturing a note, as
+  always). A runbook convention — nothing in the app special-cases the name. Do not repurpose
+  `inbox` for anything else.
+- **View directory convention (M18, Jul 2026)** — a view name containing `/` groups its feed row
+  under a section named for the text before the FIRST `/` (`work/endor agent` → section "work");
+  prefix-less names stay ungrouped. This one **is** app-rendered mechanics (the feeds group by
+  prefix on every device), but the *naming* is advisory (runbook: a few stable prefixes, chosen at
+  creation — a rename later is a new view identity). Names never ride URLs (deep links carry note
+  UUIDs only), so `/` is safe.
 - **Reserved `agentId`s** — `ondevice-fm` (on-device FoundationModels agent), `siri`.
 - **Reserved `via` doors** — `app-intent`, `in-process` (§1).
 
