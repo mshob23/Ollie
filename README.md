@@ -50,8 +50,9 @@ so keep it open for everything below.
 
 ### 2. The iPhone + watch app
 
-For real devices, install via **TestFlight** (currently build 34 — watch-face complication
-plus the full fence-widget set on the wrist). To build from source,
+For real devices, install via **TestFlight** (currently build 35 — the watch becomes three
+side-by-side panels with a full views list, unread dots light every surface, and Annotate
+sends corrections back to the agent). To build from source,
 `xcodegen generate` then open in Xcode — the full build rules (and the two xcodebuild
 gotchas) live in [`../HandheldNotesiOS/README.md`](../HandheldNotesiOS/README.md). It links
 this repo's Core by relative path, so a Core change means rebuilding **both** apps.
@@ -128,8 +129,10 @@ behavior). Model defaults to `opus`; logs land in `~/Ollie/agent-runs/`.
 | [`mcp-server/README.md`](mcp-server/README.md) | MCP tools + setup for interactive Claude |
 | [`BACKLOG.md`](BACKLOG.md) | What's next |
 
-**Status (July 2026):** agent-layer milestones **M0–M9 shipped** (tags · memory · views · gate
-· MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets); iOS
-**TestFlight build 34** (watch-face complication + fence widgets v2 + clean previews); the
+**Status (July 2026):** agent-layer milestones **M0–M19 shipped** (tags · memory · views · gate
+· MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets ·
+event-driven runs · arrival coverage · watch side panels · unread indicators · annotations ·
+directory sections · inbox receipts); iOS **TestFlight build 35** (three-panel watch with a
+full views list, save/discard undo, unread dots + badges, Annotate, `/`-sections); the
 unattended runner is **live and event-driven** (a note arrival kicks a run in ~2 min; 4 h
 backstop). `checklist` / `cl2:` names are reserved but unbuilt.

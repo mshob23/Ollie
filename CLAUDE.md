@@ -35,9 +35,18 @@ runner (4 h interval as backstop; loop-safe — only `NoteEntity` inserts trigge
 metric `good`/`bad` sentiment hints, diagram wrap/label/self-loop polish, and
 **arrival-time coverage (M13)**: `IngestIndex` (App Support — restricted UUIDs never cross
 the export boundary) → `ingestedAt` on exported rows → `list_notes(ingested_since=)`,
-runner scan-START checkpoint, `runs.jsonl` + `recent_runs()`. Shipped as iOS TestFlight
-**build 34** + a Developer-ID Mac app (33 validated deleting `NSCameraUsageDescription` —
-C1 closed). The capture-bar `createdAt` bug, the orphaned-tag vocabulary leak, and the
+runner scan-START checkpoint, `runs.jsonl` + `recent_runs()`, **watch side panels + full
+views list (M14)**: horizontal paging Notes|Record|Views, ≤8 views ride the WC snapshot
+(`views` key; 5 KB bodies, 40 KB *logical* budget — NSKeyedArchiver ≈2×, real ceiling
+~256 KB `payloadTooLarge`, catch strips bodies + retries once), **save/discard feedback +
+undo-discard window (M15)**, **per-view seen/unread (M16)**: `kind:"seen"` reuses
+`InteractionStateEntity` (NO schema change; contract §7), unread dots/badges on every
+surface, seen rows NEVER exported (checkbox-only whitelist in exporter + MCP),
+**annotation-notes (M17)**: Mac/iPhone Annotate buttons prefill `re: view "<name>": `
+(agent corrects + promotes decodings to memory), **`/`-prefix view directory sections
+(M18)**, and the **`inbox` receipts convention (M19**, runbook/contract only). Shipped as
+iOS TestFlight **build 35** + a Developer-ID Mac app (33 validated deleting
+`NSCameraUsageDescription` — C1 closed). The capture-bar `createdAt` bug, the orphaned-tag vocabulary leak, and the
 feed-preview `**` leak are fixed (Jul 2026). `checklist` and `cl2:` ids remain **reserved,
 unbuilt** (contract §7). **C2 closed 2026-07-07**: the launchd runner does unattended passes
 (first verified run: 72 tags, 8 views, 2 request-notes answered). The RUNTIME is deployed to

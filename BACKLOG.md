@@ -4,8 +4,8 @@ A living, prioritized list of what's next, ordered by **leverage, not size**.
 Product thesis: *"do little, expose flexibly"* (see the exposability ladder in the
 project notes). Rungs 0 (frictionless capture), 2 (App Intents + Spotlight), and the
 whole agent layer (Rungs 4–8 + M7–M9, below) are shipped — currently TestFlight
-build 34 (watch-face complication; fence widgets v2 on the wrist; camera string gone) +
-the notarized Mac `.dmg`.
+build 35 (watch side panels + full views list; unread dots; Annotate; view sections;
+save/discard undo) + the notarized Mac `.dmg`.
 
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 
@@ -25,6 +25,16 @@ the notarized Mac `.dmg`.
   baseline draws a labeled axis so a truncated chart is never silent.
 - ~~**`metric` delta-sentiment hint.**~~ ✅ **Shipped (M12, 2026-07-08)** — `(-5 good)` /
   `(+2 bad)` (case-insensitive, Unicode-minus tolerant) overrides sign tinting.
+- ~~**The Jul-8 UX wave (user-requested batch).**~~ ✅ **Shipped (M14–M19, build 35,
+  2026-07-08)** — watch side panels (Notes ⟵ Record ⟶ Views) + a full scrollable views
+  list on the wrist (M14); distinct save/discard haptics + a 4 s undo-discard window
+  (M15); per-view seen/unread with dots + badges on every surface — seen stamps reuse
+  `InteractionStateEntity`, never exported (M16); annotation-notes — Annotate buttons
+  prefill `re: view "<name>": `, the agent corrects the view and promotes durable
+  decodings to memory (M17); `/`-prefix directory sections in every feed (M18); and the
+  `inbox` receipts view convention, tick = dismiss (M19, runbook/contract only).
+  Adversarially reviewed (3 lenses; 1 MAJOR — Action-button press eaten during the undo
+  window — found by probe and fixed) before shipping.
 
 - **Finish the Find result.** `FindNotesIntent` returns a count ("Found 3 notes") but
   not the notes themselves. Show the matched notes (headline + preview) in the Siri /

@@ -151,6 +151,16 @@ self-trigger.
 - **The laptop travels.** Unplug and go; everything sleeps normally on battery. The hub
   is simply down until it's back on the charger — same graceful degradation. If the
   vision proves out, a used Mac mini is the permanent-hub upgrade path.
+- **Swapping in a new Mac app build — quit by PID, not by name.** The process is named
+  **`HandheldNotes`** (the executable), not "Ollie": `pgrep -x Ollie` finds nothing and
+  `osascript 'tell app "Ollie" to quit'` can silently no-op — which leaves the OLD app
+  running on deleted vnodes after you replace the bundle, and a subsequent `open` no-ops
+  too (LaunchServices sees the bundle id alive). Learned 2026-07-08 when a swap briefly
+  produced TWO live instances (= two store writers). The ritual:
+  `kill $(pgrep -x HandheldNotes)` → replace `/Applications/Ollie.app` →
+  `open /Applications/Ollie.app` → verify `pgrep -x HandheldNotes | wc -l` prints **1**
+  and `~/Ollie/.ollie.meta.json` mtime jumps (the export fires seconds after launch).
+  (The agent runner's own guard already checks the right name — `APP_PROCESS="HandheldNotes"`.)
 
 ## Undo
 
