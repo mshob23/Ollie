@@ -61,6 +61,13 @@ public enum FenceWidget: Equatable, Sendable {
     /// `header`, an optional `|---|---|` separator row is tolerated and skipped, the rest
     /// are `rows`. Cells are trimmed; ragged rows are kept as-authored (the renderer pads).
     case table(header: [String], rows: [[String]])
+    /// ` ```diagram ` — a simple directed flow (M10). An optional `title:` first line, then
+    /// `A -> B: label` edges (label optional) and bare `D` node-only lines; node ids are
+    /// unquoted `[A-Za-z0-9_-]+` or `"double-quoted"` free text. `nodes` are in
+    /// first-appearance order and `edges` reference them **by id string** (verbatim) — the
+    /// renderer does the layout (topological layering, §M10). Caps (≤16 nodes, ≤24 edges,
+    /// id ≤24, label ≤40) and any unparseable line degrade the whole fence to `nil`.
+    case diagram(Diagram)
 
     /// One `Label: value (delta)` line of a `metric` fence. `delta` is the trailing
     /// parenthesized token (parentheses stripped, inner text verbatim) or `nil` when the
@@ -98,6 +105,51 @@ public enum FenceWidget: Equatable, Sendable {
         }
     }
 
+    /// A parsed `diagram` fence (M10): a directed flow of ``Node``s and ``Edge``s plus an
+    /// optional `title`. This is the pure value type — **layout is entirely the renderer's
+    /// job** (topological layering, arrows, boxes). `nodes` are in first-appearance order
+    /// (the order ids are first mentioned, whether as an edge endpoint or a bare line);
+    /// `edges` reference nodes **by their id string** (the same normalized id stored in a
+    /// ``Node``), preserving authored order.
+    public struct Diagram: Equatable, Sendable {
+        /// The optional `title:` from the fence's first line (trimmed), or `nil`.
+        public var title: String?
+        /// The nodes in first-appearance order; ids are de-duplicated (a node mentioned by
+        /// several edges appears once). A quoted id keeps its inner text verbatim.
+        public var nodes: [Node]
+        /// The directed edges in authored order; `from`/`to` are node id strings and `label`
+        /// is the optional trimmed text after the edge's `:`.
+        public var edges: [Edge]
+        public init(title: String? = nil, nodes: [Node], edges: [Edge]) {
+            self.title = title
+            self.nodes = nodes
+            self.edges = edges
+        }
+    }
+
+    /// One node of a `diagram` fence. `id` is the node's identity **and** its display text
+    /// (an unquoted `[A-Za-z0-9_-]+` run, or the inner text of a `"quoted"` id — quotes
+    /// stripped, inner text verbatim). Equality/join is by `id`.
+    public struct Node: Equatable, Sendable {
+        public var id: String
+        public init(id: String) { self.id = id }
+    }
+
+    /// One directed edge `from -> to` of a `diagram` fence, with an optional trailing
+    /// `: label`. `from`/`to` are node id strings (matching a ``Node/id``); `label` is the
+    /// trimmed text after the first `:` following the target, or `nil` when the edge carried
+    /// none.
+    public struct Edge: Equatable, Sendable {
+        public var from: String
+        public var to: String
+        public var label: String?
+        public init(from: String, to: String, label: String? = nil) {
+            self.from = from
+            self.to = to
+            self.label = label
+        }
+    }
+
     // MARK: - Parse
 
     /// Parse a fenced code block into a widget, or `nil` to fall back to the monospaced
@@ -122,6 +174,7 @@ public enum FenceWidget: Equatable, Sendable {
         case "chart":    return parseChart(code)
         case "timeline": return parseTimeline(code)
         case "table":    return parseTable(code)
+        case "diagram":  return parseDiagram(code)
         default:         return nil   // unknown / "" / reserved "checklist" → panel.
         }
     }
@@ -221,6 +274,74 @@ public enum FenceWidget: Equatable, Sendable {
         return .table(header: header, rows: body)
     }
 
+    /// `diagram` (M10): an optional `title:` first nonblank line, then one edge or bare-node
+    /// declaration per nonblank line. Grammar per line (after the optional title):
+    ///
+    ///   `<node>`                    → declares a node (no edge)
+    ///   `<node> -> <node>`          → a directed edge, label nil
+    ///   `<node> -> <node>: label`   → a directed edge with a label
+    ///
+    /// where `<node>` is an unquoted `[A-Za-z0-9_-]+` run **or** a `"double-quoted"` free-text
+    /// id (inner text kept verbatim). Nodes accumulate in first-appearance order; edges keep
+    /// authored order and reference nodes by id string.
+    ///
+    /// Tolerant-but-strict (contract §6.1): ANY line that isn't one of those three shapes — a
+    /// dangling `->`, a chained `A -> B -> C`, an unclosed quote, an invalid unquoted char, an
+    /// empty id, a `:` with no label — degrades the WHOLE fence to `nil`. So does any cap
+    /// violation (`> 16` nodes, `> 24` edges, an id `> 24` chars, a label `> 40` chars) and an
+    /// empty diagram (no nodes, e.g. a title-only fence). `nil` is the panel-fallback signal.
+    private static func parseDiagram(_ code: String) -> FenceWidget? {
+        var lines = nonblankLines(code)
+        guard !lines.isEmpty else { return nil }
+
+        // Title: ONLY the first nonblank line may be a `title: …` line. A `title:` prefix on
+        // any later line is not special — it goes through node parsing (and, carrying a `:`
+        // that no unquoted id may contain, degrades the fence, which is the intended strict
+        // behavior). The title text is trimmed; an empty title (`title:`) is treated as "no
+        // title", never as a malformed line.
+        var title: String? = nil
+        if let first = lines.first, let t = diagramTitle(first) {
+            if !t.isEmpty { title = t }
+            lines.removeFirst()
+        }
+
+        // Accumulate nodes in first-appearance order (a dictionary guards dupes while the
+        // array preserves order) and edges in authored order.
+        var nodeOrder: [String] = []
+        var seen = Set<String>()
+        var edges: [Edge] = []
+
+        func note(_ id: String) -> Bool {
+            // Enforce the id-length cap at the point every id enters. `false` = cap blown.
+            guard id.count <= maxDiagramIdLength else { return false }
+            if !seen.contains(id) {
+                seen.insert(id)
+                nodeOrder.append(id)
+            }
+            return true
+        }
+
+        for line in lines {
+            guard let parsed = parseDiagramLine(line) else { return nil }
+            switch parsed {
+            case let .node(id):
+                guard note(id) else { return nil }
+            case let .edge(from, to, label):
+                if let label, label.count > maxDiagramLabelLength { return nil }
+                guard note(from), note(to) else { return nil }
+                edges.append(Edge(from: from, to: to, label: label))
+            }
+        }
+
+        // Caps + non-empty. A title-only fence has no nodes → nil (empty diagram).
+        guard !nodeOrder.isEmpty else { return nil }
+        guard nodeOrder.count <= maxDiagramNodes, edges.count <= maxDiagramEdges else { return nil }
+
+        return .diagram(Diagram(title: title,
+                                nodes: nodeOrder.map(Node.init(id:)),
+                                edges: edges))
+    }
+
     // MARK: - Shared helpers (pure)
 
     /// The nonblank lines of a fence body, in order, each trimmed of trailing whitespace
@@ -242,6 +363,128 @@ public enum FenceWidget: Equatable, Sendable {
     private static func parseNumber(_ s: String) -> Double? {
         guard let v = Double(s), v.isFinite else { return nil }
         return v
+    }
+
+    // MARK: - Diagram helpers (pure)
+
+    /// Diagram size caps (M10). Deliberately small — a diagram is a *glanceable* flow, not a
+    /// graph; a fence that outgrows these degrades to the monospaced panel (still fully
+    /// legible) rather than rendering an unreadable tangle on a watch.
+    private static let maxDiagramNodes = 16
+    private static let maxDiagramEdges = 24
+    private static let maxDiagramIdLength = 24
+    private static let maxDiagramLabelLength = 40
+
+    /// The arrow token separating a diagram edge's endpoints.
+    private static let diagramArrow = "->"
+
+    /// One successfully-parsed diagram line: either a bare node declaration or a directed
+    /// edge (optionally labeled). Internal to the parser.
+    private enum DiagramLine {
+        case node(id: String)
+        case edge(from: String, to: String, label: String?)
+    }
+
+    /// If `line` is a `title: …` line, return the trimmed title text (possibly empty);
+    /// otherwise `nil`. Only the parser's first-line check consults this (title is first-line
+    /// only), so a `title:` anywhere else is left to fail node parsing.
+    private static func diagramTitle(_ line: String) -> String? {
+        // Case-insensitive `title:` prefix, then everything after the first colon, trimmed.
+        guard let colon = line.firstIndex(of: ":") else { return nil }
+        let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+        guard key == "title" else { return nil }
+        return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Parse ONE diagram body line into a ``DiagramLine``, or `nil` if it isn't a well-formed
+    /// node / edge (the whole-fence-degrades signal). Grammar:
+    ///
+    ///   `<node>`  |  `<node> -> <node>`  |  `<node> -> <node>: label`
+    ///
+    /// A `<node>` is a `"double-quoted"` free-text id (inner text verbatim, quotes required to
+    /// close) or an unquoted `[A-Za-z0-9_-]+` run. The scan reads a first node; if the
+    /// remainder is empty it's a bare node; otherwise the remainder MUST begin with `->`
+    /// (outside any quotes), a second node follows, and an optional `: label` (label = the
+    /// verbatim trimmed remainder after that colon, and must be non-empty when the colon is
+    /// present). Any leftover after the second node that isn't a `: label` (e.g. a chained
+    /// `-> C`) is malformed → `nil`. Ids are *not* length-checked here — the caller enforces
+    /// the id/label caps so every id (node-only and edge endpoints) is checked in one place.
+    private static func parseDiagramLine(_ line: String) -> DiagramLine? {
+        let scalars = Array(line)   // index by position; ids may contain non-ASCII (quoted).
+
+        // Read the source node from the start.
+        guard let first = scanDiagramNode(scalars, from: skipSpaces(scalars, 0)) else { return nil }
+        var i = skipSpaces(scalars, first.next)
+
+        // Bare node: nothing (but trailing spaces) after the first id.
+        if i >= scalars.count {
+            return .node(id: first.id)
+        }
+
+        // Otherwise the next token MUST be the arrow `->`.
+        guard matches(scalars, at: i, diagramArrow) else { return nil }
+        i = skipSpaces(scalars, i + diagramArrow.count)
+
+        // A second node must follow the arrow.
+        guard let second = scanDiagramNode(scalars, from: i) else { return nil }
+        i = skipSpaces(scalars, second.next)
+
+        // Optional `: label`. Anything else after the target is malformed (e.g. `-> C` chain,
+        // stray text). The colon here is OUTSIDE any quotes (the target's own quotes closed).
+        var label: String? = nil
+        if i < scalars.count {
+            guard scalars[i] == ":" else { return nil }
+            let rest = String(scalars[(i + 1)...]).trimmingCharacters(in: .whitespaces)
+            guard !rest.isEmpty else { return nil }   // `A -> B:` with no label is malformed.
+            label = rest
+        }
+        return .edge(from: first.id, to: second.id, label: label)
+    }
+
+    /// Scan a single node id starting at `start` (which must already be at non-space content).
+    /// Returns the id text (quotes stripped for a quoted id; verbatim run for an unquoted one)
+    /// and the index just past it, or `nil` if there is no valid id there (empty, unclosed
+    /// quote, or an unquoted run with an illegal char / of zero length).
+    private static func scanDiagramNode(_ s: [Character], from start: Int)
+        -> (id: String, next: Int)? {
+        guard start < s.count else { return nil }
+        if s[start] == "\"" {
+            // Quoted: consume through the closing quote; inner text is verbatim (may be empty?
+            // no — an empty `""` id is rejected below). No escape handling in v1 — a `"` ends
+            // the id, so an id can't itself contain a quote (fine for node names).
+            var j = start + 1
+            while j < s.count, s[j] != "\"" { j += 1 }
+            guard j < s.count else { return nil }          // unterminated quote → malformed.
+            let inner = String(s[(start + 1)..<j])
+            guard !inner.isEmpty else { return nil }        // `""` is an empty id → malformed.
+            return (inner, j + 1)
+        } else {
+            // Unquoted run of the id charset. Must be non-empty.
+            var j = start
+            while j < s.count, isDiagramIdChar(s[j]) { j += 1 }
+            guard j > start else { return nil }             // first char wasn't id-legal.
+            return (String(s[start..<j]), j)
+        }
+    }
+
+    /// The unquoted diagram id charset: ASCII letters, digits, `_`, `-`.
+    private static func isDiagramIdChar(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || c == "_" || c == "-")
+    }
+
+    /// Index of the first non-space character at or after `i` (spaces + tabs).
+    private static func skipSpaces(_ s: [Character], _ i: Int) -> Int {
+        var j = i
+        while j < s.count, s[j] == " " || s[j] == "\t" { j += 1 }
+        return j
+    }
+
+    /// Does the literal `token` occur in `s` starting exactly at index `i`?
+    private static func matches(_ s: [Character], at i: Int, _ token: String) -> Bool {
+        let t = Array(token)
+        guard i + t.count <= s.count else { return false }
+        for k in 0..<t.count where s[i + k] != t[k] { return false }
+        return true
     }
 
     /// Find the first timeline separator in a line: the earliest of an em dash `—`, an

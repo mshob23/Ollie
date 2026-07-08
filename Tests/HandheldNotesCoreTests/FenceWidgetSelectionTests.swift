@@ -77,6 +77,15 @@ final class FenceWidgetSelectionTests: XCTestCase {
         XCTAssertEqual(rows, [["Ship", "Me"]])
     }
 
+    func testDiagramFenceSelectsDiagramWidget() {
+        let got = selectedWidget(info: "diagram", body: "title: Flow\nA -> B: sends\nB -> C")
+        guard case .diagram(let d)?? = got else { return XCTFail("expected .diagram, got \(String(describing: got))") }
+        XCTAssertEqual(d.title, "Flow")
+        XCTAssertEqual(d.nodes, [.init(id: "A"), .init(id: "B"), .init(id: "C")])
+        XCTAssertEqual(d.edges, [.init(from: "A", to: "B", label: "sends"),
+                                 .init(from: "B", to: "C", label: nil)])
+    }
+
     // MARK: - Fallback: these stay the monospaced panel (parse → nil)
 
     func testUnknownInfoFallsBackToPanel() {
@@ -102,6 +111,11 @@ final class FenceWidgetSelectionTests: XCTestCase {
     func testMalformedChartFallsBackToPanel() {
         // A non-numeric chart value degrades the whole fence.
         XCTAssertNil(selectedWidget(info: "chart", body: "Mon: 12\nTue: lots") ?? nil)
+    }
+
+    func testMalformedDiagramFallsBackToPanel() {
+        // A chained `A -> B -> C` (leftover after the target) degrades the whole diagram fence.
+        XCTAssertNil(selectedWidget(info: "diagram", body: "A -> B -> C") ?? nil)
     }
 
     func testEmptyFenceFallsBackToPanel() {

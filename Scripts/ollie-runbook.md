@@ -128,11 +128,11 @@ The first screenful is the product. Views render on a phone (and soon a watch), 
 - **Names are feed rows.** Short noun phrases ("Heat pump project", not "Notes and
   analysis regarding…"). Standing views keep stable names forever (revision history
   accrues); don't put dates in names.
-- **Fence widgets.** Fenced blocks labeled `metric`, `chart`, `timeline`, or `table`
-  render as REAL widgets (big-number cards, bar charts, timelines, grids) on every
-  device; any other label — or any malformed line — shows as a plain monospaced
-  panel instead. So keep fence content ≤ ~8 lines and legible as plain text (the
-  panel is the fallback, and older builds only ever see the panel). Patterns:
+- **Fence widgets.** Fenced blocks labeled `metric`, `chart`, `timeline`, `table`, or
+  `diagram` render as REAL widgets (big-number cards, bar charts, timelines, grids,
+  flow diagrams) on every device; any other label — or any malformed line — shows as a
+  plain monospaced panel instead. So keep fence content ≤ ~8 lines and legible as plain
+  text (the panel is the fallback, and older builds only ever see the panel). Patterns:
 
   ```metric
   Captured this week: 23  (+8)
@@ -156,8 +156,18 @@ The first screenful is the product. Views render on a phone (and soon a watch), 
   Aug 15 — Japanese Garden, morning
   ```
 
+  ```diagram
+  title: Capture flow
+  Watch -> Phone: transfer
+  Phone -> CloudKit: sync
+  CloudKit -> Mac
+  ```
+
   A comparison of two-plus options across two-plus attributes belongs in a `table`
   fence (pipe-separated, first row is the header) — not a bullet list. A dated or
-  ordered sequence belongs in a `timeline` fence (`when — what` per line). Inside
-  any fence, bars `▓▓▓▓▓░░░░░ 50%`, sparklines `▁▂▃▅▇`, and space-aligned columns
-  also read well on every device.
+  ordered sequence belongs in a `timeline` fence (`when — what` per line). **A small
+  flow or pipeline** — a handful of steps with arrows between them — belongs in a
+  `diagram` fence (`A -> B: label` per line, an optional `title:` first line; ids with
+  spaces go in `"double quotes"`; ≤ 16 nodes) instead of ASCII arrows in prose. Inside
+  any fence, bars `▓▓▓▓▓░░░░░ 50%`, sparklines `▁▂▃▅▇`, and space-aligned columns also
+  read well on every device.

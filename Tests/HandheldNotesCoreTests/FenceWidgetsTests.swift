@@ -271,6 +271,280 @@ final class FenceWidgetsTests: XCTestCase {
         ))
     }
 
+    // MARK: - diagram
+
+    func testDiagramLinearFlowGolden() {
+        // The canonical case: a simple A -> B -> C chain, some edges labeled. Nodes come out
+        // in first-appearance order; edges keep authored order and carry their labels.
+        let code = """
+        A -> B: label
+        B -> C
+        """
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B"), .init(id: "C")],
+            edges: [.init(from: "A", to: "B", label: "label"),
+                    .init(from: "B", to: "C", label: nil)]
+        )))
+    }
+
+    func testDiagramTitleFirstLine() {
+        // A `title:` first line is captured (trimmed) and does not become a node.
+        let code = """
+        title: Capture flow
+        A -> B
+        """
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: "Capture flow",
+            nodes: [.init(id: "A"), .init(id: "B")],
+            edges: [.init(from: "A", to: "B", label: nil)]
+        )))
+    }
+
+    func testDiagramTitleOnlyFirstLineCountsAsTitle() {
+        // "first line only": a `title:` on a LATER line is NOT a title. It carries a colon no
+        // unquoted id may hold, so it degrades the whole fence (the strict, predictable path).
+        let code = "A -> B\ntitle: too late"
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: code))
+    }
+
+    func testDiagramEmptyTitleIsTreatedAsNoTitle() {
+        // A bare `title:` (no text) is not malformed — it's simply "no title", and it's still
+        // consumed as the first line (so it doesn't try to be a node).
+        let code = "title:\nA -> B"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B")],
+            edges: [.init(from: "A", to: "B", label: nil)]
+        )))
+    }
+
+    func testDiagramQuotedIdsAllowSpaces() {
+        // Double-quoted ids carry free text (spaces, punctuation) verbatim; quotes stripped.
+        let code = "\"Multi word\" -> C: sends"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "Multi word"), .init(id: "C")],
+            edges: [.init(from: "Multi word", to: "C", label: "sends")]
+        )))
+    }
+
+    func testDiagramQuotedIdMayContainArrowLikeAndColonText() {
+        // Inside quotes, `->` and `:` are literal text, not structure — only the OUTSIDE arrow
+        // and the OUTSIDE label colon are structural.
+        let code = "\"a -> b\" -> \"c: d\": go"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "a -> b"), .init(id: "c: d")],
+            edges: [.init(from: "a -> b", to: "c: d", label: "go")]
+        )))
+    }
+
+    func testDiagramBareNodeLine() {
+        // A lone id (no arrow) declares a node with no edges — combined here with an edge.
+        let code = """
+        A -> B
+        D
+        """
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B"), .init(id: "D")],
+            edges: [.init(from: "A", to: "B", label: nil)]
+        )))
+    }
+
+    func testDiagramFirstAppearanceOrderAcrossEdgesAndBareLines() {
+        // Order is the order ids are FIRST seen — as a source, a target, or a bare line — and
+        // a repeat mention never re-adds the node.
+        let code = """
+        B -> C
+        A -> B
+        C -> A
+        """
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "B"), .init(id: "C"), .init(id: "A")],
+            edges: [.init(from: "B", to: "C", label: nil),
+                    .init(from: "A", to: "B", label: nil),
+                    .init(from: "C", to: "A", label: nil)]
+        )))
+    }
+
+    func testDiagramCycleParsesOK() {
+        // A cycle is valid DATA (the RENDERER falls back to first-appearance order, but the
+        // parser has no opinion on layout) — it must parse, not degrade.
+        let code = "A -> B\nB -> A"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B")],
+            edges: [.init(from: "A", to: "B", label: nil),
+                    .init(from: "B", to: "A", label: nil)]
+        )))
+    }
+
+    func testDiagramSelfLoopParsesOK() {
+        // A -> A is one node and one (self) edge — valid data.
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: "A -> A: retry"), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A")],
+            edges: [.init(from: "A", to: "A", label: "retry")]
+        )))
+    }
+
+    func testDiagramLabelWithColonsAndArrowsIsKeptVerbatim() {
+        // The label is everything after the FIRST colon following the target, verbatim — so a
+        // label may itself contain `:` and `->`.
+        let code = "A -> B: at 3:30, then -> done"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B")],
+            edges: [.init(from: "A", to: "B", label: "at 3:30, then -> done")]
+        )))
+    }
+
+    func testDiagramHyphenAndUnderscoreInUnquotedIds() {
+        // The unquoted charset is [A-Za-z0-9_-]; a hyphen/underscore/digits id is fine and a
+        // `->` right after a hyphen-ending id still splits (the arrow needs the two chars `->`).
+        let code = "step-1_a -> step-2"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "step-1_a"), .init(id: "step-2")],
+            edges: [.init(from: "step-1_a", to: "step-2", label: nil)]
+        )))
+    }
+
+    func testDiagramBlankLinesInsideAreIgnored() {
+        // Blank spacer lines are dropped (grammar is over nonblank lines), not errors.
+        let code = "A -> B\n\n\nB -> C\n"
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: code), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B"), .init(id: "C")],
+            edges: [.init(from: "A", to: "B", label: nil),
+                    .init(from: "B", to: "C", label: nil)]
+        )))
+    }
+
+    // diagram — malformed lines each degrade the WHOLE fence to nil
+
+    func testDiagramDanglingArrowIsMalformed() {
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A ->"))       // no target
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "-> B"))       // no source
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> "))      // trailing space only
+    }
+
+    func testDiagramChainedEdgeIsMalformed() {
+        // v1 is one edge per line; a chained `A -> B -> C` has leftover after the target.
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B -> C"))
+    }
+
+    func testDiagramTwoBareTokensIsMalformed() {
+        // Two ids with no arrow between them isn't a node or an edge.
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A B"))
+    }
+
+    func testDiagramInvalidUnquotedCharIsMalformed() {
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A.B -> C"))   // dot not in charset
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "a b -> c"))   // space in unquoted id
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "café -> c"))  // non-ASCII unquoted
+    }
+
+    func testDiagramUnterminatedQuoteIsMalformed() {
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "\"unclosed -> B"))
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> \"unclosed"))
+    }
+
+    func testDiagramEmptyQuotedIdIsMalformed() {
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "\"\" -> B"))
+    }
+
+    func testDiagramEmptyLabelIsMalformed() {
+        // A `:` after the target with no label text is malformed (mirrors metric's empty value).
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B:"))
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B:   "))
+    }
+
+    func testDiagramOneBadLineDegradesWholeFence() {
+        // A good chain with a single garbage line falls the WHOLE fence back to the panel.
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B\ngarbage line\nB -> C"))
+    }
+
+    func testDiagramEmptyAndTitleOnlyAreNil() {
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: ""))            // empty
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "   \n \n"))    // all blank
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "title: Only")) // title, no nodes
+    }
+
+    // diagram — cap violations degrade the whole fence
+
+    func testDiagramTooManyNodesIsNil() {
+        // 17 distinct nodes across 16 edges exceeds the 16-node cap → nil. (16 edges is within
+        // the 24-edge cap, so nodes are the ONLY thing over here.)
+        var lines: [String] = []
+        for i in 0..<16 { lines.append("N\(i) -> N\(i + 1)") }  // N0..N16 = 17 nodes, 16 edges
+        let code = lines.joined(separator: "\n")
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: code))
+    }
+
+    func testDiagramExactlySixteenNodesIsOK() {
+        // The boundary: 16 nodes (N0..N15) via 15 edges parses (≤16 nodes, ≤24 edges).
+        var lines: [String] = []
+        for i in 0..<15 { lines.append("N\(i) -> N\(i + 1)") }  // N0..N15 = 16 nodes, 15 edges
+        let code = lines.joined(separator: "\n")
+        let parsed = FenceWidget.parse(info: "diagram", code: code)
+        guard case let .diagram(d)? = parsed else { return XCTFail("expected .diagram, got \(String(describing: parsed))") }
+        XCTAssertEqual(d.nodes.count, 16)
+        XCTAssertEqual(d.edges.count, 15)
+    }
+
+    func testDiagramTooManyEdgesIsNil() {
+        // 25 edges between just 2 nodes exceeds the 24-edge cap (nodes stay at 2, well under 16).
+        let code = Array(repeating: "A -> B", count: 25).joined(separator: "\n")
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: code))
+    }
+
+    func testDiagramExactlyTwentyFourEdgesIsOK() {
+        // The boundary: 24 duplicate edges between 2 nodes parses (2 nodes, 24 edges).
+        let code = Array(repeating: "A -> B", count: 24).joined(separator: "\n")
+        let parsed = FenceWidget.parse(info: "diagram", code: code)
+        guard case let .diagram(d)? = parsed else { return XCTFail("expected .diagram, got \(String(describing: parsed))") }
+        XCTAssertEqual(d.nodes.count, 2)
+        XCTAssertEqual(d.edges.count, 24)
+    }
+
+    func testDiagramIdTooLongIsNil() {
+        // An id > 24 chars degrades the fence — checked for unquoted and quoted ids alike.
+        let longUnquoted = String(repeating: "a", count: 25)
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "\(longUnquoted) -> B"))
+        let longQuoted = String(repeating: "x", count: 25)
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "\"\(longQuoted)\" -> B"))
+    }
+
+    func testDiagramIdExactlyTwentyFourIsOK() {
+        // The boundary: a 24-char id is accepted.
+        let id24 = String(repeating: "a", count: 24)
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: "\(id24) -> B"), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: id24), .init(id: "B")],
+            edges: [.init(from: id24, to: "B", label: nil)]
+        )))
+    }
+
+    func testDiagramLabelTooLongIsNil() {
+        // A label > 40 chars degrades the fence.
+        let long = String(repeating: "z", count: 41)
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B: \(long)"))
+    }
+
+    func testDiagramLabelExactlyFortyIsOK() {
+        // The boundary: a 40-char label is accepted.
+        let label40 = String(repeating: "z", count: 40)
+        XCTAssertEqual(FenceWidget.parse(info: "diagram", code: "A -> B: \(label40)"), .diagram(.init(
+            title: nil,
+            nodes: [.init(id: "A"), .init(id: "B")],
+            edges: [.init(from: "A", to: "B", label: label40)]
+        )))
+    }
+
     // MARK: - unknown / reserved / empty → nil (the panel fallback)
 
     func testUnknownInfoStringIsNil() {
@@ -302,7 +576,7 @@ final class FenceWidgetsTests: XCTestCase {
     // MARK: - empty fence → nil (every grammar)
 
     func testEmptyFenceIsNilForEveryGrammar() {
-        for info in ["metric", "chart", "timeline", "table"] {
+        for info in ["metric", "chart", "timeline", "table", "diagram"] {
             XCTAssertNil(FenceWidget.parse(info: info, code: ""), "\(info) empty → nil")
             XCTAssertNil(FenceWidget.parse(info: info, code: "   \n  \n"),
                          "\(info) all-blank → nil")
@@ -320,6 +594,8 @@ final class FenceWidgetsTests: XCTestCase {
         XCTAssertNil(FenceWidget.parse(info: "timeline", code: "A — x\nB no sep\nC — z"))
         // table: middle line no pipe
         XCTAssertNil(FenceWidget.parse(info: "table", code: "| A |\n| 1 |\nno pipe\n| 2 |"))
+        // diagram: middle line neither a node nor an edge
+        XCTAssertNil(FenceWidget.parse(info: "diagram", code: "A -> B\nno good here\nB -> C"))
     }
 
     // MARK: - equatable / value-type sanity

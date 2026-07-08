@@ -603,13 +603,17 @@ private extension View {
 // non-`nil` result is drawn by ``FenceWidgetView`` here, a `nil` result stays the existing
 // monospaced panel (`monospacedPanel`, byte-for-byte unchanged).
 //
-// Four widgets, one per known fence:
+// Five widgets, one per known fence:
 //   • metric   → big-number cards, wrapping 2–3 per row (label small, value large, delta
 //                small beside the value).
 //   • chart    → horizontal bars scaled to the fence's max value (label left, value at the
 //                bar end). Plain `Capsule`s + `Text` — **no Swift Charts**.
 //   • timeline → a vertical dotted timeline: dot + `when` (verbatim) + text per entry.
 //   • table    → a simple `Grid`, header row bolded, thin hairline separators.
+//   • diagram  → a vertical directed flow (M10): rounded-rect node boxes laid out top→down
+//                in topological layers (Kahn; on a cycle, first-appearance order), a downward
+//                arrow between layers, edge labels on the connector below their source. Pure
+//                SwiftUI stacks/shapes — **no Canvas, no Charts**.
 //
 // Kept **inline in this file** (rather than a sibling `FenceWidgetViews.swift`) on purpose:
 // only `MarkdownLite.swift` is path-referenced into the watch target (plan §M8 8a), so
@@ -645,6 +649,8 @@ struct FenceWidgetView: View {
             TimelineWidget(entries: entries)
         case let .table(header, rows):
             TableWidget(header: header, rows: rows)
+        case let .diagram(diagram):
+            DiagramWidget(diagram: diagram)
         }
     }
 }
@@ -947,6 +953,221 @@ private struct TableWidget: View {
             + "\(rows.count) row\(rows.count == 1 ? "" : "s")."
         if !cols.isEmpty { s += " Columns: " + cols.joined(separator: ", ") + "." }
         return s
+    }
+}
+
+// MARK: diagram
+
+/// A vertical directed flow (M10). Nodes are rounded-rect boxes laid out top→down in
+/// **topological layers** (Kahn's algorithm over the edges); a downward arrow separates the
+/// layers, and each edge's label rides the connector below its source layer. On a **cycle**
+/// (Kahn can't order it) the layout falls back to a single column in first-appearance order —
+/// it still renders every node and edge label, it just doesn't claim a layering it can't have.
+///
+/// Nodes within a layer sit side by side in one row (parallel branches), so a fan-out like
+/// `A -> B` / `A -> C` shows B and C on the row under A. Everything is SwiftUI stacks +
+/// `RoundedRectangle` with `Theme` tokens — no `Canvas`, no `Charts` — and there are no fixed
+/// wide frames, so the same body renders on a 40mm watch and a Mac window. The whole widget is
+/// one `.accessibilityLabel` summarizing the flow (edges spoken as "A to B via label").
+private struct DiagramWidget: View {
+    let diagram: FenceWidget.Diagram
+
+    var body: some View {
+        // Lay the nodes into rows once (pure; no observed state touched — render-loop-safe).
+        let layout = DiagramLayout(diagram)
+        VStack(alignment: .leading, spacing: 0) {
+            if let title = diagram.title, !title.isEmpty {
+                Text(title)
+                    .font(.hcEyebrow(10))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.hcMutedText)
+                    .padding(.bottom, 10)
+            }
+            ForEach(Array(layout.layers.enumerated()), id: \.offset) { index, layer in
+                DiagramLayerRow(ids: layer)
+                // The connector below this layer: a downward arrow plus any labels of edges
+                // that leave this layer. Omitted under the last layer (nothing below it).
+                if index < layout.layers.count - 1 {
+                    DiagramConnector(labels: layout.connectorLabels[index] ?? [])
+                }
+            }
+            // Any labels whose source sits in the LAST layer (only possible via the cycle
+            // fallback's single column, e.g. a back-edge from the final node) can't ride a
+            // between-layer connector — surface them here so no edge label is ever dropped.
+            if let residual = layout.residualLabels, !residual.isEmpty {
+                DiagramConnector(labels: residual, showArrow: false)
+                    .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.hcPanel))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.summary(diagram))
+    }
+
+    /// A VoiceOver summary: "Diagram 'Capture flow', 3 nodes: A, B, C. A to B via label; B to C.".
+    static func summary(_ diagram: FenceWidget.Diagram) -> String {
+        var s = "Diagram"
+        if let title = diagram.title, !title.isEmpty { s += " \u{201C}\(title)\u{201D}" }
+        let names = diagram.nodes.map(\.id)
+        s += ", \(names.count) node\(names.count == 1 ? "" : "s"): " + names.joined(separator: ", ") + "."
+        if !diagram.edges.isEmpty {
+            let flows = diagram.edges.map { edge -> String in
+                var f = "\(edge.from) to \(edge.to)"
+                if let label = edge.label { f += " via \(label)" }
+                return f
+            }
+            s += " " + flows.joined(separator: "; ") + "."
+        }
+        return s
+    }
+}
+
+/// One horizontal row of node boxes — a topological layer (or a single node in the cycle
+/// fallback). Wraps the boxes so a wide layer doesn't overflow a narrow watch; a lone node
+/// simply left-aligns.
+private struct DiagramLayerRow: View {
+    let ids: [String]
+
+    var body: some View {
+        // A wrapping HStack via `HStackWrap` would need a custom layout; for the small caps
+        // (≤16 nodes total) a plain HStack that lets boxes shrink is enough and simplest. Most
+        // layers are 1–3 wide. `Spacer` keeps a short row left-aligned.
+        HStack(alignment: .top, spacing: 8) {
+            ForEach(Array(ids.enumerated()), id: \.offset) { _, id in
+                DiagramNodeBox(text: id)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A single rounded-rect node box: the node id as its label, in a soft raised panel with a
+/// coral hairline so the flow reads as connected cards. Compact type + wrapping so a
+/// multi-word quoted id stays legible on a watch without a fixed width.
+private struct DiagramNodeBox: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color.hcPrimaryText)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.hcPanelRaised))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.hcAccent.opacity(0.55), lineWidth: 1))
+    }
+}
+
+/// The between-layer connector: a downward arrow glyph with any edge labels leaving the layer
+/// above stacked beside it. Kept short and muted so it reads as "flows down (via …)" without
+/// competing with the node boxes.
+private struct DiagramConnector: View {
+    let labels: [String]
+    var showArrow: Bool = true
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if showArrow {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.hcAccent.opacity(0.8))
+            }
+            if !labels.isEmpty {
+                Text(labels.joined(separator: ", "))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 10)   // sit the arrow under the leading edge of the boxes above.
+        .padding(.vertical, 5)
+    }
+}
+
+/// Pure layout for a ``FenceWidget/Diagram``: assigns nodes to vertical layers and maps each
+/// edge label to the connector below its source layer. Foundation-only value computation (no
+/// SwiftUI, no observed state) so it's render-loop-safe and could be unit-tested in isolation.
+///
+/// Layering is **Kahn's algorithm** over the *unique* directed pairs (duplicate edges don't
+/// inflate in-degree): repeatedly emit the in-degree-0 nodes (in first-appearance order) as a
+/// layer, then remove them. If a cycle blocks progress, the whole layout falls back to a
+/// **single column in first-appearance order** — still a faithful, if unlayered, rendering.
+private struct DiagramLayout {
+    /// Node ids grouped into vertical layers, top → bottom.
+    let layers: [[String]]
+    /// Labels to show on the connector below layer `i` (edges whose source is in layer `i`).
+    let connectorLabels: [Int: [String]]
+    /// Labels whose source is in the *last* layer (no connector below it) — shown as a footer
+    /// so they're never dropped. `nil`/empty in the common DAG case.
+    let residualLabels: [String]?
+
+    init(_ diagram: FenceWidget.Diagram) {
+        let ids = diagram.nodes.map(\.id)
+        let order = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($1, $0) })
+
+        // Unique directed pairs for degree math (self-loops excluded — they don't order).
+        var pairs = Set<[String]>()
+        for e in diagram.edges where e.from != e.to { pairs.insert([e.from, e.to]) }
+
+        var indegree: [String: Int] = Dictionary(uniqueKeysWithValues: ids.map { ($0, 0) })
+        var successors: [String: [String]] = [:]
+        for pair in pairs {
+            let (from, to) = (pair[0], pair[1])
+            indegree[to, default: 0] += 1
+            successors[from, default: []].append(to)
+        }
+
+        // Kahn, emitting a whole in-degree-0 frontier per layer (first-appearance order within).
+        var computedLayers: [[String]] = []
+        var remaining = Set(ids)
+        while !remaining.isEmpty {
+            let frontier = remaining
+                .filter { (indegree[$0] ?? 0) == 0 }
+                .sorted { (order[$0] ?? 0) < (order[$1] ?? 0) }
+            if frontier.isEmpty { break }   // a cycle blocks progress → fall back below.
+            computedLayers.append(frontier)
+            for node in frontier {
+                remaining.remove(node)
+                for succ in successors[node] ?? [] { indegree[succ, default: 1] -= 1 }
+            }
+        }
+
+        // Cycle fallback: any node left un-emitted means Kahn stalled → single column in
+        // first-appearance order (still renders every node; §M10 "on cycle, don't fail").
+        let finalLayers = remaining.isEmpty ? computedLayers : ids.map { [$0] }
+        self.layers = finalLayers
+
+        // Which layer each node landed in, so an edge's label can find its source layer.
+        var layerOf: [String: Int] = [:]
+        for (i, layer) in finalLayers.enumerated() {
+            for id in layer { layerOf[id] = i }
+        }
+
+        // Map each labeled edge to the gap below its source layer; a source in the last layer
+        // has no gap below → residual footer. Labels keep authored order (edges are ordered).
+        var byLayer: [Int: [String]] = [:]
+        var residual: [String] = []
+        let lastIndex = finalLayers.count - 1
+        for edge in diagram.edges {
+            guard let label = edge.label, !label.isEmpty else { continue }
+            let src = layerOf[edge.from] ?? 0
+            if src < lastIndex {
+                byLayer[src, default: []].append(label)
+            } else {
+                residual.append(label)   // source in (or below) the last layer.
+            }
+        }
+        self.connectorLabels = byLayer
+        self.residualLabels = residual.isEmpty ? nil : residual
     }
 }
 

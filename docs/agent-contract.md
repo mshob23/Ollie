@@ -243,18 +243,29 @@ reads. The conventions agents follow, summarized (normative source is the runboo
 - **No leading H1 repeating the view name** (the app shows the name; M8 adds renderer suppression).
 - **A published checkbox is a contract** (M7) — the agent only publishes `- [ ]` items it will act on
   when ticked, including the *approval pattern* ("- [ ] Archive these 12 stale notes?" → tick = yes).
-- **Fence widgets — ✅ real renderers shipped (M9, Jul 2026).** Labeling a fenced block `metric`,
-  `chart`, `timeline`, or `table` renders a themed widget on Mac, iPhone, and watch; any other
-  label — or ANY malformed line — falls the whole fence back to the monospaced panel (never
-  stripped, never an error; `FenceWidget.parse` returning `nil` *is* the §6 pass-through).
-  Content must stay legible as plain text, because the panel is the permanent fallback rendering
-  (older builds, malformed content). Grammar, per nonblank line:
+- **Fence widgets — ✅ real renderers shipped (M9 + M10, Jul 2026).** Labeling a fenced block
+  `metric`, `chart`, `timeline`, `table`, or `diagram` renders a themed widget on Mac, iPhone, and
+  watch; any other label — or ANY malformed line — falls the whole fence back to the monospaced
+  panel (never stripped, never an error; `FenceWidget.parse` returning `nil` *is* the §6
+  pass-through). Content must stay legible as plain text, because the panel is the permanent
+  fallback rendering (older builds, malformed content). Grammar, per nonblank line:
   - ` ```metric ` — `Label: value` with optional trailing `(delta)` → big-number cards.
   - ` ```chart ` — `Label: number` (C-locale decimal, finite) → horizontal bars scaled to the max.
   - ` ```timeline ` — `<when> — <text>` (em/en dash, or space-padded hyphen; first separator
     wins; `when` displayed verbatim) → vertical dotted timeline.
   - ` ```table ` — pipe rows, first row = header, an optional `|---|` separator row is skipped
     → simple grid.
+  - ` ```diagram ` (M10) — a small directed flow → vertical layered node boxes with downward
+    arrows. An **optional `title:` first line**, then one item per nonblank line:
+    `A -> B: label` (an edge; `: label` optional) or a bare `D` (declares a node, no edge). Node
+    ids are unquoted `[A-Za-z0-9_-]+` **or** `"double-quoted"` free text (spaces/punctuation kept
+    verbatim; inside quotes `->` and `:` are literal). Nodes render in first-appearance order;
+    the renderer lays them out in topological layers (Kahn's algorithm — on a cycle it falls back
+    to first-appearance order, still rendering). **Caps:** ≤ 16 nodes, ≤ 24 edges, id ≤ 24 chars,
+    label ≤ 40 chars. Any unparseable line (a dangling `->`, a chained `A -> B -> C`, an unclosed
+    quote, a non-`[A-Za-z0-9_-]` char in an unquoted id, an empty id, a `:` with no label), any
+    cap violation, or an empty diagram (e.g. a title-only fence) degrades the whole fence to the
+    panel.
 
 ---
 
@@ -282,8 +293,8 @@ on `media`, colliding a reserved id) is a regression.
 - **Request-lifecycle tag convention** — `request:open` / `request:done` tags mark a note the agent
   is working through (addressed to Ollie, or a clear task). A convention agents follow via the
   runbook, **not** an app feature; nothing in the app special-cases these tag strings.
-- **Fence names** — `metric` / `chart` / `timeline` / `table`: ✅ **shipped as real widgets in M9**
-  (Jul 2026, renderer-only — no schema change; grammar + fallback rule in §6.1,
+- **Fence names** — `metric` / `chart` / `timeline` / `table` (M9) and `diagram` (M10): ✅ **shipped
+  as real widgets** (Jul 2026, renderer-only — no schema change; grammar + fallback rule in §6.1,
   `FenceWidgets.swift` + the `MarkdownLite` codeBlock arm). Still reserved: the **`checklist`**
   fence and explicit-id checklist items (`cl2:` prefix) inside fenced blocks — plain-markdown
   checklists already interact via M7 (`cl1:`); do not collide these ids.
