@@ -74,8 +74,8 @@ A single **iCloud / CloudKit** store, backed by SwiftData, is shared by the Mac 
 |---|---|
 | `HandheldNotesCore` shared library | ✅ extracted, public API, green tests (incl. schema golden gate) |
 | Mac app | ✅ Developer-ID build installed; capture + Views pane verified on screen |
-| iPhone app | ✅ TestFlight **build 32** (`VALID`); Notes / Views / Settings tabs on hardware |
-| Apple Watch app | ✅ on hardware: press-and-hold capture verified; pinned view renders on the wrist |
+| iPhone app | ✅ TestFlight **build 33** (`VALID`); Notes / Views / Settings tabs on hardware; camera string dropped (C1 validated) |
+| Apple Watch app | ✅ on hardware: press-and-hold capture verified; pinned view renders on the wrist; watch-face complication (build 33) taps straight to capture |
 | iCloud / CloudKit shared store | ✅ one library across all three (CloudKit + SwiftData, Production schema deployed) |
 | Agent layer (M0–M9) | ✅ tags · memory · views · gate · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets |
 
@@ -114,6 +114,8 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
    request), a min-baseline option for `chart` (tight-range series render as identical bars), and two
    app fixes: capture-bar notes stamp `createdAt` at draft-session start (agents miss them), and feed
    previews leak literal `**`. See BACKLOG.md.
-2. **C2 — headless `claude` auth** for the launchd runner (needs the user; runner currently works
-   only from an interactive login).
+2. **Event-driven runner** — C2 closed 2026-07-07 (headless runner live, every 4 h, runtime
+   deployed to `~/Ollie`); next make the Mac app kick it on CloudKit note arrival (debounced)
+   instead of only the timer, with the arrival-time coverage cursor + `runs.jsonl` work log
+   (BACKLOG.md §home-node track).
 3. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.

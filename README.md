@@ -50,7 +50,8 @@ so keep it open for everything below.
 
 ### 2. The iPhone + watch app
 
-For real devices, install via **TestFlight** (currently build 32). To build from source,
+For real devices, install via **TestFlight** (currently build 33 — includes the watch-face
+complication). To build from source,
 `xcodegen generate` then open in Xcode — the full build rules (and the two xcodebuild
 gotchas) live in [`../HandheldNotesiOS/README.md`](../HandheldNotesiOS/README.md). It links
 this repo's Core by relative path, so a Core change means rebuilding **both** apps.
@@ -129,5 +130,5 @@ behavior). Model defaults to `opus`; logs land in `~/Ollie/agent-runs/`.
 
 **Status (July 2026):** agent-layer milestones **M0–M9 shipped** (tags · memory · views · gate
 · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets); iOS
-**TestFlight build 32**; the unattended runner was just brought up. `checklist` / `cl2:` names
-are reserved but unbuilt.
+**TestFlight build 33** (adds the watch-face complication); the unattended runner is **live**
+(every 4 h while the Mac app runs). `checklist` / `cl2:` names are reserved but unbuilt.

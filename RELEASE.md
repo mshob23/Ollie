@@ -96,12 +96,14 @@ canary; deploy per step 2 above). Then:
      with an ES256 JWT (kid `V2S345C7SB`, iss `5ec716ff-5d65-4f02-87f7-66a3825024eb`, aud
      `appstoreconnect-v1`); watch `attributes.processingState` go `PROCESSING → VALID`.
    Only after `VALID` is the build installable — tell the user to update *then*.
-4. **`NSCameraUsageDescription` is required even though Ollie has no camera** (ITMS-90683):
-   shared Core's `MicCaptureService` references `AVCaptureDevice` (audio-only) and the symbol
-   reference alone trips the App Store scanner. The string is in `project.yml`. As of Jul 2026
-   `MicCaptureService` IS `#if os(macOS)`-guarded out of the iOS binary (C1, shipped in
-   build 32 — which still carried the string), so the string should now be removable: delete
-   it only after a build **later than 32** reaches `VALID` without it.
+4. **`NSCameraUsageDescription` — RESOLVED (build 33, 2026-07-07).** History: an
+   `AVCaptureDevice` symbol reference (audio-only, Core's `MicCaptureService`) tripped
+   ITMS-90683 and broke builds 26–28; the string papered over it from build 29. C1 then
+   `#if os(macOS)`-guarded the service out of iOS (build 32), and **build 33 reached
+   `VALID` with the string deleted** — do not re-add it. THE TRAP REMAINS: if any change
+   reintroduces an `AVCaptureDevice`/camera-adjacent symbol into the iOS binary, processing
+   will fail again with ITMS-90683; the restore text lives in a comment in
+   `../HandheldNotesiOS/project.yml`.
 
 ## After an incident
 
