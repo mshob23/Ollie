@@ -32,8 +32,10 @@ import Foundation
 ///
 /// ## Behavior
 /// - **First-seen wins.** `firstSeen(for:)` records `now` for an id only if it is not
-///   already present; a note that syncs, is briefly deleted, and re-arrives keeps its
-///   *original* arrival stamp. `seed(_:)` records a supplied timestamp (see below).
+///   already present — an id re-observed on a later pass keeps its original stamp.
+///   (A note deleted long enough for `prune` to drop its entry and then re-arriving is
+///   stamped anew at that arrival — correct: it genuinely re-arrived.) `seed(_:)`
+///   records a supplied timestamp (see below).
 /// - **Seeding the pre-existing corpus.** On the very first `reloadNotes` pass the
 ///   store already holds the whole historical corpus; stamping all of them with `now`
 ///   would make the entire corpus look "ingested today" and the runner would re-read
@@ -45,7 +47,11 @@ import Foundation
 ///   piggyback the exporter's existing orphan-prune trigger in `reloadNotes`.
 /// - **Tolerant persistence.** A missing or corrupt file loads as **empty** and
 ///   self-heals on the next save — never throws, never blocks a reload. Saves are
-///   atomic (temp write + rename, via `Data.write(options: .atomic)`).
+///   atomic (temp write + rename, via `Data.write(options: .atomic)`). Note the
+///   recovery direction (review, Jul 2026): if the index FILE is lost mid-life, the
+///   next (non-first) pass re-stamps every current note at `now` — not `createdAt` —
+///   a deliberate over-cover: the next runner window re-reads the corpus once
+///   (idempotent) rather than risking a silent miss.
 ///
 /// ## Concurrency
 /// Not an actor: like `EmbeddingIndex`, it is driven entirely from `AppModel`

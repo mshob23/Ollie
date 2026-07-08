@@ -348,7 +348,15 @@ fi
 echo "=== completed ok ===" >> "$LOG_FILE"
 
 # ── Write back lastRunAt (only on success) ──────────────────────────────────
-NEW_RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# SCAN-START CHECKPOINT (review fix, Jul 2026): the checkpoint is the run's START
+# time, not completion. A note that ARRIVES mid-run (after the runbook's step-3
+# read, before we finish) has ingestedAt inside [start, finish]; a completion-time
+# checkpoint would exclude it from the next window — and its debounced re-trigger
+# is eaten by the pidfile guard (WatchPaths won't re-fire an unchanged file), so it
+# would silently wait for the 4 h backstop. Anchoring at start re-presents the
+# [start, finish] sliver to the next run instead — safe because tag ops are
+# mechanically idempotent and the runbook forbids no-op republishes.
+NEW_RUN_AT="$RUN_STARTED_AT"
 NEW_STATE_TMP="$STATE_FILE.tmp.$$"
 printf '{\n  "lastRunAt": "%s"\n}\n' "$NEW_RUN_AT" > "$NEW_STATE_TMP"
 mv -f "$NEW_STATE_TMP" "$STATE_FILE"
