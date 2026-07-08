@@ -825,11 +825,20 @@ public final class AppModel: ObservableObject {
         // restriction trap: a note becoming restricted stays in `notes`, so its id is not
         // spuriously seen as "new" when it would drop out of a gated set.
         let currentIDs = Set(notes.map(\.id))
+        // Prune gate (review, Jul 2026): the orphan-tag prune further down does a
+        // full TagEntity fetch on the main actor and reloadNotes is HOT (didSave,
+        // every CloudKit remote-change batch, inbox applies, wake backoff). A tag
+        // can only become orphaned when a note disappears, so prune only on the
+        // first pass (historical cleanup) or when the note-id set SHRANK.
+        var shouldPruneOrphanedTags = seenNoteIDs == nil
         if let previous = seenNoteIDs {
             let arrivals = currentIDs.subtracting(previous)
             if !arrivals.isEmpty {
                 Diag.log("HNDIAG runner-trigger: \(arrivals.count) new note arrival(s) — debouncing")
                 runnerTrigger?.noteArrived()
+            }
+            if !previous.subtracting(currentIDs).isEmpty {
+                shouldPruneOrphanedTags = true
             }
         }
         seenNoteIDs = currentIDs
@@ -850,10 +859,13 @@ public final class AppModel: ObservableObject {
         // reversible) and are excluded from export by CorpusGate instead. Mac-only —
         // the hub is the store janitor; the deletes propagate to other devices via
         // CloudKit sync. Runs before allTags below so this pass's projection + export
-        // already see the pruned state.
-        let prunedTagCount = layerStore.pruneOrphanedTags(existingNoteIDs: Set(notes.map(\.id)))
-        if prunedTagCount > 0 {
-            Diag.log("HNDIAG pruned \(prunedTagCount) orphaned tag record(s) (deleted notes)")
+        // already see the pruned state. Gated by `shouldPruneOrphanedTags` (set in the
+        // arrival-diff block above) so the fetch is skipped on the hot no-deletion path.
+        if shouldPruneOrphanedTags {
+            let prunedTagCount = layerStore.pruneOrphanedTags(existingNoteIDs: Set(notes.map(\.id)))
+            if prunedTagCount > 0 {
+                Diag.log("HNDIAG pruned \(prunedTagCount) orphaned tag record(s) (deleted notes)")
+            }
         }
         #endif
         let allTags = layerStore.allTags()

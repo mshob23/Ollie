@@ -21,13 +21,18 @@ import XCTest
 @MainActor
 final class RunnerTriggerTests: XCTestCase {
 
-    /// A deterministic ``RunnerTriggerScheduler``: it records the single pending work
-    /// item (RunnerTrigger only ever has one open at a time) and fires it on demand
-    /// via ``advance()``. Cancelling a superseded item drops it, so a reset window
-    /// cannot fire the stale work — mirroring a real timer's cancel.
+    /// A deterministic ``RunnerTriggerScheduler`` that retains **every** item ever
+    /// scheduled and fires all still-uncancelled ones on ``advance()``.
+    ///
+    /// Review fix (2026-07-07): an earlier version kept only the LATEST item, which
+    /// silently modelled the cancel these tests exist to verify — a production
+    /// `noteArrived()` that forgot `pending?.cancel()` still passed the reset test.
+    /// By retaining all items, a stale un-cancelled window FIRES here exactly as a
+    /// real DispatchSource timer would, so the reset-on-arrival contract is genuinely
+    /// pinned (two fires = red test).
     private final class ManualScheduler: RunnerTriggerScheduler {
-        /// The currently-scheduled work, or nil if none / already fired / cancelled.
-        private var current: ManualWork?
+        /// Every scheduled work item, in schedule order, pending until advance().
+        private var scheduled: [ManualWork] = []
         /// How many distinct work items were ever scheduled (a re-schedule after a
         /// reset counts again) — lets a test assert the debounce re-armed.
         private(set) var scheduleCount = 0
@@ -35,17 +40,17 @@ final class RunnerTriggerTests: XCTestCase {
         func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> RunnerTriggerScheduledWork {
             scheduleCount += 1
             let w = ManualWork(work)
-            current = w
+            scheduled.append(w)
             return w
         }
 
-        /// Fire the pending (non-cancelled) work, simulating the quiet window
-        /// elapsing. No-op if nothing is pending (already fired / cancelled / never
-        /// scheduled) — which is precisely the "gate closed → nothing happens" case.
+        /// Simulate the quiet window elapsing: fire EVERY pending item that was not
+        /// cancelled (a correct trigger leaves at most one). No-op when nothing is
+        /// pending — precisely the "gate closed → nothing happens" case.
         func advance() {
-            guard let w = current, !w.isCancelled else { return }
-            current = nil
-            w.run()
+            let pending = scheduled.filter { !$0.isCancelled }
+            scheduled.removeAll()
+            pending.forEach { $0.run() }
         }
 
         private final class ManualWork: RunnerTriggerScheduledWork {

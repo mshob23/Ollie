@@ -73,6 +73,20 @@ public enum CorpusExporter {
     /// behavior is unchanged. The test override, when set, wins on every platform.
     public static var exportDirectory: URL {
         if let override = exportDirectoryOverride { return override }
+        // TEST FAIL-SAFE (Jul 2026 incident): any AppModel-constructing test triggers
+        // the real macOS export via reloadNotes — `inMemoryStore` gates the container,
+        // NOT the export — and a 1-note fixture export sails past the zero-note guard,
+        // clobbering the live ~/Ollie wholesale (it even prunes the real notes/*.md).
+        // Under XCTest with no explicit override, redirect to a per-process temp dir
+        // so a forgotten override can never reach the production corpus. Fail-safe
+        // beats fail-loud here: the protected asset is user data.
+        if NSClassFromString("XCTestCase") != nil {
+            let fallback = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ollie-test-export-\(ProcessInfo.processInfo.processIdentifier)",
+                                        isDirectory: true)
+            Diag.log("HNDIAG CorpusExporter: XCTest with no exportDirectoryOverride — redirecting export to \(fallback.path)")
+            return fallback
+        }
         #if os(macOS)
         let base = FileManager.default.homeDirectoryForCurrentUser
         #else

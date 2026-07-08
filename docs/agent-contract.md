@@ -262,7 +262,8 @@ reads. The conventions agents follow, summarized (normative source is the runboo
     verbatim; inside quotes `->` and `:` are literal). Nodes render in first-appearance order;
     the renderer lays them out in topological layers (Kahn's algorithm — on a cycle it falls back
     to first-appearance order, still rendering). **Caps:** ≤ 16 nodes, ≤ 24 edges, id ≤ 24 chars,
-    label ≤ 40 chars. Any unparseable line (a dangling `->`, a chained `A -> B -> C`, an unclosed
+    label ≤ 40 chars ("chars" = Swift grapheme clusters — an emoji counts as 1, not its UTF-8
+    width). Any unparseable line (a dangling `->`, a chained `A -> B -> C`, an unclosed
     quote, a non-`[A-Za-z0-9_-]` char in an unquoted id, an empty id, a `:` with no label), any
     cap violation, or an empty diagram (e.g. a title-only fence) degrades the whole fence to the
     panel.
