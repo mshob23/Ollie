@@ -4,8 +4,8 @@ A living, prioritized list of what's next, ordered by **leverage, not size**.
 Product thesis: *"do little, expose flexibly"* (see the exposability ladder in the
 project notes). Rungs 0 (frictionless capture), 2 (App Intents + Spotlight), and the
 whole agent layer (Rungs 4–8 + M7–M9, below) are shipped — currently TestFlight
-build 33 (adds the watch-face complication; dropped the camera string) + the notarized
-Mac `.dmg`.
+build 34 (watch-face complication; fence widgets v2 on the wrist; camera string gone) +
+the notarized Mac `.dmg`.
 
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 

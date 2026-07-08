@@ -74,8 +74,8 @@ A single **iCloud / CloudKit** store, backed by SwiftData, is shared by the Mac 
 |---|---|
 | `HandheldNotesCore` shared library | ✅ extracted, public API, green tests (incl. schema golden gate) |
 | Mac app | ✅ Developer-ID build installed; capture + Views pane verified on screen |
-| iPhone app | ✅ TestFlight **build 33** (`VALID`); Notes / Views / Settings tabs on hardware; camera string dropped (C1 validated) |
-| Apple Watch app | ✅ on hardware: press-and-hold capture verified; pinned view renders on the wrist; watch-face complication (build 33) taps straight to capture |
+| iPhone app | ✅ TestFlight **build 34** (`VALID`); Notes / Views / Settings tabs; fence widgets v2 + markdown-free previews; camera string dropped (C1, build 33) |
+| Apple Watch app | ✅ on hardware: press-and-hold capture; pinned views with the full widget set (diagram/baseline charts/sentiment metrics, build 34); watch-face complication taps straight to capture |
 | iCloud / CloudKit shared store | ✅ one library across all three (CloudKit + SwiftData, Production schema deployed) |
 | Agent layer (M0–M9) | ✅ tags · memory · views · gate · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets |
 
