@@ -74,9 +74,11 @@ Same Production-schema rule applies: **a shared-Core `@Model`/field change must 
 to CloudKit Production before a TestFlight build ships** (the golden gate in this repo is the
 canary; deploy per step 2 above). Then:
 
-1. **Bump the build number.** `project.yml` → `CURRENT_PROJECT_VERSION` on **both** the iOS
-   and watch targets (keep them equal). Failed uploads still consume the number — always go
-   up, never reuse. `xcodegen generate` after editing.
+1. **Bump the build number.** `project.yml` → `CURRENT_PROJECT_VERSION` on **all THREE**
+   targets — iOS, watch, and the WatchWidgets extension (an extension's version must match
+   its container; two-target bumps broke build 33's first archive). Keep them equal. Failed
+   uploads still consume the number — always go up, never reuse. `xcodegen generate` after
+   editing.
 2. **Archive → export → upload** (Release config; never pass `-sdk` — it drags the watch
    target onto the iOS SDK):
    ```bash
@@ -96,7 +98,21 @@ canary; deploy per step 2 above). Then:
      with an ES256 JWT (kid `V2S345C7SB`, iss `5ec716ff-5d65-4f02-87f7-66a3825024eb`, aud
      `appstoreconnect-v1`); watch `attributes.processingState` go `PROCESSING → VALID`.
    Only after `VALID` is the build installable — tell the user to update *then*.
-4. **`NSCameraUsageDescription` — RESOLVED (build 33, 2026-07-07).** History: an
+4. **Attach the build to the external testers group — or the family stays stale.**
+   `VALID` makes a build installable for INTERNAL testers only (the developer account gets
+   every build automatically). The external **"Family & Friends"** group sees exactly the
+   builds attached to it — discovered 2026-07-08 with the group still pinned to build 24
+   while internal rode 34. After `VALID`, run (key: `~/.appstoreconnect/private_keys/`):
+   ```bash
+   Scripts/asc-beta.py buildid <N>                     # → the build's ASC id
+   Scripts/asc-beta.py attachbuild 1b3fdf34-f10a-4171-8338-8f885705a6c2 <BUILD_ID>
+   Scripts/asc-beta.py submitreview <BUILD_ID>         # external needs Beta App Review; usually minutes-to-hours
+   Scripts/asc-beta.py reviewstate <BUILD_ID>          # WAITING_FOR_REVIEW → APPROVED
+   ```
+   (`groups` / `testers` / `add EMAIL GROUP_ID` list groups, list testers, and invite a new
+   tester. Group id above = "Family & Friends"; testers get the update once the review
+   flips APPROVED.)
+5. **`NSCameraUsageDescription` — RESOLVED (build 33, 2026-07-07).** History: an
    `AVCaptureDevice` symbol reference (audio-only, Core's `MicCaptureService`) tripped
    ITMS-90683 and broke builds 26–28; the string papered over it from build 29. C1 then
    `#if os(macOS)`-guarded the service out of iOS (build 32), and **build 33 reached
