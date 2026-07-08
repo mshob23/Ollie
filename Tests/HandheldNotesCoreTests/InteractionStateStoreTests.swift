@@ -146,9 +146,12 @@ final class InteractionStateStoreTests: XCTestCase {
         i.kind = longKind
         store.setInteraction(i)
 
-        // Read back by the clamped key.
+        // Read back by the clamped key. The kind here is a synthetic (non-checkbox)
+        // clamp fixture, so widen `kinds` past the checkbox-only default (M16) to the
+        // CLAMPED kind — otherwise the default filter would hide this fixture row.
+        let clampedKind = String(longKind.prefix(AgentLayerStore.Caps.interactionKindMax))
         let clampedBlock = String(longBlock.prefix(AgentLayerStore.Caps.interactionBlockIdMax))
-        let live = store.interactions(viewName: "Open loops")
+        let live = store.interactions(viewName: "Open loops", kinds: [clampedKind])
         XCTAssertEqual(live.count, 1)
         let stored = try? XCTUnwrap(live.first)
         XCTAssertEqual(stored?.blockId, clampedBlock)
@@ -194,6 +197,115 @@ final class InteractionStateStoreTests: XCTestCase {
 
         store.userDelete(view: "Orphaned")
         XCTAssertTrue(store.interactions(viewName: "Orphaned").isEmpty)
+    }
+
+    // MARK: - M16: per-view "seen" stamps
+
+    /// Two `markViewSeen` calls for the same view produce ONE durable row (upsert by the
+    /// sentinel `(viewName, "__view__")` key) whose `updatedAt` ADVANCES on the second —
+    /// the idempotence + freshness the unread comparison depends on.
+    func testMarkViewSeenUpsertsSingleRowAndAdvancesUpdatedAt() throws {
+        let (store, context) = makeStore()
+        let r1 = UUID(); let r2 = UUID()
+
+        store.markViewSeen(viewName: "Open loops", revisionId: r1, surface: "mac")
+        let firstStamp = try XCTUnwrap(store.seenStamps()["Open loops"])
+
+        // A tiny sleep so the second `Date()` is strictly later (updatedAt is stamped now).
+        Thread.sleep(forTimeInterval: 0.01)
+        store.markViewSeen(viewName: "Open loops", revisionId: r2, surface: "ios")
+
+        // Exactly ONE seen row for the view (upsert, not append).
+        let seenRows = (try? context.fetch(FetchDescriptor<InteractionStateEntity>()))?
+            .filter { $0.kind == AgentLayerStore.SeenStamp.kind } ?? []
+        XCTAssertEqual(seenRows.count, 1, "two marks on one view keep a single seen row")
+        XCTAssertEqual(seenRows.first?.blockId, AgentLayerStore.SeenStamp.blockId)
+        XCTAssertEqual(seenRows.first?.value, r2.uuidString, "value is the latest seen revision id")
+        XCTAssertEqual(seenRows.first?.surface, "ios")
+
+        let secondStamp = try XCTUnwrap(store.seenStamps()["Open loops"])
+        XCTAssertGreaterThan(secondStamp, firstStamp, "updatedAt advances on re-mark")
+    }
+
+    /// `seenStamps()` returns `viewName → updatedAt`, one entry per stamped view, and
+    /// omits views never marked seen.
+    func testSeenStampsReturnsPerViewTimestamps() {
+        let (store, _) = makeStore()
+        store.markViewSeen(viewName: "A", revisionId: UUID(), surface: "mac")
+        store.markViewSeen(viewName: "B", revisionId: UUID(), surface: "watch")
+
+        let stamps = store.seenStamps()
+        XCTAssertEqual(Set(stamps.keys), ["A", "B"])
+        XCTAssertNil(stamps["never-opened"], "an unstamped view has no entry")
+    }
+
+    /// **Overlay exclusion (the load-bearing invariant).** A seen stamp and a checkbox
+    /// row for the SAME view: `interactions(viewName:)` (the checkbox-overlay feed)
+    /// returns ONLY the checkbox — a seen row must never enter the overlay, and
+    /// `seenStamps()` sees only the seen row.
+    func testSeenRowExcludedFromCheckboxOverlay() {
+        let (store, _) = makeStore()
+        // A real checkbox toggle …
+        store.setInteraction(interaction(block: "cl1:aaaa:0", value: "true", at: 100))
+        // … and a seen stamp on the same view.
+        store.markViewSeen(viewName: "Open loops", revisionId: UUID(), surface: "mac")
+
+        let overlay = store.interactions(viewName: "Open loops")   // default kinds = checkbox
+        XCTAssertEqual(overlay.count, 1, "only the checkbox row feeds the overlay")
+        XCTAssertEqual(overlay.first?.blockId, "cl1:aaaa:0")
+        XCTAssertEqual(overlay.first?.kind, "checkbox")
+        XCTAssertFalse(overlay.contains { $0.kind == "seen" },
+                       "a seen row must NEVER enter the checkbox overlay")
+
+        // The seen stamp is still readable via its own query.
+        XCTAssertNotNil(store.seenStamps()["Open loops"])
+
+        // And the export feed (`allInteractions`, checkbox-only) excludes it too.
+        let exportFeed = store.allInteractions()
+        XCTAssertEqual(exportFeed.count, 1)
+        XCTAssertTrue(exportFeed.allSatisfy { $0.kind == "checkbox" },
+                      "seen rows never reach the export feed")
+    }
+
+    /// Widening `kinds` lets a caller read seen rows through the same query (proving the
+    /// filter is explicit and parameterized, not hard-coded to hide them everywhere).
+    func testInteractionsCanBeWidenedToSeenKind() {
+        let (store, _) = makeStore()
+        store.markViewSeen(viewName: "Open loops", revisionId: UUID(), surface: "mac")
+
+        XCTAssertTrue(store.interactions(viewName: "Open loops").isEmpty,
+                      "checkbox-only default hides the seen row")
+        let seenOnly = store.interactions(viewName: "Open loops",
+                                          kinds: [AgentLayerStore.SeenStamp.kind])
+        XCTAssertEqual(seenOnly.count, 1)
+        XCTAssertEqual(seenOnly.first?.blockId, AgentLayerStore.SeenStamp.blockId)
+    }
+
+    /// **Prune covers seen rows.** Deleting a whole view removes its seen stamp
+    /// identically to its checkbox rows (same `viewName` join, no kind filter), and a
+    /// second view's seen stamp survives.
+    func testUserDeleteViewPrunesSeenStamp() throws {
+        let (store, context) = makeStore()
+
+        try store.apply(.viewPublish(viewName: "Doomed", body: "- [ ] item", agent: "claude-mac"))
+        store.setInteraction(interaction(view: "Doomed", block: "cl1:aaaa:0", value: "true", at: 100))
+        store.markViewSeen(viewName: "Doomed", revisionId: UUID(), surface: "mac")
+        store.markViewSeen(viewName: "Keeper", revisionId: UUID(), surface: "mac")
+
+        XCTAssertNotNil(store.seenStamps()["Doomed"])
+
+        store.userDelete(view: "Doomed")
+
+        XCTAssertNil(store.seenStamps()["Doomed"],
+                     "deleting a view prunes its seen stamp (same viewName join as checkbox)")
+        XCTAssertTrue(store.interactions(viewName: "Doomed").isEmpty,
+                      "…and its checkbox rows")
+        XCTAssertNotNil(store.seenStamps()["Keeper"], "an unrelated view's seen stamp survives")
+
+        // Storage-level: no interaction row of EITHER kind survives for the deleted view.
+        let rows = (try? context.fetch(FetchDescriptor<InteractionStateEntity>())) ?? []
+        XCTAssertFalse(rows.contains { $0.viewName == "Doomed" },
+                       "no residue of either kind for the deleted view")
     }
 
     // MARK: - Projection round-trip

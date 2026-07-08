@@ -482,6 +482,60 @@ def test_get_view_interactions_survives_pending_view_publish(ollie_dir, write_js
     assert detail["interactions"] == [], "the pending republish supersedes the older toggle"
 
 
+# ── M16: seen-stamp exclusion (belt-and-braces on a stale interactions.jsonl) ─────
+
+def test_applying_interactions_excludes_seen_kind(ollie_dir):
+    # A stale interactions.jsonl from an older app build could carry a kind:"seen" row.
+    # Both the seen row and the checkbox row are NEWER than the revision, so timing does
+    # not exclude either — only the kind whitelist drops the seen row.
+    rows = [
+        _interaction("V", "cl1:a:0", "true", "2026-07-06T06:00:00Z", kind="checkbox"),
+        _interaction("V", "__view__", "id-uuid", "2026-07-06T07:00:00Z", kind="seen"),
+    ]
+    applying = L.applying_interactions("V", "2026-07-06T05:00:00Z", rows)
+    assert [r["blockId"] for r in applying] == ["cl1:a:0"], \
+        "a kind:'seen' row is never returned to the agent (contract §7)"
+
+
+def test_get_view_excludes_seen_stamp_row(ollie_dir, write_jsonl):
+    # End-to-end through get_view: a checkbox toggle AND a seen stamp on the same view,
+    # both newer than the revision — only the checkbox surfaces.
+    write_jsonl(ollie_dir / "views.jsonl",
+                [{"id": "v1", "viewName": "Open loops", "body": "- [ ] the item",
+                  "agentId": "claude-runner", "createdAt": "2026-07-06T05:00:00Z"}])
+    write_jsonl(ollie_dir / "interactions.jsonl", [
+        _interaction("Open loops", "cl1:a:0", "true", "2026-07-06T06:00:00Z", kind="checkbox"),
+        _interaction("Open loops", "__view__", "some-rev-uuid", "2026-07-06T08:00:00Z", kind="seen"),
+    ])
+    detail = L.get_view("Open loops")
+    assert len(detail["interactions"]) == 1
+    row = detail["interactions"][0]
+    assert row["blockId"] == "cl1:a:0"
+    # The sentinel blockId must never appear in what the agent sees.
+    assert all(r["blockId"] != "__view__" for r in detail["interactions"])
+
+
+def test_applying_interactions_blank_kind_treated_as_checkbox(ollie_dir):
+    # Tolerant reader: a pre-M16 file predates the `kind` field. Such rows only ever held
+    # checkbox toggles, so a missing/blank kind is admitted (not silently dropped).
+    missing_kind = {"viewName": "V", "blockId": "cl1:a:0", "blockText": "x",
+                    "value": "true", "revisionId": "r", "surface": "ios",
+                    "updatedAt": "2026-07-06T06:00:00Z"}  # NO "kind" key
+    blank_kind = _interaction("V", "cl1:b:0", "true", "2026-07-06T06:30:00Z", kind="")
+    applying = L.applying_interactions("V", "2026-07-06T05:00:00Z",
+                                       [missing_kind, blank_kind])
+    assert {r["blockId"] for r in applying} == {"cl1:a:0", "cl1:b:0"}, \
+        "rows with absent/blank kind are treated as checkbox (pre-M16 files)"
+
+
+def test_is_agent_facing_interaction_helper(ollie_dir):
+    assert L._is_agent_facing_interaction({"kind": "checkbox"}) is True
+    assert L._is_agent_facing_interaction({"kind": ""}) is True          # pre-M16
+    assert L._is_agent_facing_interaction({}) is True                    # absent
+    assert L._is_agent_facing_interaction({"kind": "seen"}) is False     # M16 internal
+    assert L._is_agent_facing_interaction({"kind": "metric"}) is False   # future → opt-in
+
+
 # ── Client-side cap validation (reject before writing) ───────────────────────────
 
 def test_validate_tag_caps():

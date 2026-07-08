@@ -448,6 +448,39 @@ final class CorpusExporterGuardTests: XCTestCase {
         XCTAssertEqual(interactionCountInMeta(), 2)
     }
 
+    /// **M16 export exclusion (belt-and-braces).** With BOTH a checkbox row and a
+    /// `kind:"seen"` per-view read stamp present in the exported snapshot,
+    /// interactions.jsonl contains ONLY the checkbox row — a seen stamp is app-internal
+    /// UI state and must never cross the export boundary (contract §5, §7). This proves
+    /// the exporter's own whitelist, independent of the store (which also filters).
+    func testExportExcludesSeenStampKind() {
+        let body = "- [ ] a live item"
+        let rev = viewRevision(body: body, at: 100)
+        let checkbox = interaction(blockId: onlyBlockId(body), value: "true", at: 200)
+        // A seen stamp on the SAME view — the sentinel blockId + kind "seen".
+        let seen = ViewInteraction(
+            viewName: "Open loops",
+            blockId: AgentLayerStore.SeenStamp.blockId,
+            blockText: "",
+            kind: AgentLayerStore.SeenStamp.kind,
+            value: UUID().uuidString,
+            surface: "mac",
+            updatedAt: Date(timeIntervalSince1970: 300))
+
+        CorpusExporter.export([note("n")],
+                              layer: .init(viewRevisions: [rev], interactions: [checkbox, seen]))
+
+        let ls = lines(interactionsURL)
+        XCTAssertEqual(ls.count, 1, "only the checkbox row is exported")
+        XCTAssertEqual(interactionCountInMeta(), 1, "meta count excludes the seen row")
+        let dump = text(interactionsURL)
+        XCTAssertTrue(dump.contains("\"kind\":\"checkbox\""), "the checkbox row is present")
+        XCTAssertFalse(dump.contains("\"kind\":\"seen\""),
+                       "a seen stamp must never appear in interactions.jsonl")
+        XCTAssertFalse(dump.contains(AgentLayerStore.SeenStamp.blockId),
+                       "the sentinel __view__ blockId never leaks")
+    }
+
     /// PRUNE (1): a record whose view no longer exists (no revision carries its
     /// `viewName`) is dropped — the view is gone, the state can never apply.
     func testPruneDropsRecordsOfDeletedView() {

@@ -173,11 +173,25 @@ public struct AgentLayerSnapshot: Equatable, Sendable {
     public var latest: [AgentViewRevision]
     /// All revisions of each view (key = exact `viewName`), each list newest first.
     public var revisionsByView: [String: [AgentViewRevision]]
+    /// The names of views that are currently **unread** (M16) — the mailbox/bulletin
+    /// dots the feeds render. A view is unread when its latest revision's `createdAt` is
+    /// newer than the user's per-view "seen" stamp, or no stamp exists (never opened).
+    /// Computed once at snapshot build (`AppModel.reloadNotes`) from the same revisions
+    /// + `AgentLayerStore.seenStamps()`, so it refreshes live on our own writes, on a
+    /// CloudKit import of a new revision OR of a seen stamp from another device, and on
+    /// an inbox apply — the same re-projection path as `latest`.
+    ///
+    /// **App-internal only.** This derives from `"seen"` interaction rows, which are
+    /// never exported and never reach agents (contract §5, §7); the snapshot is a
+    /// SwiftUI-observed value, not an exported artifact.
+    public var unreadViewNames: Set<String>
 
     public init(latest: [AgentViewRevision] = [],
-                revisionsByView: [String: [AgentViewRevision]] = [:]) {
+                revisionsByView: [String: [AgentViewRevision]] = [:],
+                unreadViewNames: Set<String> = []) {
         self.latest = latest
         self.revisionsByView = revisionsByView
+        self.unreadViewNames = unreadViewNames
     }
 
     public static let empty = AgentLayerSnapshot()
@@ -186,6 +200,15 @@ public struct AgentLayerSnapshot: Equatable, Sendable {
     public func revisions(forView name: String) -> [AgentViewRevision] {
         revisionsByView[name] ?? []
     }
+
+    /// Whether a view is currently unread (M16). A view the snapshot doesn't know
+    /// (no revisions) is not unread.
+    public func isUnread(_ name: String) -> Bool {
+        unreadViewNames.contains(name)
+    }
+
+    /// How many views are unread — a cheap convenience for a feed badge count.
+    public var unreadCount: Int { unreadViewNames.count }
 }
 
 /// The single source of truth the SwiftUI views observe. Owns the store, the
@@ -633,6 +656,29 @@ public final class AppModel: ObservableObject {
             onCommit: { [weak self] in self?.reloadNotes() })
     }
 
+    /// Mark a view **seen** (M16) — the bridge UIs call from a view's `onAppear` /
+    /// selection so its unread dot clears live. Resolves the view's LATEST revision id,
+    /// writes the per-view seen stamp through `AgentLayerStore.markViewSeen`, and
+    /// re-projects so `agentViews.unreadViewNames` drops the name on this same pass (a
+    /// dot the user is looking at clears immediately). `surface` is provenance
+    /// (`"ios"`/`"mac"`/`"watch"`) — the next-stage app surfaces pass their own.
+    ///
+    /// **No-ops on an unknown view** (no revisions) — there is nothing to have seen, and
+    /// stamping a phantom view would create a dangling `"seen"` row. The latest revision
+    /// is read from the store (the authoritative newest), not the published snapshot, so
+    /// a stamp is never anchored to a stale revision if the snapshot momentarily lags.
+    ///
+    /// Idempotent: marking an already-seen view rewrites the one stamp row and advances
+    /// its `updatedAt` (upsert by the sentinel `(viewName, "__view__")` key). Marking a
+    /// view whose latest revision hasn't changed simply keeps it read.
+    public func markViewSeen(_ viewName: String, surface: String) {
+        let store = AgentLayerStore(context: modelContext)
+        // Authoritative latest revision (newest-first); nil → unknown view → no-op.
+        guard let latest = store.revisions(viewName: viewName).first else { return }
+        store.markViewSeen(viewName: viewName, revisionId: latest.id, surface: surface)
+        reloadNotes()
+    }
+
     /// The view name the user has pinned to the top of the Views feed, or `nil`.
     /// Backed by the per-device `NotesSettings.pinnedViewName`.
     public var pinnedViewName: String? { settings.pinnedViewName }
@@ -950,9 +996,29 @@ public final class AppModel: ObservableObject {
             allRevisions.append(contentsOf: revs)
             if let latest = revs.first { latestRevisions.append(latest) }
         }
+        // Unread state (M16): a view with ≥1 revision is UNREAD when its latest
+        // revision's `createdAt` is strictly newer than the user's per-view "seen" stamp
+        // (`updatedAt`), or when no stamp exists (never opened). Same strictly-newer idiom
+        // as the checkbox overlay's supersession rule (spec §1): republishing a seen view
+        // makes it unread again (its new latest post-dates the stamp — the point of the
+        // mailbox). A fresh install with no stamps shows every view unread once. Computed
+        // here from the SAME read context so a seen stamp that just synced in from another
+        // device (a CloudKit remote change re-invokes this whole method) clears the dot on
+        // this pass. `"seen"` rows are app-internal — they never reach the export/agents.
+        let seenStamps = layerStore.seenStamps()
+        var unreadViewNames = Set<String>()
+        for rev in latestRevisions {
+            if let stamp = seenStamps[rev.viewName] {
+                if rev.createdAt > stamp { unreadViewNames.insert(rev.viewName) }
+            } else {
+                unreadViewNames.insert(rev.viewName)   // never opened → unread
+            }
+        }
         // `viewNames()` is already ordered by each view's latest revision, so
         // `latestRevisions` is newest-view first — the feed's row order.
-        agentViews = AgentLayerSnapshot(latest: latestRevisions, revisionsByView: revisionsByView)
+        agentViews = AgentLayerSnapshot(latest: latestRevisions,
+                                        revisionsByView: revisionsByView,
+                                        unreadViewNames: unreadViewNames)
 
         #if os(macOS)
         // Rung 3 + agent layer: mirror the corpus AND the agent layer to ~/Ollie

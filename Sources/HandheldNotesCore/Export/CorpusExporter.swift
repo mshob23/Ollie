@@ -25,6 +25,17 @@ import Foundation
 /// app's Files container) is a backlog item.
 public enum CorpusExporter {
 
+    /// The interaction `kind`s that are **agent-facing** and therefore exported to
+    /// `interactions.jsonl` (contract §5, §7). A **whitelist**, deliberately: `"checkbox"`
+    /// is the only agent-facing kind today, and app-internal kinds — the M16 `"seen"`
+    /// per-view read stamp above all — must never leak into the export. Whitelisting
+    /// (opt-in) rather than blacklisting `"seen"` means any *future* internal kind is
+    /// excluded by default until it deliberately opts in. This is the exporter-side
+    /// "braces": `AgentLayerStore.allInteractions()` already excludes non-checkbox rows
+    /// (the "belt"), so a fresh export never carries a seen row — but this guarantees a
+    /// caller that hands us a wider snapshot (or a future code path) still can't emit one.
+    static let agentFacingInteractionKinds: Set<String> = ["checkbox"]
+
     /// The agent-layer data one export pass writes alongside the notes — a single
     /// `Sendable` value the caller (`AppModel.reloadNotes`) snapshots on the main actor
     /// and hands to the detached export task. Empty by default so the corpus-only call
@@ -295,8 +306,14 @@ public enum CorpusExporter {
         write(jsonlLines: layer.viewRevisions.map(ViewRecord.init), to: dir.appendingPathComponent("views.jsonl"))
         // Interaction state (Views v2 spec §6): views export in full, so their
         // interaction state does too (same gate reasoning — nothing here can cite a
-        // restricted transcript the view itself couldn't). Pruned first (orphan pass).
-        let liveInteractions = prunedInteractions(layer.interactions, revisions: layer.viewRevisions)
+        // restricted transcript the view itself couldn't). Two filters, in order:
+        //   1. AGENT-FACING KINDS ONLY (M16, contract §5/§7): whitelist `kind ==
+        //      "checkbox"`, dropping app-internal `"seen"` read stamps before anything
+        //      else. Belt-and-braces — the store's `allInteractions()` already excludes
+        //      them, but a stale/older snapshot must not leak a seen row here either.
+        //   2. Orphan prune (deleted-view + superseded-stale — spec §6).
+        let agentFacing = layer.interactions.filter { agentFacingInteractionKinds.contains($0.kind) }
+        let liveInteractions = prunedInteractions(agentFacing, revisions: layer.viewRevisions)
         write(jsonlLines: liveInteractions.map(InteractionRecord.init),
               to: dir.appendingPathComponent("interactions.jsonl"))
         let instructionsURL = dir.appendingPathComponent("instructions.md")

@@ -43,6 +43,26 @@ public struct AgentLayerStore {
         public static let interactionKindMax = 32
     }
 
+    /// Well-known interaction-state constants for the **per-view "seen" stamp** (M16,
+    /// contract §7 → "The `seen` kind"). A seen stamp reuses ``InteractionStateEntity``
+    /// exactly as the M7 design anticipated (future kinds reuse the entity with no
+    /// schema change): one durable row per view under a **sentinel** `blockId` that can
+    /// never collide a real checklist item's content-hash id (those are `cl1:…`), with
+    /// `value` = the seen revision's UUID string.
+    ///
+    /// A seen row is **app-internal UI state**: it is never exported to
+    /// `interactions.jsonl`, never returned by `get_view.interactions`, and never enters
+    /// the checkbox overlay. The kind string is the filter every one of those boundaries
+    /// keys on — checkbox rows opt in, `seen` rows do not.
+    public enum SeenStamp {
+        /// The `kind` of a per-view read stamp (vs. `"checkbox"`, the agent-facing kind).
+        public static let kind = "seen"
+        /// The sentinel `blockId` a per-view stamp lives under — one row per
+        /// `(viewName, "__view__")`. Deliberately not a `cl1:`/`cl2:` id, so it can never
+        /// collide a real checklist block (contract §7: "do not collide it").
+        public static let blockId = "__view__"
+    }
+
     private let context: ModelContext
 
     public init(context: ModelContext) {
@@ -130,12 +150,23 @@ public struct AgentLayerStore {
     /// the newest `updatedAt` wins and the losers are dropped from the result. Losers
     /// are pruned opportunistically elsewhere (the exporter's orphan pass); this
     /// reader never mutates.
-    public func interactions(viewName: String) -> [ViewInteraction] {
+    ///
+    /// **Kind filter — checkbox-only by default (M16).** This is the checkbox-overlay
+    /// feed (`ViewInteractionModel`, the renderer), so it returns only `kind:"checkbox"`
+    /// rows unless a caller widens `kinds`. A per-view `"seen"` stamp lives under the
+    /// sentinel `blockId "__view__"` (never a real checklist item's `cl1:` hash), so it
+    /// could never *match* a real block anyway — but we filter on `kind` **explicitly**
+    /// rather than relying on that: a seen row must never leak into the overlay by luck
+    /// (contract §7). The default keeps every existing call site checkbox-only, unchanged.
+    public func interactions(viewName: String,
+                             kinds: Set<String> = ["checkbox"]) -> [ViewInteraction] {
         var d = FetchDescriptor<InteractionStateEntity>(
             predicate: #Predicate { $0.viewName == viewName },
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
         d.includePendingChanges = true
-        let all = ((try? context.fetch(d)) ?? []).map(ViewInteraction.init(entity:))
+        let all = ((try? context.fetch(d)) ?? [])
+            .filter { kinds.contains($0.kind) }
+            .map(ViewInteraction.init(entity:))
         // Collapse duplicate keys: first seen wins because `all` is newest-first.
         var seen = Set<String>()
         var collapsed: [ViewInteraction] = []
@@ -150,10 +181,19 @@ public struct AgentLayerStore {
     /// per `(viewName, blockId)`, latest `updatedAt` winning (same LWW read semantics
     /// as ``interactions(viewName:)``, applied store-wide). Newest first. Never
     /// mutates — losers are pruned opportunistically by the exporter's orphan pass.
-    public func allInteractions() -> [ViewInteraction] {
+    ///
+    /// **Kind filter — agent-facing kinds only (M16).** This is the export/agent feed,
+    /// so it defaults to `kind:"checkbox"` and **excludes** app-internal `"seen"` stamps:
+    /// a seen row is per-view read UI state that must never reach `interactions.jsonl`
+    /// (contract §5, §7). This is the "belt" (the exporter also whitelists checkbox as
+    /// the "braces", so a stale file from an older build still can't leak — instruction
+    /// #3/#4). Future agent-facing kinds opt in by widening `kinds`.
+    public func allInteractions(kinds: Set<String> = ["checkbox"]) -> [ViewInteraction] {
         let d = FetchDescriptor<InteractionStateEntity>(
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
-        let all = ((try? context.fetch(d)) ?? []).map(ViewInteraction.init(entity:))
+        let all = ((try? context.fetch(d)) ?? [])
+            .filter { kinds.contains($0.kind) }
+            .map(ViewInteraction.init(entity:))
         // Collapse duplicate keys — key on (viewName, blockId), first seen (newest) wins.
         var seen = Set<String>()
         var collapsed: [ViewInteraction] = []
@@ -162,6 +202,32 @@ public struct AgentLayerStore {
             if seen.insert(key).inserted { collapsed.append(i) }
         }
         return collapsed
+    }
+
+    /// The per-view **seen** stamps (M16) — `viewName → the stamp's `updatedAt``, the
+    /// timestamp the user last opened that view. One entry per view that has ever been
+    /// marked seen; a view with no stamp is simply absent (→ unread on first sight, the
+    /// intended mailbox default). The snapshot builder (`AppModel.reloadNotes`) compares
+    /// each entry against the view's latest-revision `createdAt`: **unread ⇔
+    /// latestRevision.createdAt > stamp.updatedAt, or no stamp** (the same strictly-newer
+    /// idiom as the checkbox overlay's supersession rule, spec §1).
+    ///
+    /// Reads only `kind:"seen"` rows (the sentinel `blockId "__view__"` gives at most one
+    /// per view via the upsert key) and collapses duplicate keys latest-`updatedAt`-wins,
+    /// exactly like ``interactions(viewName:)``. Never mutates.
+    public func seenStamps() -> [String: Date] {
+        let seenKind = SeenStamp.kind
+        var d = FetchDescriptor<InteractionStateEntity>(
+            predicate: #Predicate { $0.kind == seenKind },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
+        d.includePendingChanges = true
+        let rows = (try? context.fetch(d)) ?? []
+        // Newest-first, so the FIRST row seen for a view is its winning stamp.
+        var stamps: [String: Date] = [:]
+        for r in rows where stamps[r.viewName] == nil {
+            stamps[r.viewName] = r.updatedAt
+        }
+        return stamps
     }
 
     // MARK: - Mutations (mechanical validation here; throws AgentLayerError)
@@ -228,6 +294,36 @@ public struct AgentLayerStore {
     public func setInteractions(_ values: [ViewInteraction]) {
         guard !values.isEmpty else { return }
         for value in values { upsertInteraction(value) }
+        try? context.save()
+    }
+
+    /// Mark a view **seen** at a given revision (M16, contract §7 → "The `seen` kind").
+    /// Upserts the single per-view stamp row through the SAME `(viewName, blockId)`
+    /// upsert path the checkbox layer uses — `blockId` is the sentinel
+    /// ``SeenStamp/blockId`` (`"__view__"`), `kind` is ``SeenStamp/kind`` (`"seen"`),
+    /// `value` is the seen revision's `uuidString`, `blockText` empty. The sentinel key
+    /// means one durable row per view for free (a second mark rewrites it in place and
+    /// advances `updatedAt`, never a second row), exactly like `setInteraction`.
+    ///
+    /// `updatedAt` is stamped **now** — it is the "when you read it" timestamp the unread
+    /// comparison keys on (`seenStamps()`), so it must reflect the moment of marking, not
+    /// the revision's age. Like every other user path (`setInteraction`, `userRestore`)
+    /// this is app-written, un-attributed to an agent, no `AgentOp`, no inbox op, and it
+    /// saves once. `surface` is provenance only (`"ios"`/`"mac"`/`"watch"`).
+    ///
+    /// A `"seen"` row is app-internal: `value` carries a bare revision UUID (≤ 64 chars,
+    /// fits `Caps.interactionValueMax`) and never crosses the export boundary
+    /// (`allInteractions()` + the exporter both whitelist `checkbox`).
+    public func markViewSeen(viewName: String, revisionId: UUID, surface: String) {
+        upsertInteraction(ViewInteraction(
+            viewName: viewName,
+            blockId: SeenStamp.blockId,
+            blockText: "",
+            kind: SeenStamp.kind,
+            value: revisionId.uuidString,
+            revisionId: revisionId,
+            surface: surface,
+            updatedAt: Date()))
         try? context.save()
     }
 
@@ -369,6 +465,11 @@ public struct AgentLayerStore {
     /// User delete of a whole view — removes *all* revisions sharing the name **and**
     /// cascades to its interaction state (deleting a view deletes its checkbox state;
     /// Views v2 spec §4). Saves once for the whole cascade.
+    ///
+    /// The interaction cascade joins purely on `viewName` with **no kind filter**, so it
+    /// prunes a `"seen"` stamp (M16) for the deleted view identically to its `"checkbox"`
+    /// rows — the deleted view leaves no interaction residue of either kind (contract §7:
+    /// the same `viewName` join covers seen rows).
     public func userDelete(view name: String) {
         let dRev = FetchDescriptor<ViewRevisionEntity>(
             predicate: #Predicate { $0.viewName == name })

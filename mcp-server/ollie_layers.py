@@ -162,11 +162,17 @@ def load_interactions() -> list[dict]:
     """Raw exported interaction state (Views v2 spec §6): `{"viewName","blockId",
     "blockText","kind","value","revisionId","surface","updatedAt"}` per line — the
     user's per-block checkbox toggles on views. The Mac app already orphan-prunes this
-    file (deleted-view + superseded-stale records), so every row here is live; the
-    *applying* subset per view is filtered by `get_view` under the precedence rule
-    (spec §1: an overlay applies iff its `updatedAt` is newer than the displayed
-    revision). Interaction state has **no inbox op** — it's user-authored/app-written,
-    so there is no overlay to fold; this file is the whole truth."""
+    file (deleted-view + superseded-stale records) AND writes only agent-facing kinds
+    (`kind:"checkbox"`), so every row here is normally a live checkbox; the *applying*
+    subset per view is filtered by `get_view` under the precedence rule (spec §1: an
+    overlay applies iff its `updatedAt` is newer than the displayed revision).
+
+    This reader is deliberately raw — it does NOT filter by kind — so callers can see
+    exactly what's on disk; `applying_interactions`/`get_view` apply the agent-facing
+    kind whitelist (dropping any `kind:"seen"` M16 read stamp a *stale* older-build file
+    might still contain — contract §7). Interaction state has **no inbox op** — it's
+    user-authored/app-written, so there is no overlay to fold; this file is the whole
+    truth of the checkbox layer."""
     return _load_jsonl(interactions_path())
 
 
@@ -522,6 +528,27 @@ def list_views(inbox: Path | None = None) -> list[dict]:
     return rows
 
 
+#: The interaction `kind`s this server exposes to the agent (contract §5, §7). A
+#: WHITELIST mirroring the app-side exporter: `"checkbox"` is the only agent-facing
+#: kind, so app-internal `"seen"` per-view read stamps (M16) are dropped. The Mac app
+#: already excludes seen rows from `interactions.jsonl`, but a STALE file written by an
+#: older app build could still carry them — this is the belt-and-braces so `get_view`
+#: never surfaces one regardless. A row with no/blank `kind` is treated as `"checkbox"`
+#: (the pre-M16 files predate the field but only ever held checkbox rows).
+AGENT_FACING_INTERACTION_KINDS = {"checkbox"}
+
+
+def _is_agent_facing_interaction(row: dict) -> bool:
+    """Whether an interaction row is one the agent may see (contract §7). True for a
+    `"checkbox"` row and, tolerantly, for a row missing/blank `kind` (an older export
+    that predates the field — those files only ever held checkbox rows). A `"seen"`
+    stamp (or any other future internal kind) is excluded."""
+    kind = str(row.get("kind", "") or "").strip()
+    if not kind:
+        return True                       # pre-M16 file → checkbox by construction
+    return kind in AGENT_FACING_INTERACTION_KINDS
+
+
 def applying_interactions(view_name: str, latest_at: str,
                           interactions: list[dict] | None = None) -> list[dict]:
     """The interaction rows that **apply** to a view's latest revision under the
@@ -533,6 +560,11 @@ def applying_interactions(view_name: str, latest_at: str,
     `{blockId, blockText, value, updatedAt}` (spec §6 — `blockText` is carried so the
     agent never recomputes the hash), newest first.
 
+    Only **agent-facing** kinds are returned (`_is_agent_facing_interaction`): a
+    `kind:"seen"` per-view read stamp (M16) is app-internal UI state and is dropped even
+    if a stale `interactions.jsonl` from an older app build still contains one (contract
+    §7 — belt-and-braces alongside the app-side export whitelist).
+
     ISO-8601 UTC timestamps compare correctly as strings (fixed width, `Z` suffix),
     so a lexical `>` is the temporal `>`; an empty/absent `latest_at` (no revision)
     admits every row for the view."""
@@ -540,6 +572,8 @@ def applying_interactions(view_name: str, latest_at: str,
     out: list[dict] = []
     for r in rows:
         if str(r.get("viewName", "")) != view_name:
+            continue
+        if not _is_agent_facing_interaction(r):   # drop "seen" (and future internal kinds)
             continue
         updated = str(r.get("updatedAt", ""))
         if updated <= latest_at:          # not newer than the displayed revision → superseded

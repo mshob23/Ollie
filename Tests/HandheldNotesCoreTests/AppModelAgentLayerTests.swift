@@ -162,6 +162,95 @@ final class AppModelAgentLayerTests: XCTestCase {
         XCTAssertNil(model.pinnedViewName)
     }
 
+    // MARK: - M16: unread lifecycle + markViewSeen bridge
+
+    /// The core mailbox lifecycle: a freshly-published view is UNREAD; `markViewSeen`
+    /// clears it (read); republishing it makes it UNREAD again (the point of the
+    /// mailbox — a newer revision post-dates the seen stamp). Verified through the
+    /// published `agentViews.unreadViewNames` snapshot the feeds render.
+    func testUnreadLifecyclePublishSeenRepublish() throws {
+        let model = AppModel(inMemoryStore: true)
+        let store = externalStore(model)
+        // `markViewSeen` stamps `updatedAt = Date()` (real now), so the timeline must be
+        // anchored to real time for the strictly-newer comparison to be meaningful: v1 in
+        // the recent past, the seen mark now, v2 in the near future (after the mark).
+        let now = Date()
+
+        // Publish v1 (slightly in the past) → the view appears UNREAD (never opened).
+        try store.apply(.viewPublish(viewName: "Open loops", body: "v1",
+                                     agent: "claude-runner", ts: now.addingTimeInterval(-60)))
+        model.refresh()
+        XCTAssertTrue(model.agentViews.isUnread("Open loops"),
+                      "a newly-published, never-opened view is unread")
+        XCTAssertEqual(model.agentViews.unreadCount, 1)
+
+        // Mark seen → READ (dot clears live on the same pass). The stamp's updatedAt (now)
+        // post-dates v1's createdAt (now-60s).
+        model.markViewSeen("Open loops", surface: "mac")
+        XCTAssertFalse(model.agentViews.isUnread("Open loops"),
+                       "markViewSeen clears the unread state")
+        XCTAssertEqual(model.agentViews.unreadCount, 0)
+
+        // Republish with a revision NEWER than the seen stamp → UNREAD again (the point
+        // of the mailbox). Uses a timestamp well after the mark's real `now`.
+        try store.apply(.viewPublish(viewName: "Open loops", body: "v2",
+                                     agent: "claude-runner", ts: now.addingTimeInterval(3600)))
+        model.refresh()
+        XCTAssertTrue(model.agentViews.isUnread("Open loops"),
+                      "republishing a seen view makes it unread again")
+    }
+
+    /// A fresh corpus with several views and NO seen stamps shows every view unread once
+    /// (expected mailbox semantics), and marking one seen narrows the set to the rest.
+    func testFreshInstallAllViewsUnreadThenNarrows() throws {
+        let model = AppModel(inMemoryStore: true)
+        let store = externalStore(model)
+        try store.apply(.viewPublish(viewName: "A", body: "a", agent: "claude-mac"))
+        try store.apply(.viewPublish(viewName: "B", body: "b", agent: "claude-mac"))
+        model.refresh()
+
+        XCTAssertEqual(model.agentViews.unreadViewNames, ["A", "B"],
+                       "no stamps → everything unread once")
+
+        model.markViewSeen("A", surface: "ios")
+        XCTAssertEqual(model.agentViews.unreadViewNames, ["B"],
+                       "marking one seen leaves the rest unread")
+    }
+
+    /// `markViewSeen` on an unknown view is a safe no-op: no seen stamp is written, so
+    /// no phantom row can dangle (and nothing throws).
+    func testMarkViewSeenUnknownViewIsNoOp() throws {
+        let model = AppModel(inMemoryStore: true)
+        model.markViewSeen("does-not-exist", surface: "mac")
+        // Nothing to assert on the snapshot (no such view); assert no seen row exists.
+        let store = externalStore(model)
+        XCTAssertTrue(store.seenStamps().isEmpty,
+                      "marking an unknown view writes no stamp")
+    }
+
+    /// A seen stamp that arrives via a SECOND context on the same store (the shape a
+    /// CloudKit import of another device's stamp takes) clears the dot after `refresh()`
+    /// — proving remote-change re-projection of unread works (the same path
+    /// `observeRemoteChanges` drives). We resolve the real latest-revision id first so
+    /// the stamp post-dates the revision.
+    func testRemoteSeenStampClearsUnreadOnRefresh() throws {
+        let model = AppModel(inMemoryStore: true)
+        let store = externalStore(model)
+        try store.apply(.viewPublish(viewName: "Open loops", body: "v1", agent: "claude-runner"))
+        model.refresh()
+        XCTAssertTrue(model.agentViews.isUnread("Open loops"))
+
+        // Simulate the iPhone marking it seen: an external store writes the stamp
+        // against the view's real latest revision, exactly as a synced-in row would.
+        let latest = try XCTUnwrap(store.revisions(viewName: "Open loops").first)
+        store.markViewSeen(viewName: "Open loops", revisionId: latest.id, surface: "ios")
+
+        // The Mac re-projects (observeRemoteChanges → reloadNotes; here forced via refresh).
+        model.refresh()
+        XCTAssertFalse(model.agentViews.isUnread("Open loops"),
+                       "a remotely-written seen stamp clears the unread state on re-projection")
+    }
+
     /// User-deleting a whole view drops it from the snapshot AND clears a dangling pin.
     func testUserDeleteViewRemovesRevisionsAndClearsPin() throws {
         let model = AppModel(inMemoryStore: true)

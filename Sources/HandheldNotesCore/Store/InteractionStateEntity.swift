@@ -41,7 +41,15 @@ public final class InteractionStateEntity {
     /// Snapshot of the item text as the classifier captured it at toggle time
     /// (provenance + agent ergonomics; truncated to ``AgentLayerStore/Caps/interactionBlockTextMax``).
     public var blockText: String = ""
-    /// Raw-string enum of the interactive-block kind; only `"checkbox"` today.
+    /// Raw-string enum of the kind of interaction this row records. `"checkbox"` — a
+    /// checklist toggle — is the agent-facing default. `"seen"` (M16, contract §7) is a
+    /// per-view **read stamp**: an app-internal row under the sentinel
+    /// `blockId "__view__"` whose `value` is the seen revision's UUID, driving the
+    /// unread-dot state. A `"seen"` row is never exported to `interactions.jsonl`, never
+    /// returned by `get_view.interactions`, and never enters the checkbox overlay —
+    /// every one of those boundaries filters on this `kind` (see
+    /// `AgentLayerStore.SeenStamp` / `.allInteractions(kinds:)`). Future kinds reuse this
+    /// entity with no further schema change (spec §2, decision #5).
     public var kind: String = "checkbox"
     /// Kind-specific value; for a checkbox: `"true"` / `"false"`.
     public var value: String = ""
