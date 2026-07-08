@@ -238,9 +238,10 @@ private struct ViewFeedRow: View {
 // MARK: - Views detail (right pane)
 
 /// The right pane in Views mode: the selected view's latest revision rendered with
-/// `MarkdownLite`, a provenance header, a pin/unpin + delete affordance, and an
-/// "earlier revisions" list that swaps which revision is shown. Nothing selected →
-/// a friendly empty state.
+/// `MarkdownLite`, a provenance header, a pin/unpin + delete affordance, and a
+/// collapsible "History (N)" disclosure (M20) that reveals the earlier-revisions list
+/// on demand — collapsed by default so a single revision reads without any history
+/// chrome. Nothing selected → a friendly empty state.
 struct ViewDetailPane: View {
     @EnvironmentObject var model: AppModel
     @Binding var selectedViewName: String?
@@ -261,6 +262,14 @@ struct ViewDetailPane: View {
     /// that boundary first), so the supersession boundary — the revision's `createdAt` —
     /// always matches what's on screen. `nil` until a view is shown.
     @State private var interaction: ViewInteractionModel?
+
+    /// Whether the revision history ("Earlier revisions") is revealed (M20). Collapsed by
+    /// default — the detail shows only the shown revision + provenance until the reader
+    /// taps the "History (N)" disclosure. Transient per detail instance: reset to false
+    /// (and re-keyed by the selected view via `.id(name)`) on each fresh open, never
+    /// persisted. Pure `@State` toggled in button actions — never mutated during render
+    /// (the observation render-loop landmine).
+    @State private var historyExpanded = false
 
     private var revisions: [AgentViewRevision] {
         guard let name = selectedViewName else { return [] }
@@ -304,6 +313,14 @@ struct ViewDetailPane: View {
             rebuildInteraction()
             markSeenForShown()
         }
+        // History is transient per detail instance (M20): collapse it whenever the reader
+        // selects a different view, so every fresh open starts with only the latest body
+        // showing. A plain `@State` reset in an action closure — never persisted, never a
+        // render-time write. (The mark-seen + interaction rebuild ride `shown?.id` /
+        // `.onAppear` above and are deliberately untouched here.)
+        .onChange(of: selectedViewName) { _, _ in
+            historyExpanded = false
+        }
         .onDisappear { interaction?.commitNow() }
         // Restore-revision confirmation (plan §M8 8b). Appends a NEW revision copying the
         // chosen earlier one's body — history is append-only, so this is additive, not a
@@ -335,8 +352,10 @@ struct ViewDetailPane: View {
                 // the pane's own header already shows the title.
                 MarkdownLite(shown.body, onOpenNote: onOpenNote, checklist: checklistHook,
                              suppressLeadingHeading: name)
+                // Revision history is collapsed behind a disclosure (M20): a view with a
+                // single revision has nothing to reveal, so no control shows at all.
                 if revisions.count > 1 {
-                    earlierRevisions(shown: shown)
+                    historySection(shown: shown)
                 }
             }
             .padding(28)
@@ -457,22 +476,68 @@ struct ViewDetailPane: View {
         return id != latest.id
     }
 
-    private func earlierRevisions(shown: AgentViewRevision) -> some View {
+    /// The revision-history disclosure (M20). Collapsed, it's a single compact control in
+    /// the pane's `Eyebrow` idiom — a tracked-caps "HISTORY (N)" with a chevron — that
+    /// reveals the EXISTING earlier-revisions list in place; expanded, it shows that list
+    /// below the header. Toggling is a pure `@State` flip in the button action (never a
+    /// render-time write). Collapsing snaps the reading surface back to the latest
+    /// revision (see `collapseHistory`), so a closed drawer always means "reading the
+    /// current document".
+    private func historySection(shown: AgentViewRevision) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(text: "Earlier revisions")
-            // Skip the head (that's the latest, shown by default); list the rest, plus
-            // a "Latest" entry so the reader can return after browsing an older one.
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(revisions.enumerated()), id: \.element.id) { index, rev in
-                    RevisionRow(
-                        revision: rev,
-                        label: index == 0 ? "Latest" : "Revision \(revisions.count - index)",
-                        isShown: rev.id == shown.id,
-                        // Only earlier revisions are restorable — restoring the latest
-                        // would just duplicate it. nil ⇒ no Restore affordance.
-                        onRestore: index == 0 ? nil : { revisionToRestore = rev },
-                        onTap: { shownRevisionID = rev.id })
+            Button {
+                if historyExpanded {
+                    collapseHistory()
+                } else {
+                    historyExpanded = true
                 }
+            } label: {
+                HStack(spacing: 6) {
+                    Eyebrow(text: "History (\(revisions.count))")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.hcAccent)
+                        .rotationEffect(.degrees(historyExpanded ? 90 : 0))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(historyExpanded ? "Hide earlier revisions" : "Show earlier revisions")
+
+            if historyExpanded {
+                earlierRevisionsList(shown: shown)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: historyExpanded)
+    }
+
+    /// Collapse the history drawer and return the reading surface to the latest revision
+    /// (M20). A closed "History" control reads as "I'm looking at the current view", so
+    /// leaving an older revision on screen behind a collapsed drawer would be the more
+    /// surprising state; snapping to latest keeps collapsed == canonical. Both are plain
+    /// `@State` writes in this action closure — safe (not a render-time mutation).
+    private func collapseHistory() {
+        historyExpanded = false
+        shownRevisionID = nil
+    }
+
+    /// The existing earlier-revisions list (unchanged behavior — time-machine select +
+    /// restore), now revealed only when `historyExpanded` (M20).
+    private func earlierRevisionsList(shown: AgentViewRevision) -> some View {
+        // Skip the head (that's the latest, shown by default); list the rest, plus
+        // a "Latest" entry so the reader can return after browsing an older one.
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(revisions.enumerated()), id: \.element.id) { index, rev in
+                RevisionRow(
+                    revision: rev,
+                    label: index == 0 ? "Latest" : "Revision \(revisions.count - index)",
+                    isShown: rev.id == shown.id,
+                    // Only earlier revisions are restorable — restoring the latest
+                    // would just duplicate it. nil ⇒ no Restore affordance.
+                    onRestore: index == 0 ? nil : { revisionToRestore = rev },
+                    onTap: { shownRevisionID = rev.id })
             }
         }
     }
