@@ -65,9 +65,24 @@ render_plist() {
     </array>
 
     <!-- Every 4 h. The runner exits quietly when the Mac app is closed, so a firing
-         while you're away is a cheap no-op. -->
+         while you're away is a cheap no-op. This is the BACKSTOP cadence. -->
     <key>StartInterval</key>
     <integer>$START_INTERVAL</integer>
+
+    <!-- Event-driven cadence (M11): fire whenever ~/Ollie/.runner-trigger changes.
+         The Mac app touches that file (an atomic timestamp write) 90 s after the
+         last new note arrives — a note spoken into the watch syncs to the Mac and,
+         debounced, kicks a run within ~2 min instead of waiting up to 4 h. launchd
+         watches the FILE, not the dir; the app creates/rewrites it in normal use
+         (this installer never touches it). The runner's own guards (pidfile,
+         app-running, corpus-fresh, trusted-workspace) still gate whether the firing
+         does anything, so a spurious change is a cheap no-op — same as an interval
+         firing. Loop-safe: the trigger is driven only by immutable-note inserts, and
+         no agent effect inserts a note, so a run can't re-trigger itself. -->
+    <key>WatchPaths</key>
+    <array>
+        <string>$OLLIE_DIR/.runner-trigger</string>
+    </array>
 
     <!-- Don't fire at login/load — wait for the first interval. -->
     <key>RunAtLoad</key>

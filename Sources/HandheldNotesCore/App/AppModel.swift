@@ -305,6 +305,33 @@ public final class AppModel: ObservableObject {
     private var captureURL: URL?
     private let locationStamper = LocationStamper()
 
+    // MARK: Event-driven runner trigger (M11 — macOS only)
+    //
+    // Turns NEW NoteEntity arrivals into a debounced touch of
+    // `~/Ollie/.runner-trigger`, which launchd watches (`WatchPaths`) to start an
+    // agent run within ~2 min — closing the up-to-4-hour latency of the interval
+    // backstop. See `RunnerTrigger` for the debounce + the loop-safety argument.
+    //
+    // **Loop safety:** it is driven ONLY by NoteEntity *inserts* (see the diff in
+    // `reloadNotes`). Notes are immutable user ground truth and no agent path
+    // inserts a NoteEntity — the runner's own effects (tags/views/memory/
+    // interactions, re-exports) go through `AgentLayerStore`, which never inserts a
+    // note — so a run can't manufacture the event that would re-trigger it.
+
+    #if os(macOS)
+    /// The debounced trigger. Fires `RunnerTrigger.writeTriggerFile()` 90 s after the
+    /// last note arrival. macOS-only: iOS must never touch `~/Ollie` (the trigger is
+    /// a home-node concept). Created in `init` after the first projection is seeded.
+    private var runnerTrigger: RunnerTrigger?
+
+    /// The note ids seen on the previous `reloadNotes()` pass, so a reload can tell
+    /// which ids are genuinely NEW (an arrival) versus already-known. Seeded once —
+    /// without firing — so app launch / the initial import of an existing corpus is
+    /// not treated as a flood of arrivals; only inserts observed *after* the seed
+    /// nudge the trigger. `nil` until the seed pass runs.
+    private var seenNoteIDs: Set<Note.ID>?
+    #endif
+
     // Persistence. `AppModel` owns the SwiftData container + context; the public
     // `notes` array is a projection fetched out of it (see `reloadNotes`). The
     // container prefers private-iCloud and degrades to local — sync, when it
@@ -358,8 +385,20 @@ public final class AppModel: ObservableObject {
         importLegacyNotesIfNeeded()
         if CommandLine.arguments.contains("--wipe-all-notes") { deleteAllNotes() }
         seedDemoNotesIfNeeded()
-        reloadNotes()
+        reloadNotes()   // seeds `seenNoteIDs` (macOS) — this first pass never fires the trigger
         if selectedNoteID == nil { selectedNoteID = filteredNotes.first?.id }
+
+        #if os(macOS)
+        // Arm the event-driven runner trigger AFTER the seed reload above: the
+        // seed established the baseline `seenNoteIDs`, so from here on only genuinely
+        // new NoteEntity arrivals (CloudKit imports from watch/phone, local Mac
+        // captures) reach `runnerTrigger.noteArrived()` and — 90 s after the last
+        // one — touch `~/Ollie/.runner-trigger`. Nil in tests via `inMemoryStore`
+        // is intentional: a test store shouldn't write the real home-node path.
+        if !inMemoryStore {
+            runnerTrigger = RunnerTrigger { RunnerTrigger.writeTriggerFile() }
+        }
+        #endif
 
         // Pick up changes that arrive from iCloud (another device's edits) and
         // re-project them into the observable array.
@@ -764,6 +803,37 @@ public final class AppModel: ObservableObject {
         notes = entities.map(Note.init(entity:))
         // Keep system Spotlight in sync with the live projection (best-effort, async).
         SpotlightIndexer.index(notes)
+
+        #if os(macOS)
+        // Event-driven runner (M11): detect NEW NoteEntity arrivals and nudge the
+        // debounced trigger. We reach here only on a SUCCESSFUL fetch (the fetch-
+        // failure guard above early-returns), so a transient empty/failed projection
+        // never fires a run nor corrupts the baseline.
+        //
+        // **Only NoteEntity INSERTS count** (contract §1 / RunnerTrigger loop-safety):
+        // we diff the current note-id set against the previous pass's. An id present
+        // now but not before is a new note — a watch/phone CloudKit import or a local
+        // Mac capture. Edits (transcript/favorite/restriction), deletes, and every
+        // agent-layer write (tags/views/memory/interactions, which never insert a
+        // NoteEntity) change no *new* id, so they never trigger a run — that is what
+        // makes the runner's own effects unable to re-trigger it.
+        //
+        // The FIRST pass (during `init`, before `runnerTrigger` is armed) only seeds
+        // the baseline: `runnerTrigger` is still nil, so nothing fires for the corpus
+        // that already existed at launch — only inserts observed on LATER reloads count.
+        // Diffing the RAW `notes` projection (not the gated export set) also sidesteps a
+        // restriction trap: a note becoming restricted stays in `notes`, so its id is not
+        // spuriously seen as "new" when it would drop out of a gated set.
+        let currentIDs = Set(notes.map(\.id))
+        if let previous = seenNoteIDs {
+            let arrivals = currentIDs.subtracting(previous)
+            if !arrivals.isEmpty {
+                Diag.log("HNDIAG runner-trigger: \(arrivals.count) new note arrival(s) — debouncing")
+                runnerTrigger?.noteArrived()
+            }
+        }
+        seenNoteIDs = currentIDs
+        #endif
 
         // Project the agent layer from the SAME fresh read context — so a layer record
         // the inbox ingestor or a CloudKit import just persisted surfaces on this pass,

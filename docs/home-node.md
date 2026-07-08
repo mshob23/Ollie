@@ -8,6 +8,7 @@ auth C2, event-driven runs) is tracked in BACKLOG.md §home-node track.
 
 Everything scripted lives in `Scripts/setup-home-node.sh`. Bare invocation (or
 `--status`) is read-only and safe anytime; it exits non-zero if the profile has drifted.
+The event-driven-runs half (M11) is now shipped — see **Event-driven runs** below.
 
 ## Target behavior
 
@@ -86,6 +87,42 @@ on this setup — the native Charge Limit replaced it.)
      **Closed-Display Mode ON** (accept its plugged-in warning — that's the point)
 3. Keep the `caffeinate` LaunchAgent installed — they don't conflict; assertions stack.
 4. Rerun the lid test to confirm.
+
+## Event-driven runs
+
+The agent runner has two cadences. The **4 h `StartInterval`** is the backstop — a
+guaranteed floor so a pass eventually happens even if nothing else fires. On top of it,
+`WatchPaths` makes runs **event-driven** so a note spoken into the watch is acted on in
+about two minutes instead of up to four hours:
+
+1. A note arrives on the Mac — a CloudKit import from the watch/phone, or a local Mac
+   capture — and becomes a new `NoteEntity` in the store.
+2. The Mac app (`AppModel`, macOS-only) debounces: **90 s after the *last* new note**,
+   it atomically writes an ISO-8601 timestamp to `~/Ollie/.runner-trigger`. A burst of
+   arrivals (a sync catch-up, several watch transfers) coalesces into one write — the
+   window resets on each arrival and only fires once it goes quiet.
+3. `~/Ollie/.runner-trigger` is listed under the launchd job's `WatchPaths`
+   (`Scripts/install-agent-runner.sh`), so launchd starts the runner when the file
+   changes. The run's own guards (pidfile, app-running, corpus-fresh, trusted-workspace)
+   still decide whether it does anything — a firing while the app is closed is a cheap
+   no-op, exactly like an interval firing.
+
+**Manual test** — force a run without waiting for a note:
+
+```bash
+touch ~/Ollie/.runner-trigger        # WatchPaths sees the change → a run starts
+tail -f ~/Ollie/agent-runs/launchd.log
+```
+
+(In real use the *app* writes this file; you never create it by hand except to test.
+Re-run `Scripts/install-agent-runner.sh` after any runner/plist change so the deployed
+`~/Library/LaunchAgents/*.plist` actually carries `WatchPaths`.)
+
+**Loop safety** — the trigger is driven **only** by new-`NoteEntity` inserts, and no
+agent path ever inserts a note (the runner's tags/views/memory/interaction writes and
+re-exports all go through `AgentLayerStore`, which never creates a `NoteEntity`), so a
+run can never manufacture the event that would re-trigger it — the system cannot
+self-trigger.
 
 ## Verification & health
 
