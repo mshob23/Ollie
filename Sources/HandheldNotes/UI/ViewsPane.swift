@@ -33,6 +33,13 @@ struct ViewsFeedPane: View {
         return reordered
     }
 
+    /// The rows partitioned into directory sections (M18, contract §7 "View directory
+    /// convention"): ungrouped views (no `/` in the name) first with no header, then
+    /// sections headed by the text before the FIRST `/` (trimmed), alphabetically.
+    /// Within a group the pane's existing `rows` order is preserved. A pure derivation
+    /// of `rows` — no writes — so evaluating it during render is loop-safe.
+    private var sections: ViewDirectory { ViewDirectory(rows: rows) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -73,27 +80,64 @@ struct ViewsFeedPane: View {
 
     private var list: some View {
         List {
-            ForEach(rows) { rev in
-                ViewFeedRow(revision: rev,
-                            isSelected: rev.viewName == selectedViewName,
-                            isPinned: rev.viewName == model.pinnedViewName)
-                    .onTapGesture { selectedViewName = rev.viewName }
-                    .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .contextMenu {
-                        Button(rev.viewName == model.pinnedViewName ? "Unpin" : "Pin to top") {
-                            model.togglePinnedView(rev.viewName)
-                        }
-                        Button("Delete view", role: .destructive) {
-                            if selectedViewName == rev.viewName { selectedViewName = nil }
-                            model.userDelete(view: rev.viewName)
-                        }
+            // Ungrouped views first, headerless (M18). Rows render identically here
+            // and inside a section — same `row(for:)` builder, same dot/name/meta.
+            ForEach(sections.ungrouped) { rev in
+                row(for: rev)
+            }
+            // Then one plain, non-collapsible section per directory prefix,
+            // alphabetically; the pane's existing order is preserved within each.
+            ForEach(sections.groups, id: \.name) { group in
+                Section(header: sectionHeader(group.name)) {
+                    ForEach(group.rows) { rev in
+                        row(for: rev)
                     }
+                }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+    }
+
+    /// One feed row (M18: shared by the ungrouped list and every section so grouping
+    /// changes only where a row sits, never how it renders). The unread dot (M16) is
+    /// driven by a pure read of the published snapshot; selecting the row marks the
+    /// view seen from the tap ACTION (never during render — landmine).
+    @ViewBuilder
+    private func row(for rev: AgentViewRevision) -> some View {
+        ViewFeedRow(revision: rev,
+                    isSelected: rev.viewName == selectedViewName,
+                    isPinned: rev.viewName == model.pinnedViewName,
+                    isUnread: model.agentViews.isUnread(rev.viewName))
+            .onTapGesture {
+                selectedViewName = rev.viewName
+                // Opening a view to read it clears its unread dot live (M16). Safe:
+                // this is a user action, not render — `markViewSeen` re-projects the
+                // snapshot itself.
+                model.markViewSeen(rev.viewName, surface: "mac")
+            }
+            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .contextMenu {
+                Button(rev.viewName == model.pinnedViewName ? "Unpin" : "Pin to top") {
+                    model.togglePinnedView(rev.viewName)
+                }
+                Button("Delete view", role: .destructive) {
+                    if selectedViewName == rev.viewName { selectedViewName = nil }
+                    model.userDelete(view: rev.viewName)
+                }
+            }
+    }
+
+    /// A plain (non-collapsible) directory section header in the pane's list idiom —
+    /// the tracked-caps coral `Eyebrow`, matching the "Capture"/"Earlier revisions"
+    /// eyebrows used elsewhere in the app.
+    private func sectionHeader(_ name: String) -> some View {
+        Eyebrow(text: name)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .padding(.leading, 4)
     }
 
     private var emptyState: some View {
@@ -122,11 +166,23 @@ private struct ViewFeedRow: View {
     let revision: AgentViewRevision
     let isSelected: Bool
     let isPinned: Bool
+    /// Whether the view is unread (M16) — draws the small accent dot before the name.
+    let isUnread: Bool
     @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 6) {
+                // Unread dot (M16): a small filled accent circle, matching the pane's
+                // pin-glyph accent language. Only present when unread, so a read row
+                // reads exactly as before.
+                if isUnread {
+                    Circle()
+                        .fill(Color.hcAccent)
+                        .frame(width: 6, height: 6)
+                        .padding(.top, 5)
+                        .help("Unread — updated since you last opened it")
+                }
                 Text(revision.viewName)
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(Color.hcPrimaryText)
@@ -239,8 +295,16 @@ struct ViewDetailPane: View {
         // the pane entirely flushes the last one. Keyed on the shown revision id so a
         // "time machine" jump to an older revision also re-anchors the supersession
         // boundary (`createdAt`) to what's now on screen.
-        .onChange(of: shown?.id) { _, _ in rebuildInteraction() }
-        .onAppear { rebuildInteraction() }
+        .onChange(of: shown?.id) { _, _ in
+            rebuildInteraction()
+            // Switching the displayed view (or time-machining to another revision of
+            // it) means the reader is now looking at this one — mark it seen (M16).
+            markSeenForShown()
+        }
+        .onAppear {
+            rebuildInteraction()
+            markSeenForShown()
+        }
         .onDisappear { interaction?.commitNow() }
         // Restore-revision confirmation (plan §M8 8b). Appends a NEW revision copying the
         // chosen earlier one's body — history is append-only, so this is additive, not a
@@ -309,6 +373,29 @@ struct ViewDetailPane: View {
         }
     }
 
+    /// Mark the currently-shown view seen (M16) so its unread dot clears once the
+    /// reader is looking at it. Called from the detail's lifecycle actions
+    /// (`.onAppear` / view-switch) — never during render — and `markViewSeen`
+    /// re-projects the snapshot itself, so the dot in the feed drops live.
+    private func markSeenForShown() {
+        guard let name = selectedViewName else { return }
+        model.markViewSeen(name, surface: "mac")
+    }
+
+    /// Annotate (M17): open the Mac capture composer prefilled with the contract §7
+    /// annotation prefix — `re: view "<name>": ` (cursor lands at the end, editable).
+    /// Sending produces an ordinary note through the existing pipeline; nothing in the
+    /// app parses the grammar (it's a runbook convention). Routed via the
+    /// `ollieSeedDraft` notification the `CaptureBar` listens for, so this stays inside
+    /// the Views file and needs no Core change.
+    private func annotate(_ name: String) {
+        let seed = "re: view \"\(name)\": "
+        NotificationCenter.default.post(
+            name: .ollieSeedDraft,
+            object: nil,
+            userInfo: [SeedDraftKey.text: seed])
+    }
+
     private func headerBlock(name: String, shown: AgentViewRevision) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .top, spacing: 12) {
@@ -318,6 +405,18 @@ struct ViewDetailPane: View {
                     .lineLimit(1...3)
                     .textSelection(.enabled)
                 Spacer(minLength: 0)
+                // Annotate (M17): route into the normal capture composer prefilled
+                // with the contract §7 annotation prefix. A user ACTION (button tap),
+                // so it never mutates observed state during render.
+                Button(action: { annotate(name) }) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Color.hcMutedText)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Comment on this view — opens Capture prefilled with re: view \u{201C}\(name)\u{201D}")
+
                 Button(action: { model.togglePinnedView(name) }) {
                     Image(systemName: model.pinnedViewName == name ? "pin.fill" : "pin")
                         .font(.system(size: 15, weight: .medium))
@@ -455,6 +554,63 @@ private struct RevisionRow: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - View directory grouping (M18, contract §7 "View directory convention")
+
+/// Partitions the feed's rows into directory sections. The grouping rule is CONTRACT
+/// (§7): a view name containing `/` groups under a section named for the text before
+/// the FIRST `/` (trimmed of surrounding whitespace); a prefix-less name stays
+/// ungrouped. Ordering: ungrouped rows first (no header), then sections
+/// alphabetically (case-insensitive); WITHIN each group the caller's existing row
+/// order is preserved.
+///
+/// A pure value type built from the rows — no observed-state writes — so a
+/// `ViewsFeedPane` may build it during render without risking the render loop.
+private struct ViewDirectory {
+    /// Views with no `/` in their name, in the caller's original order.
+    let ungrouped: [AgentViewRevision]
+    /// Prefix sections, alphabetical by `name`; each keeps the caller's row order.
+    let groups: [Group]
+
+    struct Group {
+        let name: String
+        let rows: [AgentViewRevision]
+    }
+
+    init(rows: [AgentViewRevision]) {
+        var ungrouped: [AgentViewRevision] = []
+        // Preserve first-appearance order of prefixes while bucketing, then sort the
+        // buckets alphabetically at the end (within-bucket order stays insertion order).
+        var order: [String] = []
+        var buckets: [String: [AgentViewRevision]] = [:]
+
+        for rev in rows {
+            guard let prefix = Self.prefix(of: rev.viewName) else {
+                ungrouped.append(rev)
+                continue
+            }
+            if buckets[prefix] == nil {
+                buckets[prefix] = []
+                order.append(prefix)
+            }
+            buckets[prefix]?.append(rev)
+        }
+
+        self.ungrouped = ungrouped
+        self.groups = order
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            .map { Group(name: $0, rows: buckets[$0] ?? []) }
+    }
+
+    /// The section prefix for a view name: the trimmed text before the FIRST `/`, or
+    /// `nil` when the name has no `/` (ungrouped) or the prefix is empty after
+    /// trimming (e.g. a leading `/` — nothing sensible to head a section with).
+    static func prefix(of viewName: String) -> String? {
+        guard let slash = viewName.firstIndex(of: "/") else { return nil }
+        let head = viewName[..<slash].trimmingCharacters(in: .whitespaces)
+        return head.isEmpty ? nil : head
     }
 }
 

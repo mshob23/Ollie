@@ -1,6 +1,22 @@
 import HandheldNotesCore
 import SwiftUI
 
+// MARK: - Seed-the-composer signal (M17 Annotate)
+//
+// A Mac-UI-local notification that asks the capture bar to open its draft composer
+// PREFILLED with a seed string (cursor at the end, editable). The Views detail's
+// "Annotate" button posts it with the contract §7 annotation prefix; the bar seeds
+// the draft through the normal `setDraftTranscript` path, so Send produces an
+// ordinary note through the existing pipeline — nothing else special. Kept in the
+// app target (a plain in-process `NotificationCenter` hop, the same idiom
+// `NoteDetailView` uses for `willResignActive`), so it needs no Core change.
+extension Notification.Name {
+    static let ollieSeedDraft = Notification.Name("ollieSeedDraft")
+}
+
+/// The userInfo key carrying the seed `String` on a ``Notification/Name/ollieSeedDraft``.
+enum SeedDraftKey { static let text = "text" }
+
 /// The persistent capture area, pinned to the top of the window and independent of
 /// which note is selected. It hosts:
 ///   • the live DRAFT — the in-progress note that accumulates appended speech and
@@ -15,6 +31,11 @@ struct CaptureBar: View {
     /// whenever the draft has content or a recording/transcription is in progress.
     @State private var composing = false
 
+    /// Bumped when a seed (M17 Annotate) lands, so the draft field re-focuses and
+    /// drops the cursor at the end of the prefilled text. A counter (not a Bool) so
+    /// a second Annotate on the same open composer still re-triggers the focus.
+    @State private var seedFocusRequest = 0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerRow
@@ -23,6 +44,24 @@ struct CaptureBar: View {
         }
         .padding(16)
         .hcPanel(fill: .hcPanelRaised)
+        // Annotate (M17): the Views detail posts a seed → open the composer with the
+        // prefilled prefix. This is a plain user-triggered ACTION on receipt (not a
+        // render-time write), so it never mutates observed state during render.
+        .onReceive(NotificationCenter.default.publisher(for: .ollieSeedDraft)) { note in
+            let seed = note.userInfo?[SeedDraftKey.text] as? String ?? ""
+            seedDraft(with: seed)
+        }
+    }
+
+    /// Prefill the composer with `seed` and focus it with the cursor at the end
+    /// (M17). Routes through the normal `setDraftTranscript` — a seeded draft is an
+    /// ordinary draft: editable, and Send concludes it through the existing pipeline.
+    /// Non-empty seed keeps the bar expanded (`isDrafting`); `seedFocusRequest`
+    /// drives the field's focus + end-of-text caret.
+    private func seedDraft(with seed: String) {
+        model.setDraftTranscript(seed)
+        composing = true
+        seedFocusRequest += 1
     }
 
     // MARK: Header (window actions)
@@ -131,7 +170,10 @@ struct CaptureBar: View {
                     // Auto-focus the field when the composer was opened by clicking
                     // the idle prompt (composing, empty draft), so the cursor is
                     // ready and clicking away collapses an untouched draft.
+                    // `seedFocusRequest` re-focuses (cursor at end) when an Annotate
+                    // seed prefills the draft (M17).
                     DraftField(autoFocus: composing && model.draft.isEmpty,
+                               focusRequest: seedFocusRequest,
                                onLostFocusWhenEmpty: { collapseIfEmpty() })
                 }
 
@@ -240,12 +282,17 @@ struct CaptureBar: View {
 ///
 /// - `autoFocus`: focus the editor as soon as it appears (used when the composer
 ///   was opened by clicking the idle prompt, so the cursor is ready to type).
+/// - `focusRequest`: a monotonically-increasing token; each new value re-focuses
+///   the editor and drops the insertion point at the END of the current text (used
+///   when an Annotate seed prefills the draft — M17 — so the user types right after
+///   the `re: view "<name>": ` prefix).
 /// - `onLostFocusWhenEmpty`: called when the editor loses focus while the draft is
 ///   still empty — the parent uses it to collapse the composer back to the slim
 ///   idle row. It is never called with real content, and the parent re-checks
 ///   anyway, so half-typed drafts are never collapsed away.
 private struct DraftField: View {
     var autoFocus: Bool = false
+    var focusRequest: Int = 0
     var onLostFocusWhenEmpty: () -> Void = {}
 
     @EnvironmentObject var model: AppModel
@@ -291,6 +338,26 @@ private struct DraftField: View {
                 onLostFocusWhenEmpty()
             }
         }
+        // Annotate seed (M17): focus the editor and drop the caret at the end of the
+        // prefilled text so the user types their comment right after the prefix. The
+        // deferred tick lets the seeded transcript settle in the editor before we
+        // move the selection; the AppKit nudge makes "cursor at end" explicit rather
+        // than relying on default focus behavior.
+        .onChange(of: focusRequest) { _, request in
+            guard request > 0 else { return }
+            focused = true
+            DispatchQueue.main.async { moveInsertionPointToEnd() }
+        }
+    }
+
+    /// Move the focused text editor's insertion point to the end of its content
+    /// (M17). SwiftUI's `TextEditor` has no selection API, so we reach the backing
+    /// `NSTextView` through the key window's field editor. Best-effort: if the
+    /// responder isn't a text view yet, focusing alone still lands the caret sanely.
+    private func moveInsertionPointToEnd() {
+        guard let responder = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+        let end = (responder.string as NSString).length
+        responder.setSelectedRange(NSRange(location: end, length: 0))
     }
 }
 

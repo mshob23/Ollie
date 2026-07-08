@@ -45,7 +45,7 @@ struct RootView: View {
 
                 // Pane switch: Notes list / Views feed. Kept compact and left-aligned
                 // so it reads as a mode toggle, not a primary navigation bar.
-                HStack(spacing: 0) {
+                HStack(spacing: 8) {
                     Picker("", selection: $pane) {
                         Label("Notes", systemImage: "note.text").tag(RootPane.notes)
                         Label("Views", systemImage: "rectangle.stack").tag(RootPane.views)
@@ -53,10 +53,20 @@ struct RootView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
-                    .padding(.horizontal, 18)
+                    .padding(.leading, 18)
                     .padding(.vertical, 8)
+                    // Unread-views affordance (M16): a small accent count pill beside
+                    // the toggle when views are unread and we're not already on the
+                    // Views pane. A pure read of the published snapshot — no writes —
+                    // so it refreshes live and can't drive the render loop.
+                    if pane != .views, model.agentViews.unreadCount > 0 {
+                        UnreadCountPill(count: model.agentViews.unreadCount)
+                            .help("\(model.agentViews.unreadCount) unread view\(model.agentViews.unreadCount == 1 ? "" : "s")")
+                            .transition(.opacity)
+                    }
                     Spacer()
                 }
+                .animation(.easeInOut(duration: 0.2), value: model.agentViews.unreadCount)
 
                 Divider().overlay(Color.hcCardBorder.opacity(0.5))
 
@@ -178,5 +188,20 @@ struct BannerView: View {
                 .stroke(Color.hcCardBorder, lineWidth: 1)
         )
         .padding(.horizontal, 24)
+    }
+}
+
+/// A small accent count pill for the unread-views affordance beside the pane toggle
+/// (M16). Filled accent with cream-on-accent text, matching the pane header's accent
+/// language; sized for 1–2 digits, capped at "9+".
+private struct UnreadCountPill: View {
+    let count: Int
+    var body: some View {
+        Text(count > 9 ? "9+" : "\(count)")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(Color.hcOnAccent)
+            .padding(.horizontal, 6)
+            .frame(minWidth: 18, minHeight: 18)
+            .background(Capsule().fill(Color.hcAccent))
     }
 }
