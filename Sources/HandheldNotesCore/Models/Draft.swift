@@ -73,14 +73,20 @@ public struct Draft: Identifiable, Equatable, Sendable {
     /// stray leading/trailing space (and the derived title stays clean). Callers
     /// must only invoke this on a non-empty draft (see `AppModel.concludeDraft`,
     /// which treats an empty/whitespace draft as a no-op).
-    public func makeNote() -> Note {
-        let now = Date()
+    ///
+    /// A note's `createdAt` is stamped **now** — the moment the user concludes/sends
+    /// the draft — *not* `draft.createdAt` (when the draft session began at bar-open).
+    /// A draft can sit open for minutes before Send; stamping it at draft-start made
+    /// the note's timestamp predate its send, so `list_notes(since: lastRunAt)` could
+    /// silently miss a just-sent note whose stamp fell before the agent's window.
+    /// `now` is injectable (defaulted to `Date()`) purely so tests can pin the clock.
+    public func makeNote(now: Date = Date()) -> Note {
         let body = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         return Note(
             id: id,
             transcript: body,
             kind: audioFileName != nil ? .voice : .text,
-            createdAt: createdAt,
+            createdAt: now,
             updatedAt: now,
             source: .computer,
             audioFileName: audioFileName,
