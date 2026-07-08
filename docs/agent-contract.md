@@ -249,8 +249,35 @@ reads. The conventions agents follow, summarized (normative source is the runboo
   panel (never stripped, never an error; `FenceWidget.parse` returning `nil` *is* the §6
   pass-through). Content must stay legible as plain text, because the panel is the permanent
   fallback rendering (older builds, malformed content). Grammar, per nonblank line:
-  - ` ```metric ` — `Label: value` with optional trailing `(delta)` → big-number cards.
-  - ` ```chart ` — `Label: number` (C-locale decimal, finite) → horizontal bars scaled to the max.
+  - ` ```metric ` — `Label: value` with optional trailing `(delta)` → big-number cards. The
+    delta tints by sign (`+…` green, `-…` red). An optional **sentiment hint** `good`/`bad`
+    after the number inside the parens (`(-5 good)`, `(+2 bad)`, M12) OVERRIDES that sign tint —
+    for a metric where "down is good" (a weight cut, a bug count): `good` → green, `bad` → red,
+    regardless of sign. The number is still shown verbatim; only the color changes. The hint
+    word must be exactly `good` or `bad` — a number followed by any **other** word in that slot
+    (e.g. the old `(5 down)` workaround) is malformed and falls the whole fence back to the
+    panel. Absent → today's sign-based tint, unchanged. (A bare `(good)`/`(bad)` with no number
+    is just a verbatim free-text delta, not a hint.)
+  - ` ```chart ` — `Label: number` (C-locale decimal, finite) → horizontal bars. By default
+    bars scale from **zero** to the max. A truncated **baseline** (M12) makes a tight series
+    legible (a `183 → 178` run otherwise renders as identical full-height bars):
+    - An optional **`min: <number>`** directive line (same `label: value` syntax; may appear
+      anywhere among the data lines; it is not itself a bar) declares the baseline. **Exactly
+      one** `min:` is allowed — a second one, or a non-finite `min:`, falls the whole fence back
+      to the panel. (A bar therefore can't be *labeled* `min`.)
+    - **Clamp, don't clip:** the effective baseline is `min(declared min, smallest value)`, so
+      an over-declared `min:` (above the smallest datum) pins to the data floor rather than
+      clipping any bar below the axis.
+    - **Auto-baseline:** with **no** `min:`, all values `> 0`, and a tight spread
+      (`(max − min) / max < 0.15`), the renderer auto-truncates just below the smallest value
+      (min − 10 % of the range, never below 0) so the story doesn't vanish. A wide spread, or any
+      value ≤ 0, stays zero-based.
+    - **Honesty:** whenever ANY baseline is active (declared or auto), the rendered axis LABELS
+      it — the baseline value is shown at the bar base and the max at the right, so a truncated
+      axis is never silent.
+    - **Degenerate guard:** if the baseline meets or exceeds the max (all-equal data, or a `min:`
+      at/above the max) the bars render minimal-height and equal — no division by zero, no
+      NaN/∞ reaching frame math.
   - ` ```timeline ` — `<when> — <text>` (em/en dash, or space-padded hyphen; first separator
     wins; `when` displayed verbatim) → vertical dotted timeline.
   - ` ```table ` — pipe rows, first row = header, an optional `|---|` separator row is skipped
@@ -266,7 +293,11 @@ reads. The conventions agents follow, summarized (normative source is the runboo
     width). Any unparseable line (a dangling `->`, a chained `A -> B -> C`, an unclosed
     quote, a non-`[A-Za-z0-9_-]` char in an unquoted id, an empty id, a `:` with no label), any
     cap violation, or an empty diagram (e.g. a title-only fence) degrades the whole fence to the
-    panel.
+    panel. **Rendering polish (M12, no grammar change):** a wide topological layer wraps into
+    rows of at most 3 node boxes (so a fan-out can't overflow a 40 mm watch face); when a layer
+    has more than one labeled out-edge, each connector label is disambiguated as `from → to:
+    label` (a lone labeled edge stays a bare label); and a self-loop edge's label (`A -> A:
+    retry`) rides its node as a small `↺ label` badge instead of an inter-layer connector.
 
 ---
 

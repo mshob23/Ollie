@@ -643,8 +643,8 @@ struct FenceWidgetView: View {
         switch widget {
         case let .metric(cards):
             MetricWidget(cards: cards)
-        case let .chart(bars):
-            ChartWidget(bars: bars)
+        case let .chart(chart):
+            ChartWidget(chart: chart)
         case let .timeline(entries):
             TimelineWidget(entries: entries)
         case let .table(header, rows):
@@ -680,10 +680,19 @@ private struct MetricWidget: View {
     }
 
     /// A VoiceOver summary: "3 metrics: Captured this week 23, up 8; Open loops 5; …".
+    /// A `good`/`bad` sentiment hint (M12) is spoken after the delta ("down 5, good") so the
+    /// reader hears the author's intent, not just the sign.
     static func summary(_ cards: [FenceWidget.MetricCard]) -> String {
         let items = cards.map { card -> String in
             var s = "\(card.label) \(card.value)"
-            if let delta = card.delta { s += ", \(spokenDelta(delta))" }
+            if let delta = card.delta {
+                s += ", \(spokenDelta(delta))"
+                switch card.sentiment {
+                case .good?: s += ", good"
+                case .bad?:  s += ", bad"
+                case nil:    break
+                }
+            }
             return s
         }
         return "\(cards.count) metric\(cards.count == 1 ? "" : "s"): " + items.joined(separator: "; ")
@@ -711,7 +720,7 @@ private struct MetricCardView: View {
                 if let delta = card.delta {
                     Text(delta)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(deltaColor(delta))
+                        .foregroundStyle(deltaColor(delta, sentiment: card.sentiment))
                         .lineLimit(1)
                 }
             }
@@ -724,10 +733,18 @@ private struct MetricCardView: View {
     }
 }
 
-/// Delta tint by direction, read from the leading sign (verbatim token — we never parse the
-/// number): `+…` reads as the calm-green "up", `-…`/`−…` as the warm-red "down", anything
-/// else stays secondary. Deliberately shallow — the delta text is shown exactly as authored.
-private func deltaColor(_ delta: String) -> Color {
+/// Delta tint (M12): an explicit `good`/`bad` sentiment hint OVERRIDES the sign reading —
+/// `.good` → calm green, `.bad` → warm red — so a metric where "down is good" (a weight cut)
+/// tints correctly. Absent (the default), fall back to today's sign-based tint: `+…` calm
+/// green "up", `-…`/`−…` warm-red "down", anything else secondary. The delta text itself is
+/// always shown exactly as authored; only the color changes.
+private func deltaColor(_ delta: String, sentiment: FenceWidget.MetricCard.Sentiment?) -> Color {
+    if let sentiment {
+        switch sentiment {
+        case .good: return .hcOk
+        case .bad:  return .syncDanger
+        }
+    }
     let t = delta.trimmingCharacters(in: .whitespaces)
     if t.hasPrefix("+") { return .hcOk }
     if t.hasPrefix("-") || t.hasPrefix("\u{2212}") { return .syncDanger } // -, − minus sign
@@ -745,19 +762,28 @@ private func spokenDelta(_ delta: String) -> String {
 
 // MARK: chart
 
-/// Horizontal bars scaled to the fence's max value: label on the left, a coral bar whose
-/// length is `value / max`, the value at the bar's end. Plain `Capsule` + `Text` — no Swift
-/// Charts. Scaling happens here (the parser keeps raw `Double`s, §M9 9a).
+/// Horizontal bars scaled against the fence's max and its (possibly truncated) baseline:
+/// label on the left, a coral bar, the value at the bar's end. Plain `Capsule` + `Text` — no
+/// Swift Charts. All scaling math lives on ``FenceWidget/Chart`` (pure, unit-tested); this
+/// view is its picture.
+///
+/// **Two regimes, chosen by ``FenceWidget/Chart/hasActiveBaseline``:**
+///   • **No active baseline** (the common case — no `min:`, spread too wide to auto-truncate):
+///     byte-for-byte the pre-M12 rendering — bars scale from zero by magnitude, no axis label.
+///   • **Active baseline** (a declared `min:`, or an auto-baseline on a tight all-positive
+///     series): bars measure `(value − baseline)/(max − baseline)`, and a labeled axis row is
+///     shown beneath the bars so the truncated baseline is **never silent** (the M12 honesty
+///     rule) — the baseline value at the left (the bar base), the max at the right.
 private struct ChartWidget: View {
-    let bars: [FenceWidget.ChartBar]
+    let chart: FenceWidget.Chart
 
     var body: some View {
-        // Scale to the max magnitude so a bar is never wider than its track. Guard the
-        // all-zero / empty case (denominator 0) — those bars render as an empty track.
-        let maxValue = bars.map { abs($0.value) }.max() ?? 0
         VStack(alignment: .leading, spacing: 7) {
-            ForEach(Array(bars.enumerated()), id: \.offset) { _, bar in
-                ChartBarView(bar: bar, fraction: maxValue > 0 ? abs(bar.value) / maxValue : 0)
+            ForEach(Array(chart.bars.enumerated()), id: \.offset) { _, bar in
+                ChartBarView(bar: bar, fraction: barFraction(bar))
+            }
+            if chart.hasActiveBaseline {
+                ChartBaselineAxis(baseline: chart.baseline, maxValue: chart.maxValue)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -766,13 +792,55 @@ private struct ChartWidget: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.summary(bars))
+        .accessibilityLabel(Self.summary(chart))
     }
 
-    /// A VoiceOver summary: "Bar chart, 3 bars: Mon 12; Tue 8; Wed 15".
-    static func summary(_ bars: [FenceWidget.ChartBar]) -> String {
-        let items = bars.map { "\($0.label) \(formatChartValue($0.value))" }
-        return "Bar chart, \(bars.count) bar\(bars.count == 1 ? "" : "s"): " + items.joined(separator: "; ")
+    /// The fill fraction for a bar. With an active baseline, defer to the pure, div-zero-guarded
+    /// `Chart.fraction(for:)`. Without one, keep the exact pre-M12 magnitude scaling (so charts
+    /// with negatives/zeros render identically to before) — guarding the all-zero denominator.
+    private func barFraction(_ bar: FenceWidget.ChartBar) -> Double {
+        if chart.hasActiveBaseline {
+            return chart.fraction(for: bar.value)
+        }
+        let maxMag = chart.bars.map { abs($0.value) }.max() ?? 0
+        return maxMag > 0 ? abs(bar.value) / maxMag : 0
+    }
+
+    /// A VoiceOver summary: "Bar chart, 3 bars: Mon 12; Tue 8; Wed 15". When a baseline is
+    /// active it's spoken first ("from 175") so the reader knows the bars are truncated.
+    static func summary(_ chart: FenceWidget.Chart) -> String {
+        let items = chart.bars.map { "\($0.label) \(formatChartValue($0.value))" }
+        var s = "Bar chart"
+        if chart.hasActiveBaseline { s += ", baseline \(formatChartValue(chart.baseline))" }
+        s += ", \(chart.bars.count) bar\(chart.bars.count == 1 ? "" : "s"): "
+        return s + items.joined(separator: "; ")
+    }
+}
+
+/// The labeled baseline axis shown beneath the bars whenever a truncated baseline is active
+/// (the M12 honesty rule — a truncated axis must never be silent). A hairline rule with the
+/// baseline value at the left (the bar base, where a value == baseline reads as zero width) and
+/// the max at the right, both muted so they read as scale marks, not data.
+private struct ChartBaselineAxis: View {
+    let baseline: Double
+    let maxValue: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Rectangle()
+                .fill(Color.hcCardBorder.opacity(0.5))
+                .frame(height: 1)
+                .padding(.leading, 80)   // align under the tracks (label column is 72 + 8 spacing).
+            HStack(spacing: 0) {
+                Text(formatChartValue(baseline))
+                Spacer(minLength: 8)
+                Text(formatChartValue(maxValue))
+            }
+            .font(.system(size: 9.5, design: .monospaced))
+            .foregroundStyle(Color.hcMutedText)
+            .padding(.leading, 80)
+        }
+        .accessibilityHidden(true)   // the widget's summary already speaks the baseline.
     }
 }
 
@@ -984,7 +1052,7 @@ private struct DiagramWidget: View {
                     .padding(.bottom, 10)
             }
             ForEach(Array(layout.layers.enumerated()), id: \.offset) { index, layer in
-                DiagramLayerRow(ids: layer)
+                DiagramLayerRow(ids: layer, badges: layout.selfLoopBadges)
                 // The connector below this layer: a downward arrow plus any labels of edges
                 // that leave this layer. Omitted under the last layer (nothing below it).
                 if index < layout.layers.count - 1 {
@@ -1026,65 +1094,129 @@ private struct DiagramWidget: View {
     }
 }
 
-/// One horizontal row of node boxes — a topological layer (or a single node in the cycle
-/// fallback). Wraps the boxes so a wide layer doesn't overflow a narrow watch; a lone node
-/// simply left-aligns.
-private struct DiagramLayerRow: View {
+/// One topological layer of node boxes (or a single node in the cycle fallback). A wide
+/// fan-out is **chunked into rows of at most ``maxPerRow`` nodes** (M12) — nested V/HStacks,
+/// deterministic and with no `Layout` protocol — so a fan-out wider than a 40mm watch face
+/// wraps instead of overflowing. A layer of ≤ 3 nodes is a single left-aligned row exactly as
+/// before (chunking is a no-op there, so narrow diagrams are unchanged).
+/// `internal` (not `private`) so the pure `rows(_:perRow:)` chunking helper is unit-testable via
+/// `@testable import`; the view body itself isn't tested (SwiftUI layout isn't unit-testable).
+struct DiagramLayerRow: View {
     let ids: [String]
+    /// Self-loop labels per node id (M12): a node with a self-loop shows a `↺ label` badge
+    /// beneath its name instead of the label riding a connector.
+    let badges: [String: [String]]
+
+    /// At most this many node boxes per wrapped row — small enough that even 3 multi-word
+    /// boxes fit a 40mm watch face side by side.
+    static let maxPerRow = 3
+
+    /// Chunk a layer's ids into rows of at most `perRow` (M12 wide-layer wrapping). Pure and
+    /// deterministic (no `Layout` protocol) so the wrapping is unit-testable without SwiftUI:
+    /// ≤ `perRow` ids → a single row (a no-op for narrow diagrams); 4+ → multiple rows, order
+    /// preserved. An empty layer yields no rows.
+    static func rows(_ ids: [String], perRow: Int = maxPerRow) -> [[String]] {
+        guard perRow > 0 else { return ids.isEmpty ? [] : [ids] }
+        return stride(from: 0, to: ids.count, by: perRow).map { start in
+            Array(ids[start..<Swift.min(start + perRow, ids.count)])
+        }
+    }
 
     var body: some View {
-        // A wrapping HStack via `HStackWrap` would need a custom layout; for the small caps
-        // (≤16 nodes total) a plain HStack that lets boxes shrink is enough and simplest. Most
-        // layers are 1–3 wide. `Spacer` keeps a short row left-aligned.
-        HStack(alignment: .top, spacing: 8) {
-            ForEach(Array(ids.enumerated()), id: \.offset) { _, id in
-                DiagramNodeBox(text: id)
+        // Chunk deterministically into rows of ≤ maxPerRow. For ≤3 nodes this is one row,
+        // identical to the pre-M12 single HStack; for 4+ it stacks rows top→down.
+        let rows = Self.rows(ids)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, id in
+                        DiagramNodeBox(text: id, selfLoopLabels: badges[id] ?? [])
+                    }
+                    Spacer(minLength: 0)
+                }
             }
-            Spacer(minLength: 0)
         }
     }
 }
 
 /// A single rounded-rect node box: the node id as its label, in a soft raised panel with a
 /// coral hairline so the flow reads as connected cards. Compact type + wrapping so a
-/// multi-word quoted id stays legible on a watch without a fixed width.
+/// multi-word quoted id stays legible on a watch without a fixed width. A self-loop edge's
+/// label (M12) rides the box as a small `↺ label` badge beneath the name — a self-loop is a
+/// property of the node, not a flow between layers, so it belongs here, not on a connector.
 private struct DiagramNodeBox: View {
     let text: String
+    var selfLoopLabels: [String] = []
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Color.hcPrimaryText)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.hcPanelRaised))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.hcAccent.opacity(0.55), lineWidth: 1))
+        VStack(alignment: .center, spacing: 3) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.hcPrimaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(selfLoopLabels.enumerated()), id: \.offset) { _, label in
+                Text("\u{21BA} \(label)")   // ↺ + the self-loop label
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.hcSecondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.hcPanelRaised))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.hcAccent.opacity(0.55), lineWidth: 1))
+    }
+}
+
+/// One labeled out-edge riding a between-layer connector (M12): its endpoints plus the label.
+/// Endpoints are carried (not just the label string) so a connector with MORE THAN ONE labeled
+/// edge can disambiguate which label belongs to which edge. `internal` (not `private`) so the
+/// pure disambiguation logic is unit-testable via `@testable import`.
+struct DiagramConnectorLabel: Equatable {
+    let from: String
+    let to: String
+    let label: String
+
+    /// The text a connector renders for this label: `from → to: label` when the connector is
+    /// **ambiguous** (`labelCount > 1` labeled edges leaving the layer), or the bare `label`
+    /// when it carries just one. Pure so the M12 disambiguation rule is testable without SwiftUI.
+    func rendered(ambiguousAmong labelCount: Int) -> String {
+        labelCount > 1 ? "\(from) \u{2192} \(to): \(label)" : label
     }
 }
 
 /// The between-layer connector: a downward arrow glyph with any edge labels leaving the layer
 /// above stacked beside it. Kept short and muted so it reads as "flows down (via …)" without
 /// competing with the node boxes.
+///
+/// **Label disambiguation (M12):** when the layer has MORE THAN ONE labeled out-edge, each
+/// label is rendered as `from → to: label` (one per line) so the reader can tell which edge a
+/// label describes. A single labeled edge stays a bare label exactly as before — no clutter
+/// when there's no ambiguity.
 private struct DiagramConnector: View {
-    let labels: [String]
+    let labels: [DiagramConnectorLabel]
     var showArrow: Bool = true
 
     var body: some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             if showArrow {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.hcAccent.opacity(0.8))
             }
             if !labels.isEmpty {
-                Text(labels.joined(separator: ", "))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.hcSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(labels.enumerated()), id: \.offset) { _, item in
+                        Text(item.rendered(ambiguousAmong: labels.count))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.hcSecondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1101,14 +1233,20 @@ private struct DiagramConnector: View {
 /// inflate in-degree): repeatedly emit the in-degree-0 nodes (in first-appearance order) as a
 /// layer, then remove them. If a cycle blocks progress, the whole layout falls back to a
 /// **single column in first-appearance order** — still a faithful, if unlayered, rendering.
-private struct DiagramLayout {
+/// `internal` (not `private`) so the pure layering / label-partition / self-loop-badge logic is
+/// unit-testable via `@testable import` — it touches no SwiftUI and no observed state.
+struct DiagramLayout {
     /// Node ids grouped into vertical layers, top → bottom.
     let layers: [[String]]
-    /// Labels to show on the connector below layer `i` (edges whose source is in layer `i`).
-    let connectorLabels: [Int: [String]]
+    /// Labels to show on the connector below layer `i` (labeled inter-layer edges whose source
+    /// is in layer `i`). Carry endpoints so the connector can disambiguate when it has >1.
+    let connectorLabels: [Int: [DiagramConnectorLabel]]
     /// Labels whose source is in the *last* layer (no connector below it) — shown as a footer
     /// so they're never dropped. `nil`/empty in the common DAG case.
-    let residualLabels: [String]?
+    let residualLabels: [DiagramConnectorLabel]?
+    /// Self-loop labels per node id (M12): a `from == to` edge's label rides its node as a
+    /// `↺ label` badge, not an inter-layer connector. Authored order preserved.
+    let selfLoopBadges: [String: [String]]
 
     init(_ diagram: FenceWidget.Diagram) {
         let ids = diagram.nodes.map(\.id)
@@ -1152,22 +1290,30 @@ private struct DiagramLayout {
             for id in layer { layerOf[id] = i }
         }
 
-        // Map each labeled edge to the gap below its source layer; a source in the last layer
-        // has no gap below → residual footer. Labels keep authored order (edges are ordered).
-        var byLayer: [Int: [String]] = [:]
-        var residual: [String] = []
+        // Partition labeled edges (M12): a self-loop's label becomes a node badge; every other
+        // labeled edge maps to the gap below its source layer (or the residual footer when its
+        // source is in the last layer). All three keep authored order (edges are ordered).
+        var byLayer: [Int: [DiagramConnectorLabel]] = [:]
+        var residual: [DiagramConnectorLabel] = []
+        var badges: [String: [String]] = [:]
         let lastIndex = finalLayers.count - 1
         for edge in diagram.edges {
             guard let label = edge.label, !label.isEmpty else { continue }
+            if edge.from == edge.to {
+                badges[edge.from, default: []].append(label)   // self-loop → node badge.
+                continue
+            }
+            let item = DiagramConnectorLabel(from: edge.from, to: edge.to, label: label)
             let src = layerOf[edge.from] ?? 0
             if src < lastIndex {
-                byLayer[src, default: []].append(label)
+                byLayer[src, default: []].append(item)
             } else {
-                residual.append(label)   // source in (or below) the last layer.
+                residual.append(item)   // source in (or below) the last layer.
             }
         }
         self.connectorLabels = byLayer
         self.residualLabels = residual.isEmpty ? nil : residual
+        self.selfLoopBadges = badges
     }
 }
 

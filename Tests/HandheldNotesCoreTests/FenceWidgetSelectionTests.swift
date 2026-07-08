@@ -53,12 +53,15 @@ final class FenceWidgetSelectionTests: XCTestCase {
 
     func testChartFenceSelectsChartWidget() {
         let got = selectedWidget(info: "chart", body: "Mon: 12\nTue: 8\nWed: 15")
-        guard case .chart(let bars)?? = got else { return XCTFail("expected .chart, got \(String(describing: got))") }
-        XCTAssertEqual(bars, [
+        guard case .chart(let chart)?? = got else { return XCTFail("expected .chart, got \(String(describing: got))") }
+        XCTAssertEqual(chart.bars, [
             .init(label: "Mon", value: 12),
             .init(label: "Tue", value: 8),
             .init(label: "Wed", value: 15),
         ])
+        // A wide spread (min 8, max 15) does not auto-truncate — no baseline, zero-based bars.
+        XCTAssertNil(chart.declaredMin)
+        XCTAssertFalse(chart.hasActiveBaseline)
     }
 
     func testTimelineFenceSelectsTimelineWidget() {
@@ -183,10 +186,10 @@ final class FenceWidgetSelectionTests: XCTestCase {
         ])
 
         // 2) chart → recognized
-        guard case .chart(let bars)? = FenceWidget.parse(info: codeBlocks[1].info, code: codeBlocks[1].code) else {
+        guard case .chart(let chart)? = FenceWidget.parse(info: codeBlocks[1].info, code: codeBlocks[1].code) else {
             return XCTFail("second fence should select the chart widget")
         }
-        XCTAssertEqual(bars, [.init(label: "Mon", value: 12), .init(label: "Tue", value: 8), .init(label: "Wed", value: 15)])
+        XCTAssertEqual(chart.bars, [.init(label: "Mon", value: 12), .init(label: "Tue", value: 8), .init(label: "Wed", value: 15)])
 
         // 3) timeline → recognized
         guard case .timeline(let entries)? = FenceWidget.parse(info: codeBlocks[2].info, code: codeBlocks[2].code) else {

@@ -50,9 +50,13 @@ public enum FenceWidget: Equatable, Sendable {
     /// `2m 14s`, `98%`, or `—`); the renderer wraps 2–3 cards per row.
     case metric([MetricCard])
     /// ` ```chart ` — horizontal bars. Each nonblank line is `Label: number`; the raw
-    /// `Double` is kept and **scaling to the max is the renderer's job** (§M9 9a). A
-    /// non-numeric value anywhere degrades the whole fence to `nil`.
-    case chart([ChartBar])
+    /// `Double` is kept and **scaling is the renderer's job** (§M9 9a). An optional
+    /// `min: <number>` directive line declares a truncated baseline (M12), and when none
+    /// is given an auto-baseline may kick in for a tight series — either way the bar
+    /// fraction is `(value − baseline)/(max − baseline)` and the axis LABELS the baseline
+    /// (see ``Chart``). A non-numeric value, a non-finite value, or a second `min:` line
+    /// degrades the whole fence to `nil`.
+    case chart(Chart)
     /// ` ```timeline ` — a vertical dotted timeline. Each nonblank line is
     /// `<when> — <text>` (em dash `—`, en dash `–`, or a space-padded hyphen ` - `,
     /// first separator wins). `when` is displayed **verbatim** — no date parsing (§M9 9a).
@@ -71,26 +75,121 @@ public enum FenceWidget: Equatable, Sendable {
 
     /// One `Label: value (delta)` line of a `metric` fence. `delta` is the trailing
     /// parenthesized token (parentheses stripped, inner text verbatim) or `nil` when the
-    /// line carried none.
+    /// line carried none. `sentiment` (M12) is an optional trailing `good`/`bad` hint
+    /// inside those parens (`(-5 good)`, `(+2 bad)`) that OVERRIDES the sign-based delta
+    /// tint — for a metric where "down is good" (a weight cut, a bug count). Absent →
+    /// the renderer keeps today's sign-based tint. The number is still kept verbatim in
+    /// `delta` (the hint word is stripped off it).
     public struct MetricCard: Equatable, Sendable {
+        /// An explicit delta-sentiment hint (M12): the direction the reader should FEEL,
+        /// regardless of the number's sign. `.good` tints positive/calm, `.bad` tints
+        /// warning — overriding `deltaColor`'s sign reading.
+        public enum Sentiment: Equatable, Sendable { case good, bad }
         public var label: String
         public var value: String
         public var delta: String?
-        public init(label: String, value: String, delta: String? = nil) {
+        public var sentiment: Sentiment?
+        public init(label: String, value: String, delta: String? = nil,
+                    sentiment: Sentiment? = nil) {
             self.label = label
             self.value = value
             self.delta = delta
+            self.sentiment = sentiment
         }
     }
 
     /// One `Label: number` line of a `chart` fence. `value` is the raw parsed number;
-    /// the renderer scales bars to the fence's max value.
+    /// the renderer scales bars against the fence's max and its (possibly truncated)
+    /// baseline.
     public struct ChartBar: Equatable, Sendable {
         public var label: String
         public var value: Double
         public init(label: String, value: Double) {
             self.label = label
             self.value = value
+        }
+    }
+
+    /// A parsed `chart` fence (M12): the ``ChartBar``s plus an optional author-declared
+    /// baseline (`min: <number>`). The struct owns the **pure baseline math** so the
+    /// renderer stays a thin picture of it and the honesty/degeneracy rules are unit-tested
+    /// without SwiftUI:
+    ///
+    ///   • **Effective baseline** (``baseline``) = `Swift.min(declaredMin, smallest value)`
+    ///     when a `min:` is declared (an over-declared min CLAMPS to the data rather than
+    ///     clipping any bar); otherwise an **auto-baseline** for a tight all-positive series
+    ///     (`(max−min)/max < 0.15` → just below the smallest value, never below 0); otherwise
+    ///     `0` (today's behavior — bars scale from zero).
+    ///   • **Div-zero guard** — when `baseline >= max` (degenerate: all-equal data, or a min
+    ///     declared at/above the max), ``span`` is 0 and every ``fraction(for:)`` returns 0
+    ///     (minimal-height equal bars). NaN/∞ never reaches the renderer's frame math.
+    ///   • **Honesty** — ``hasActiveBaseline`` is true whenever ANY baseline (declared or
+    ///     auto) is nonzero, so the renderer knows it MUST label the truncated axis.
+    public struct Chart: Equatable, Sendable {
+        public var bars: [ChartBar]
+        /// The author's `min:` directive value, or `nil` when none was declared. Kept raw so
+        /// the clamp (`min(declaredMin, smallestValue)`) is computed here, once.
+        public var declaredMin: Double?
+        public init(bars: [ChartBar], declaredMin: Double? = nil) {
+            self.bars = bars
+            self.declaredMin = declaredMin
+        }
+
+        /// The largest bar value (0 for an empty chart — never constructed, but total).
+        public var maxValue: Double { bars.map(\.value).max() ?? 0 }
+        /// The smallest bar value (0 for an empty chart).
+        public var minValue: Double { bars.map(\.value).min() ?? 0 }
+
+        /// The auto-baseline trigger threshold (M12): a series whose spread is under this
+        /// fraction of its max is "tight" enough that zero-based bars hide the story.
+        public static let autoBaselineThreshold = 0.15
+
+        /// The effective baseline the bars are measured FROM. Declared `min:` clamps to the
+        /// data's smallest value (tolerant — an over-declared min never clips a bar below the
+        /// axis); with no `min:`, a tight all-positive series auto-truncates just below its
+        /// smallest value; otherwise 0.
+        public var baseline: Double {
+            if let declaredMin {
+                // Clamp: never sit the baseline ABOVE the smallest datum (that would clip a
+                // bar to negative height). An over-declared min just pins to the data floor.
+                return Swift.min(declaredMin, minValue)
+            }
+            return autoBaseline
+        }
+
+        /// The auto-baseline (no `min:` declared): for an all-positive series tight enough
+        /// (`(max−min)/max < threshold`) sit the baseline 10% of the range below the smallest
+        /// value, floored at 0; otherwise 0 (zero-based, today's behavior). Pure; guards every
+        /// divisor so it can never produce NaN/∞.
+        private var autoBaseline: Double {
+            let mx = maxValue, mn = minValue
+            // Only for a genuinely tight, all-positive, non-degenerate series.
+            guard bars.count >= 2, mn > 0, mx > 0, mx > mn else { return 0 }
+            guard (mx - mn) / mx < Chart.autoBaselineThreshold else { return 0 }
+            let pad = (mx - mn) * 0.1
+            return Swift.max(0, mn - pad)
+        }
+
+        /// The scaling span `max − baseline`. **Zero** in the degenerate case
+        /// (`baseline >= max`) — the renderer must treat a zero span as "all bars minimal",
+        /// never divide by it. Never negative (baseline is clamped ≤ minValue ≤ maxValue in
+        /// the declared case, and ≤ maxValue in the auto case).
+        public var span: Double { Swift.max(0, maxValue - baseline) }
+
+        /// Is a truncated baseline in effect (declared OR auto)? When true the renderer MUST
+        /// render the baseline value at the bar base — a truncated axis is never silent
+        /// (the M12 honesty rule). A baseline of exactly 0 is NOT "active" (bars already
+        /// start at zero; nothing to disclose).
+        public var hasActiveBaseline: Bool { baseline != 0 }
+
+        /// The 0…1 fill fraction for one value against the effective baseline:
+        /// `(value − baseline)/span`, clamped to 0…1. Returns **0 when `span == 0`** (the
+        /// degenerate all-equal / min-at-max case) — the div-zero guard, so NaN never reaches
+        /// SwiftUI frame math. A value at/below the baseline reads as 0 (empty bar).
+        public func fraction(for value: Double) -> Double {
+            guard span > 0 else { return 0 }
+            let f = (value - baseline) / span
+            return Swift.max(0, Swift.min(1, f))
         }
     }
 
@@ -199,6 +298,7 @@ public enum FenceWidget: Equatable, Sendable {
             // matching "(" opens the trailing group. Anything else is part of the value.
             var value = rest
             var delta: String? = nil
+            var sentiment: MetricCard.Sentiment? = nil
             if rest.hasSuffix(")"), let open = rest.lastIndex(of: "(") {
                 let inner = rest[rest.index(after: open)..<rest.index(before: rest.endIndex)]
                     .trimmingCharacters(in: .whitespaces)
@@ -207,32 +307,55 @@ public enum FenceWidget: Equatable, Sendable {
                 // it (a line that is *only* "(…)" keeps the parens as the literal value —
                 // we never strip an author's sole token to nothing).
                 if !inner.isEmpty, !before.isEmpty {
+                    // Optional trailing sentiment hint (M12): `good`/`bad` after the number,
+                    // e.g. `(-5 good)`. `splitDeltaSentiment` returns nil ONLY when the parens
+                    // carry a hint slot that isn't exactly `good`/`bad` — that's a strict
+                    // malformed case → whole fence nil (never a silent mis-tint).
+                    guard let split = splitDeltaSentiment(inner) else { return nil }
                     value = before
-                    delta = inner
+                    delta = split.delta
+                    sentiment = split.sentiment
                 }
             }
-            cards.append(MetricCard(label: label, value: value, delta: delta))
+            cards.append(MetricCard(label: label, value: value, delta: delta, sentiment: sentiment))
         }
         return cards.isEmpty ? nil : .metric(cards)
     }
 
-    /// `chart`: each nonblank line `Label: number`. Label = before the first colon
+    /// `chart`: each nonblank line `Label: number`, plus an optional `min: <number>`
+    /// directive line (M12) anywhere among the data lines. Label = before the first colon
     /// (non-empty); the remainder must parse as a `Double` (locale-independent). Raw
-    /// numbers are kept — scaling is the renderer's job (§M9 9a). Non-numeric value,
-    /// missing colon, or empty label → `nil`.
+    /// numbers are kept — scaling is the renderer's job (§M9 9a). A `min:` line declares the
+    /// truncated baseline; **exactly one is allowed** (a second `min:` → nil), it must parse
+    /// finite (a non-finite `min:` → nil, the existing number rule), and it never counts as a
+    /// data bar. Non-numeric value, missing colon, empty label, or a duplicate/malformed
+    /// `min:` → `nil`.
+    ///
+    /// `min:` is matched the same way a bar line is (a `min` label before the first colon,
+    /// case-insensitively) so it reads as ordinary chart-line syntax. This does mean a bar
+    /// can't be *labeled* `min` — an acceptable, documented trade for the tiny grammar.
     private static func parseChart(_ code: String) -> FenceWidget? {
         var bars: [ChartBar] = []
+        var declaredMin: Double? = nil
         for line in nonblankLines(code) {
             guard let colon = line.firstIndex(of: ":") else { return nil }
             let label = line[..<colon].trimmingCharacters(in: .whitespaces)
             let rawValue = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             guard !label.isEmpty, !rawValue.isEmpty else { return nil }
             // Parse locale-independently (agents write `1234.5`, never `1.234,5`); reject
-            // anything Double can't read — that's the "one bad line → panel" degrade.
+            // anything Double can't read (incl. non-finite) — the "one bad line → panel" degrade.
             guard let value = parseNumber(rawValue) else { return nil }
-            bars.append(ChartBar(label: label, value: value))
+            // The `min:` directive: at most one, finite (parseNumber already enforced finite).
+            // A second one is malformed (ambiguous baseline) → whole fence nil.
+            if label.lowercased() == "min" {
+                guard declaredMin == nil else { return nil }
+                declaredMin = value
+            } else {
+                bars.append(ChartBar(label: label, value: value))
+            }
         }
-        return bars.isEmpty ? nil : .chart(bars)
+        // A fence that is ONLY a `min:` line (no bars) has no data → nil, same as empty.
+        return bars.isEmpty ? nil : .chart(Chart(bars: bars, declaredMin: declaredMin))
     }
 
     /// `timeline`: each nonblank line `<when> — <text>`, split at the first separator —
@@ -363,6 +486,38 @@ public enum FenceWidget: Equatable, Sendable {
     private static func parseNumber(_ s: String) -> Double? {
         guard let v = Double(s), v.isFinite else { return nil }
         return v
+    }
+
+    /// Split a metric delta's inner text into `(delta, sentiment)` (M12), or `nil` when a
+    /// sentiment hint is present but malformed (→ whole fence nil, strict tolerance).
+    ///
+    /// The hint occupies exactly the position **after a numeric delta**: if `inner`'s first
+    /// whitespace-separated token is a finite number and there is trailing text, that trailing
+    /// text is the hint slot and MUST be exactly `good` or `bad` — anything else there is
+    /// malformed (`nil`). In that case the returned `delta` is the numeric token verbatim
+    /// (sign kept). Otherwise the hint slot doesn't exist:
+    ///   • a pure numeric delta (`+8`, `-5`, `1e3`) → `(inner, nil)`;
+    ///   • a free-text delta not led by a number (`soon`, `rising`, `all time high`) →
+    ///     `(inner, nil)` verbatim — today's behavior, untouched.
+    /// `inner` is guaranteed non-empty by the caller.
+    private static func splitDeltaSentiment(_ inner: String)
+        -> (delta: String, sentiment: MetricCard.Sentiment?)? {
+        // First token vs. the rest. A locale-independent number has no interior whitespace,
+        // so the number (if any) is exactly the first token.
+        guard let firstSpace = inner.firstIndex(where: { $0 == " " || $0 == "\t" }) else {
+            // Single token: a bare number or a one-word free-text delta — no hint slot.
+            return (inner, nil)
+        }
+        let head = String(inner[..<firstSpace])
+        let tail = inner[inner.index(after: firstSpace)...].trimmingCharacters(in: .whitespaces)
+        // Only a *numeric* head opens the hint slot. A non-numeric head (a multi-word
+        // free-text delta) is kept verbatim, unchanged from pre-M12.
+        guard parseNumber(head) != nil, !tail.isEmpty else { return (inner, nil) }
+        switch tail {
+        case "good": return (head, .good)
+        case "bad":  return (head, .bad)
+        default:     return nil   // number then a non-hint word → strict malformed.
+        }
     }
 
     // MARK: - Diagram helpers (pure)

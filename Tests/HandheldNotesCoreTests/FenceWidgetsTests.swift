@@ -84,28 +84,84 @@ final class FenceWidgetsTests: XCTestCase {
         ]))
     }
 
+    // MARK: - metric delta-sentiment hint (M12)
+
+    func testMetricSentimentGoodAndBad() {
+        // `(-5 good)` / `(+2 bad)`: the hint word is stripped off the delta (the number stays
+        // verbatim, sign kept) and recorded as the sentiment override.
+        let code = "Weight: 182 (-5 good)\nBugs: 7 (+2 bad)"
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: code), .metric([
+            .init(label: "Weight", value: "182", delta: "-5", sentiment: .good),
+            .init(label: "Bugs", value: "7", delta: "+2", sentiment: .bad),
+        ]))
+    }
+
+    func testMetricSentimentWithUnsignedAndScientificNumber() {
+        // The hint slot opens after ANY finite numeric token — unsigned, decimal, scientific.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "A: 1 (5 good)"), .metric([
+            .init(label: "A", value: "1", delta: "5", sentiment: .good),
+        ]))
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "B: 2 (1e3 bad)"), .metric([
+            .init(label: "B", value: "2", delta: "1e3", sentiment: .bad),
+        ]))
+    }
+
+    func testMetricUnknownHintWordDegradesToNil() {
+        // A number then a trailing word that ISN'T exactly good/bad occupies the hint slot and
+        // is strictly malformed → whole fence nil (this deprecates the old "(5 down)" workaround).
+        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (5 down)"))
+        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (-5 great)"))
+        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (2 Good)"))   // case-sensitive
+        XCTAssertNil(FenceWidget.parse(info: "metric", code: "A: 1 (5 good extra)")) // number + 2 words
+    }
+
+    func testMetricNoHintIsUnchanged() {
+        // Absent hint: today's behavior exactly — a bare numeric delta, sentiment nil.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "A: 1 (+8)"), .metric([
+            .init(label: "A", value: "1", delta: "+8", sentiment: nil),
+        ]))
+        // A free-text (non-number-led) delta is kept verbatim, no hint slot, no sentiment.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "Trend: up (rising fast)"), .metric([
+            .init(label: "Trend", value: "up", delta: "rising fast", sentiment: nil),
+        ]))
+        // A one-word non-hint delta stays verbatim too (the pre-M12 `(soon)` case).
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "ETA: 3:30 (soon)"), .metric([
+            .init(label: "ETA", value: "3:30", delta: "soon", sentiment: nil),
+        ]))
+    }
+
+    func testMetricGoodBadAloneIsAVerbatimDeltaNotAHint() {
+        // A bare `(good)` / `(bad)` has no numeric head → it is NOT a hint slot; it's a
+        // one-word free-text delta kept verbatim (sentiment nil). The hint only applies AFTER
+        // a number, per the grammar.
+        XCTAssertEqual(FenceWidget.parse(info: "metric", code: "Mood: fine (good)"), .metric([
+            .init(label: "Mood", value: "fine", delta: "good", sentiment: nil),
+        ]))
+    }
+
     // MARK: - chart
 
     func testChartGoldenKeepsRawNumbers() {
-        // Values are kept raw as Doubles; scaling is the renderer's job (§M9 9a).
+        // Values are kept raw as Doubles; scaling is the renderer's job (§M9 9a). With no
+        // `min:` and a value of 0 in the series, no baseline is declared (declaredMin nil).
         let code = """
         Mon: 12
         Tue: 3.5
         Wed: 0
         """
-        XCTAssertEqual(FenceWidget.parse(info: "chart", code: code), .chart([
+        XCTAssertEqual(FenceWidget.parse(info: "chart", code: code), .chart(.init(bars: [
             .init(label: "Mon", value: 12),
             .init(label: "Tue", value: 3.5),
             .init(label: "Wed", value: 0),
-        ]))
+        ], declaredMin: nil)))
     }
 
     func testChartAcceptsNegativeAndScientific() {
         let code = "Drop: -4\nBig: 1e3"
-        XCTAssertEqual(FenceWidget.parse(info: "chart", code: code), .chart([
+        XCTAssertEqual(FenceWidget.parse(info: "chart", code: code), .chart(.init(bars: [
             .init(label: "Drop", value: -4),
             .init(label: "Big", value: 1000),
-        ]))
+        ], declaredMin: nil)))
     }
 
     func testChartNonNumericValueDegradesToNil() {
@@ -126,6 +182,169 @@ final class FenceWidgetsTests: XCTestCase {
         XCTAssertNil(FenceWidget.parse(info: "chart", code: "Bad: nan"))
         XCTAssertNil(FenceWidget.parse(info: "chart", code: "Huge: 1e400"))
         XCTAssertNil(FenceWidget.parse(info: "chart", code: "Mon: 12\nSpike: -infinity"))
+    }
+
+    // MARK: - chart min-baseline (M12)
+
+    /// Unwrap a parsed chart to its ``FenceWidget/Chart`` for baseline assertions, or fail.
+    private func parsedChart(_ code: String,
+                             file: StaticString = #filePath, line: UInt = #line) -> FenceWidget.Chart? {
+        guard case let .chart(chart)? = FenceWidget.parse(info: "chart", code: code) else {
+            XCTFail("expected a .chart, got \(String(describing: FenceWidget.parse(info: "chart", code: code)))",
+                    file: file, line: line)
+            return nil
+        }
+        return chart
+    }
+
+    func testChartMinDirectiveParses() {
+        // A `min:` directive line declares the baseline and is NOT itself a bar.
+        let code = """
+        min: 175
+        Mon: 183
+        Tue: 178
+        """
+        guard let chart = parsedChart(code) else { return }
+        XCTAssertEqual(chart.bars, [.init(label: "Mon", value: 183), .init(label: "Tue", value: 178)])
+        XCTAssertEqual(chart.declaredMin, 175)
+        XCTAssertEqual(chart.baseline, 175)          // min < smallest value -> used as-is.
+        XCTAssertTrue(chart.hasActiveBaseline)
+    }
+
+    func testChartMinDirectiveAnywhereAmongDataLines() {
+        // The `min:` line may appear anywhere (here, last) - position doesn't matter.
+        guard let chart = parsedChart("Mon: 183\nTue: 178\nmin: 170") else { return }
+        XCTAssertEqual(chart.bars.count, 2)
+        XCTAssertEqual(chart.declaredMin, 170)
+    }
+
+    func testChartDuplicateMinDegradesToNil() {
+        // Exactly one `min:` is allowed; a second is an ambiguous baseline -> whole fence nil.
+        XCTAssertNil(FenceWidget.parse(info: "chart", code: "min: 1\nmin: 2\nA: 5"))
+    }
+
+    func testChartNonFiniteMinDegradesToNil() {
+        // A `min:` must parse finite - the existing non-finite rejection applies to it too.
+        XCTAssertNil(FenceWidget.parse(info: "chart", code: "min: inf\nA: 5"))
+        XCTAssertNil(FenceWidget.parse(info: "chart", code: "min: nan\nA: 5"))
+        XCTAssertNil(FenceWidget.parse(info: "chart", code: "min: notanumber\nA: 5"))
+    }
+
+    func testChartMinOnlyNoBarsDegradesToNil() {
+        // A fence that is only a `min:` line has no data bars -> nil (same as an empty fence).
+        XCTAssertNil(FenceWidget.parse(info: "chart", code: "min: 5"))
+    }
+
+    func testChartOverDeclaredMinClampsRatherThanClips() {
+        // An over-declared min (ABOVE the smallest datum) CLAMPS to the data floor - it never
+        // clips a bar to negative height. baseline = min(declaredMin, smallestValue).
+        guard let chart = parsedChart("min: 200\nMon: 183\nTue: 178") else { return }
+        XCTAssertEqual(chart.declaredMin, 200)
+        XCTAssertEqual(chart.baseline, 178)          // clamped down to the smallest value.
+        // Every fraction stays within 0...1 - no bar clips past the axis.
+        for bar in chart.bars {
+            let f = chart.fraction(for: bar.value)
+            XCTAssertGreaterThanOrEqual(f, 0)
+            XCTAssertLessThanOrEqual(f, 1)
+        }
+    }
+
+    func testChartAutoBaselineTriggersOnTightSeries() {
+        // No `min:`, all positive, spread (183-178)/183 ~ 0.027 < 0.15 -> auto-baseline just
+        // below the smallest value (min - 10% of range), floored at 0. The story is preserved.
+        guard let chart = parsedChart("Mon: 183\nTue: 178") else { return }
+        XCTAssertNil(chart.declaredMin)
+        XCTAssertTrue(chart.hasActiveBaseline)       // honesty: the axis MUST be labeled.
+        // Baseline sits below the smallest value, above 0.
+        XCTAssertLessThan(chart.baseline, 178)
+        XCTAssertGreaterThan(chart.baseline, 0)
+        // Concretely: range 5, pad 0.5, baseline = 178 - 0.5 = 177.5.
+        XCTAssertEqual(chart.baseline, 177.5, accuracy: 1e-9)
+        // The taller bar reads as fuller than the shorter one (the story is now visible).
+        XCTAssertGreaterThan(chart.fraction(for: 183), chart.fraction(for: 178))
+        XCTAssertEqual(chart.fraction(for: 183), 1, accuracy: 1e-9)   // max -> full.
+    }
+
+    func testChartNoAutoBaselineOnWideRangeSeries() {
+        // A wide spread (min 8, max 15 -> 0.47 >= 0.15) does NOT auto-truncate - zero-based,
+        // no active baseline (today's behavior, unchanged).
+        guard let chart = parsedChart("Mon: 12\nTue: 8\nWed: 15") else { return }
+        XCTAssertNil(chart.declaredMin)
+        XCTAssertEqual(chart.baseline, 0)
+        XCTAssertFalse(chart.hasActiveBaseline)
+    }
+
+    func testChartNoAutoBaselineWhenAValueIsZeroOrNegative() {
+        // Auto-baseline is all-positive only; a 0 or a negative present -> no auto (baseline 0).
+        guard let withZero = parsedChart("A: 100\nB: 99\nC: 0") else { return }
+        XCTAssertEqual(withZero.baseline, 0)
+        XCTAssertFalse(withZero.hasActiveBaseline)
+        guard let withNeg = parsedChart("A: 100\nB: 99\nC: -1") else { return }
+        XCTAssertEqual(withNeg.baseline, 0)
+        XCTAssertFalse(withNeg.hasActiveBaseline)
+    }
+
+    func testChartNoAutoBaselineForSingleBar() {
+        // A single-bar chart can't be "tight" (no spread) - no auto-baseline.
+        guard let chart = parsedChart("Only: 42") else { return }
+        XCTAssertEqual(chart.baseline, 0)
+        XCTAssertFalse(chart.hasActiveBaseline)
+    }
+
+    // The crash-class case: the (v-baseline)/(max-baseline) denominator hits zero when all
+    // values are equal (and, with a min declared at that value, the baseline == max). The guard
+    // must yield 0, never NaN/inf - these would crash SwiftUI frame math.
+
+    func testChartAllEqualValuesNoMinDoesNotDivideByZero() {
+        // All-equal data, no min: max == min, auto-baseline can't engage (needs max > min), so
+        // baseline is 0 and span is max. Fractions are finite; no NaN.
+        guard let chart = parsedChart("A: 100\nB: 100\nC: 100") else { return }
+        XCTAssertEqual(chart.baseline, 0)
+        XCTAssertEqual(chart.span, 100)
+        for bar in chart.bars {
+            let f = chart.fraction(for: bar.value)
+            XCTAssertTrue(f.isFinite, "fraction must be finite, got \(f)")
+            XCTAssertEqual(f, 1, accuracy: 1e-9)   // each equals the max -> full bar.
+        }
+    }
+
+    func testChartAllEqualValuesWithMinAtValueDoesNotDivideByZero() {
+        // The degenerate div-zero case: min declared AT the (all-equal) value -> baseline == max
+        // -> span 0. The guard returns 0 for every bar (minimal-height equal bars), NOT NaN/inf.
+        guard let chart = parsedChart("min: 100\nA: 100\nB: 100\nC: 100") else { return }
+        XCTAssertEqual(chart.baseline, 100)
+        XCTAssertEqual(chart.maxValue, 100)
+        XCTAssertEqual(chart.span, 0)              // baseline >= max -> zero span.
+        for bar in chart.bars {
+            let f = chart.fraction(for: bar.value)
+            XCTAssertTrue(f.isFinite, "fraction must be finite (no NaN/inf), got \(f)")
+            XCTAssertEqual(f, 0)                   // minimal-height equal bars.
+        }
+        // And a value literally equal to baseline is 0, not NaN.
+        XCTAssertEqual(chart.fraction(for: 100), 0)
+    }
+
+    func testChartMinAboveAllEqualValuesClampsAndNoNaN() {
+        // Over-declared min ABOVE an all-equal series: clamps to the value (baseline == max),
+        // span 0, every fraction a finite 0 - belt-and-suspenders on the crash class.
+        guard let chart = parsedChart("min: 500\nA: 100\nB: 100") else { return }
+        XCTAssertEqual(chart.baseline, 100)        // clamped to the (all-equal) value.
+        XCTAssertEqual(chart.span, 0)
+        for bar in chart.bars {
+            XCTAssertTrue(chart.fraction(for: bar.value).isFinite)
+            XCTAssertEqual(chart.fraction(for: bar.value), 0)
+        }
+    }
+
+    func testChartBaselineLabeledWheneverActive_logicLevel() {
+        // The honesty rule at the logic level: hasActiveBaseline is the renderer's signal to
+        // LABEL the truncated axis. It's true for BOTH an explicit min and an auto-baseline,
+        // and false only when bars genuinely start at zero (nothing to disclose).
+        XCTAssertTrue(parsedChart("min: 170\nA: 183\nB: 178")?.hasActiveBaseline ?? false) // explicit
+        XCTAssertTrue(parsedChart("A: 183\nB: 178")?.hasActiveBaseline ?? false)            // auto
+        XCTAssertFalse(parsedChart("A: 12\nB: 8\nC: 15")?.hasActiveBaseline ?? true)        // zero-based
+        // A min declared at exactly 0 is not "active" (bars already start at zero).
+        XCTAssertFalse(parsedChart("min: 0\nA: 12\nB: 8")?.hasActiveBaseline ?? true)
     }
 
     // MARK: - timeline
