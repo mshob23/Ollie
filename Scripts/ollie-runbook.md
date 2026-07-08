@@ -8,21 +8,27 @@ Work through these seven steps in order, then stop.
 
 1. **Read the standing instructions.** Call `get_instructions()` and honor it for the
    rest of this run. If it and this runbook conflict, the user's instructions win.
+   **Then call `recent_runs()`** to see what the last few passes already covered — the
+   `since` window each used and whether it succeeded. If a recent run failed (`ok:false`),
+   coverage since then has a gap you're now closing; if the last run succeeded, you can
+   trust that everything up to its window was already handled and focus on what's new.
 
 2. **Check the corpus is fresh.** Call `corpus_stats()`. If it reports the corpus is
    stale (older than ~24h) or `pendingOps` is climbing (the Mac app isn't applying
    writes), stop and say so plainly — don't tag against stale data.
 
-3. **Tag the new notes.** Call `list_notes(since="{{LAST_RUN_AT}}")` (if that is
-   `never`, use `recent_notes()` instead). For each new note, apply **1–3** useful
+3. **Tag the new notes.** Call `list_notes(ingested_since="{{LAST_RUN_AT}}")` (if that is
+   `never`, use `recent_notes()` instead). **`ingested_since` keys on when a note *arrived*
+   here, not when it was created** — so a watch note spoken days ago but synced to the Mac
+   only after your last run is still caught, instead of falling silently outside the window.
+   For each new note, apply **1–3** useful
    tags with `tag_note(id, tag)`. Call `tag_vocabulary()` FIRST and **reuse an existing
    tag before inventing a new one** — a sprawling vocabulary is useless. Tags are
    freeform; the `key:value` convention (e.g. `topic:heat-pump`) is fine but optional.
-   Two edge rules: a note's `createdAt` can predate its actual capture (a draft holds
-   its session start time), so ALSO skim `recent_notes()` for untagged stragglers the
-   `since` boundary missed; and **backfilling an older note is sanctioned** when a new
-   thread needs it (e.g. a new request cites a thread whose earliest note was never
-   tagged).
+   Two edge rules: ALSO skim `recent_notes()` for untagged stragglers (belt-and-suspenders
+   for anything a window boundary missed); and **backfilling an older note is sanctioned**
+   when a new thread needs it (e.g. a new request cites a thread whose earliest note was
+   never tagged).
 
 4. **Handle request-notes.** A request-note is one addressed to Ollie ("Ollie, look
    into…") or that clearly reads as a task/question. For each:
@@ -101,6 +107,21 @@ Work through these seven steps in order, then stop.
 
 When the seven steps are done, stop. Do not loop, do not ask for confirmation.
 
+## Weight by recency; let the old tail fade
+
+Not every note deserves equal attention forever. When you tag, digest, or build views,
+**weight notes by how recently they arrived** — the fresh ones are what's on the user's
+mind. An **old** note should surface only when it is *strongly* relevant to something live
+(a new request cites it, a still-moving thread needs it); it is not worth resurfacing for a
+weak or incidental match. And periodically consider the **aging untagged/uncited tail**:
+when a note that never got tagged or cited holds something *durable* — a decoded shorthand,
+a stable preference, a decision that still stands — promote that one fact into memory with
+`append_memory` (sparingly, one fact per entry) so it survives even as the note itself
+fades from every window. For example: a three-month-old note "call it the '3-ton unit' —
+that's the heat pump we decided against" is worth one `append_memory("'3-ton unit' = the
+heat pump the user decided against")` and nothing more — the decoding endures; the note can
+age out.
+
 ---
 
 ## View style guide (how to make a view worth glancing at)
@@ -171,3 +192,27 @@ The first screenful is the product. Views render on a phone (and soon a watch), 
   spaces go in `"double quotes"`; ≤ 16 nodes) instead of ASCII arrows in prose. Inside
   any fence, bars `▓▓▓▓▓░░░░░ 50%`, sparklines `▁▂▃▅▇`, and space-aligned columns also
   read well on every device.
+
+  **`chart` truncated baseline** — for a tight series where the story is in small
+  differences (e.g. weights 183→178, all near each other), add a `min: <number>` line so
+  bars measure from that baseline instead of zero — otherwise near-equal values render as
+  identical full-height bars and the trend vanishes. Example:
+
+  ```chart
+  min: 175
+  Mon: 183
+  Tue: 181
+  Wed: 178
+  ```
+
+  One `min:` per chart (a second one voids the widget). Over-declaring is safe — a `min:`
+  above the smallest value just clamps to the data. You don't have to add it: an
+  all-positive series with a tight spread auto-truncates. Either way the axis shows the
+  baseline, so a truncated chart is always honest.
+
+  **`metric` delta sentiment** — a delta tints green for `+` and red for `-` by default.
+  When the direction's *meaning* is inverted — a weight cut, a bug count, an error rate,
+  where down is GOOD — add `good` or `bad` after the number inside the parens to set the
+  color by intent: `Weight: 182 (-5 good)`, `Open bugs: 7 (+2 bad)`. Use this instead of
+  the old "(5 down)" phrasing. The number is still shown exactly as written; only the
+  color changes.
