@@ -17,6 +17,10 @@ struct SettingsView: View {
     /// saved when the editor loses focus (see `instructionsSection`).
     @State private var instructionsDraft: String = ""
     @FocusState private var instructionsFocused: Bool
+    /// M21: the AI-memory list moved to its own page. The sheet has no NavigationStack
+    /// (it's a fixed-frame sheet with a custom header), so we swap the body in place —
+    /// plain `@State` toggled only in button actions, never mutated during render.
+    @State private var showingMemory = false
 
     /// The outcome to surface after a `resetSync()` attempt — either "relaunch
     /// needed" (success) or an error message (nothing was deleted).
@@ -32,27 +36,11 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().overlay(Color.hcCardBorder.opacity(0.5))
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    micSection
-                    quickCaptureSection
-                    captureSection
-                    instructionsSection
-                    memorySection
-                    syncSection
-                    footer
-                }
-                .onAppear {
-                    availableMicsState = AppModel.availableMicrophones()
-                    instructionsDraft = model.agentInstructions()
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 22)
-                .padding(.bottom, 24)
+        Group {
+            if showingMemory {
+                memoryPage
+            } else {
+                settingsContent
             }
         }
         .frame(width: 500, height: 600)
@@ -86,6 +74,110 @@ struct SettingsView: View {
                 )
             }
         }
+    }
+
+    // MARK: Settings content (the default pane)
+
+    /// The scrollable settings pane — unchanged from before M21 except that the
+    /// AI-memory list moved to its own `memoryPage`, reached from `memorySection`.
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider().overlay(Color.hcCardBorder.opacity(0.5))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    micSection
+                    quickCaptureSection
+                    captureSection
+                    instructionsSection
+                    memorySection
+                    syncSection
+                    footer
+                }
+                .onAppear {
+                    availableMicsState = AppModel.availableMicrophones()
+                    instructionsDraft = model.agentInstructions()
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 22)
+                .padding(.bottom, 24)
+            }
+        }
+    }
+
+    // MARK: AI-memory page (its own pane — M21)
+
+    /// The full-height, scrollable AI-memory list. The sheet has no NavigationStack,
+    /// so instead of a push this is a lightweight in-place swap with a Back control
+    /// that mirrors the settings header chrome (Eyebrow + title, chevron to return).
+    private var memoryPage: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            memoryHeader
+            Divider().overlay(Color.hcCardBorder.opacity(0.5))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if model.agentMemory.isEmpty {
+                        memoryEmptyState
+                    } else {
+                        Text("The durable facts agents have learned about your shorthand and preferences. Yours to prune — hover a memory to delete it.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.hcSecondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 4)
+                        ForEach(model.agentMemory) { entry in
+                            MemoryRow(entry: entry) { model.userDelete(memory: entry) }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, 22)
+                .padding(.bottom, 24)
+            }
+        }
+    }
+
+    /// The memory page's back-header: a chevron-left Back button (returns to the
+    /// settings pane) alongside the "AI memory" title, matching the header idiom.
+    private var memoryHeader: some View {
+        HStack(spacing: 12) {
+            Button(action: { showingMemory = false }) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.hcMutedText)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Back to settings")
+            VStack(alignment: .leading, spacing: 2) {
+                Eyebrow(text: "Intelligence")
+                Text("AI memory")
+                    .font(.hcDisplay(20, weight: .semibold))
+                    .foregroundStyle(Color.hcPrimaryText)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 22)
+        .padding(.bottom, 18)
+    }
+
+    private var memoryEmptyState: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "brain")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.hcMutedText)
+                .frame(width: 18)
+            Text("No memories yet — agents add facts here as they learn your notes.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color.hcSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
     }
 
     // MARK: Header
@@ -297,37 +389,53 @@ struct SettingsView: View {
         model.setAgentInstructions(instructionsDraft)
     }
 
-    // MARK: AI memory (the agent codebook — user can read + delete)
+    // MARK: AI memory (the agent codebook — its own page)
 
-    /// The agent's memory (contract §2): one fact per row, attributed + dated, retired
-    /// entries dimmed. The user can hard-delete any entry — the trust surface that
-    /// keeps the codebook the user's to prune.
+    /// A compact well that opens the dedicated AI-memory page (`memoryPage`). The list
+    /// used to render inline here and dominated the sheet; now it's a single row
+    /// showing the entry count, so Settings stays scannable (M21).
     private var memorySection: some View {
         SettingsSection(
             eyebrow: "Intelligence",
             title: "AI memory",
-            blurb: "The durable facts agents have learned about your shorthand and preferences. Yours to prune."
+            blurb: "The durable facts agents have learned about your shorthand and preferences. Yours to read and prune."
         ) {
-            if model.agentMemory.isEmpty {
-                HStack(spacing: 9) {
+            Button(action: { showingMemory = true }) {
+                HStack(spacing: 12) {
                     Image(systemName: "brain")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(Color.hcMutedText)
-                        .frame(width: 18)
-                    Text("No memories yet — agents add facts here as they learn your notes.")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.hcSecondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 2)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(model.agentMemory) { entry in
-                        MemoryRow(entry: entry) { model.userDelete(memory: entry) }
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.hcAccent)
+                        .frame(width: 20, alignment: .center)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Memories")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(Color.hcPrimaryText)
+                        Text(memoryCountLabel)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.hcSecondaryText)
                     }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.hcMutedText)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.hcPanel))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(Color.hcCardBorder.opacity(0.6), lineWidth: 1))
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// The count line under the memory row: "12 facts" / "1 fact" / "No memories yet".
+    private var memoryCountLabel: String {
+        let count = model.agentMemory.count
+        switch count {
+        case 0: return "No memories yet"
+        case 1: return "1 fact"
+        default: return "\(count) facts"
         }
     }
 
