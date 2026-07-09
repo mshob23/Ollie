@@ -151,15 +151,25 @@ self-trigger.
 - **The laptop travels.** Unplug and go; everything sleeps normally on battery. The hub
   is simply down until it's back on the charger — same graceful degradation. If the
   vision proves out, a used Mac mini is the permanent-hub upgrade path.
-- **Swapping in a new Mac app build — quit by PID, not by name.** The process is named
-  **`HandheldNotes`** (the executable), not "Ollie": `pgrep -x Ollie` finds nothing and
-  `osascript 'tell app "Ollie" to quit'` can silently no-op — which leaves the OLD app
-  running on deleted vnodes after you replace the bundle, and a subsequent `open` no-ops
-  too (LaunchServices sees the bundle id alive). Learned 2026-07-08 when a swap briefly
-  produced TWO live instances (= two store writers). The ritual:
-  `kill $(pgrep -x HandheldNotes)` → replace `/Applications/Ollie.app` →
-  `open /Applications/Ollie.app` → verify `pgrep -x HandheldNotes | wc -l` prints **1**
-  and `~/Ollie/.ollie.meta.json` mtime jumps (the export fires seconds after launch).
+- **Swapping in a new Mac app build — release flavor, quit by PID.** Two hard-won rules
+  from 2026-07-08, both learned the same evening:
+  1. **The installed app MUST be the `HC_SIGN=release` build.** A plain
+     `./Scripts/build_app.sh` produces the DEV flavor — **Development** CloudKit
+     entitlements — and installing it split-brains sync: the Mac happily syncs with the
+     Development database while the TestFlight phone syncs with Production; every log on
+     both ends stays green while nothing crosses (a several-hour incident that looked
+     exactly like a phone bug, then a schema outage). Build the installable app as
+     `HC_SIGN=release BUILD_CONFIG=release ./Scripts/build_app.sh` and, after EVERY swap,
+     verify: `codesign -d --entitlements :- /Applications/Ollie.app | grep -o
+     "environment</key><string>[A-Za-z]*"` must print **Production**.
+  2. **Quit by PID, not by name.** The process is named **`HandheldNotes`** (the
+     executable), not "Ollie": `pgrep -x Ollie` finds nothing and `osascript 'tell app
+     "Ollie" to quit'` can silently no-op — leaving the OLD app on deleted vnodes after
+     you replace the bundle (a subsequent `open` no-ops too; briefly TWO store writers).
+  The ritual: `kill $(pgrep -x HandheldNotes)` → replace `/Applications/Ollie.app` with
+  the **release** bundle → `open /Applications/Ollie.app` → verify one instance
+  (`pgrep -x HandheldNotes | wc -l`), the Production entitlement (above), and
+  `~/Ollie/.ollie.meta.json` mtime jumping (the export fires seconds after launch).
   (The agent runner's own guard already checks the right name — `APP_PROCESS="HandheldNotes"`.)
 
 ## Undo
