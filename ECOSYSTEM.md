@@ -74,8 +74,8 @@ A single **iCloud / CloudKit** store, backed by SwiftData, is shared by the Mac 
 |---|---|
 | `HandheldNotesCore` shared library | ✅ extracted, public API, green tests (incl. schema golden gate) |
 | Mac app | ✅ Developer-ID build installed; capture + Views pane verified on screen |
-| iPhone app | ✅ TestFlight **build 35** (`VALID`); Notes / Views / Settings tabs; unread dots + Views-tab badge; **Annotate** on view detail (prefills the contract grammar); `/`-prefix view sections; fence widgets v2 |
-| Apple Watch app | ✅ TestFlight build 35: three side-by-side panels (Notes ⟵ **Record** ⟶ Views); a full scrollable **views list** (≤8 synced, unread dots, sections); save/discard haptic+animation feedback with a 4 s **Undo** on discard; watch-face complication taps straight to capture |
+| iPhone app | ✅ TestFlight **build 36** (`VALID`); Notes / Views / Settings tabs; unread dots + Views-tab badge; **Annotate** on view detail (prefills the contract grammar); `/`-prefix view sections; revision history + AI memory as their own pages; fence widgets v2 |
+| Apple Watch app | ✅ TestFlight build 36: three side-by-side panels (Notes ⟵ **Record** ⟶ Views); a full scrollable **views list** (≤8 synced, unread dots, sections); save/discard haptic+animation feedback with a 4 s **Undo** on discard; watch-face complication taps straight to capture |
 | iCloud / CloudKit shared store | ✅ one library across all three (CloudKit + SwiftData, Production schema deployed) |
 | Agent layer (M0–M9) | ✅ tags · memory · views · gate · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets |
 
@@ -115,7 +115,7 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
    feed-preview fix, event-driven runner (~2 min latency, 4 h backstop), arrival-time coverage
    (`ingestedAt` + scan-start checkpoint), `runs.jsonl`/`recent_runs()`, runbook recency/fade
    guidance. See BACKLOG.md for the per-item records.
-1. ~~The Jul-8 UX wave~~ — **shipped (M14–M19, build 35)**: watch side panels + full views
+1. ~~The Jul-8 UX wave~~ — **shipped (M14–M21, builds 35–36)**: watch side panels + full views
    list, save/discard feedback + undo window, per-view unread (seen stamps; never exported),
    annotation-notes (`re: view "<name>"` grammar → agent corrects + learns), `/`-prefix view
    directory sections, and the `inbox` receipts convention (mailbox half of the vision —

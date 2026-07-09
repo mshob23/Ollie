@@ -44,9 +44,15 @@ undo-discard window (M15)**, **per-view seen/unread (M16)**: `kind:"seen"` reuse
 surface, seen rows NEVER exported (checkbox-only whitelist in exporter + MCP),
 **annotation-notes (M17)**: Mac/iPhone Annotate buttons prefill `re: view "<name>": `
 (agent corrects + promotes decodings to memory), **`/`-prefix view directory sections
-(M18)**, and the **`inbox` receipts convention (M19**, runbook/contract only). Shipped as
-iOS TestFlight **build 35** + a Developer-ID Mac app (33 validated deleting
-`NSCameraUsageDescription` — C1 closed). The capture-bar `createdAt` bug, the orphaned-tag vocabulary leak, and the
+(M18)**, the **`inbox` receipts convention (M19**, runbook/contract only), **revision
+history behind a History disclosure (M20)**, and the **AI-memory page (M21)** — plus the
+same-day live-testing fixes: the watch context now pushes on `agentViews` changes (not
+just note arrivals) and the Action button finalizes a pending discard before its guard.
+Shipped as iOS TestFlight **build 36** + a Developer-ID Mac app (33 validated deleting
+`NSCameraUsageDescription` — C1 closed). **The installed Mac app must be the
+`HC_SIGN=release` build** — a plain build_app.sh build is Development-CloudKit and
+split-brains sync with the TestFlight phone (docs/home-node.md swap ritual, Jul 8
+incident). The capture-bar `createdAt` bug, the orphaned-tag vocabulary leak, and the
 feed-preview `**` leak are fixed (Jul 2026). `checklist` and `cl2:` ids remain **reserved,
 unbuilt** (contract §7). **C2 closed 2026-07-07**: the launchd runner does unattended passes
 (first verified run: 72 tags, 8 views, 2 request-notes answered). The RUNTIME is deployed to

@@ -4,7 +4,8 @@ A living, prioritized list of what's next, ordered by **leverage, not size**.
 Product thesis: *"do little, expose flexibly"* (see the exposability ladder in the
 project notes). Rungs 0 (frictionless capture), 2 (App Intents + Spotlight), and the
 whole agent layer (Rungs 4–8 + M7–M9, below) are shipped — currently TestFlight
-build 35 (watch side panels + full views list; unread dots; Annotate; view sections;
+build 36 (watch side panels + full views list; unread dots; Annotate; view sections;
+History disclosure; AI-memory page;
 save/discard undo) + the notarized Mac `.dmg`.
 
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
@@ -25,7 +26,7 @@ save/discard undo) + the notarized Mac `.dmg`.
   baseline draws a labeled axis so a truncated chart is never silent.
 - ~~**`metric` delta-sentiment hint.**~~ ✅ **Shipped (M12, 2026-07-08)** — `(-5 good)` /
   `(+2 bad)` (case-insensitive, Unicode-minus tolerant) overrides sign tinting.
-- ~~**The Jul-8 UX wave (user-requested batch).**~~ ✅ **Shipped (M14–M19, build 35,
+- ~~**The Jul-8 UX wave (user-requested batch).**~~ ✅ **Shipped (M14–M21, builds 35–36,
   2026-07-08)** — watch side panels (Notes ⟵ Record ⟶ Views) + a full scrollable views
   list on the wrist (M14); distinct save/discard haptics + a 4 s undo-discard window
   (M15); per-view seen/unread with dots + badges on every surface — seen stamps reuse
