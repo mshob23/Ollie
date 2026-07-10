@@ -385,6 +385,18 @@ on `media`, colliding a reserved id) is a regression.
   Receipts, not conversation: no threads, no reply affordance (replying = capturing a note, as
   always). A runbook convention — nothing in the app special-cases the name. Do not repurpose
   `inbox` for anything else.
+- **Reminder lines + arrival banners (M24a, Jul 2026)** — the `inbox` view doubles as the
+  *delivery* channel. A **reminder** is an inbox line of the exact form
+  `- [ ] remind YYYY-MM-DD HH:MM: <text>` — literal `remind `, 24-hour **device-local wall time**,
+  full date, then `: `. The Mac and iPhone apps parse it tolerantly (a non-matching line is an
+  ordinary receipt) and schedule a **local** notification whose identifier is the line's M7
+  `blockId` — so a republish reorder never double-schedules, a reword reschedules, a tick
+  (= dismiss, as ever) cancels, and past-due lines are never scheduled. **Arrival banners:** when
+  the latest `inbox` revision contains blockIds absent from the previous one, the Mac app posts one
+  banner (iPhone banners while the app is dead need push — reserved for the M24b spike;
+  `docs/notifications-push-spike.md`). **Only `inbox` may raise banners** — every other view's
+  freshness is the unread dots' job. App-rendered mechanics, agent-honored meaning, like the
+  directory convention.
 - **View directory convention (M18, Jul 2026)** — a view name containing `/` groups its feed row
   under a section named for the text before the FIRST `/` (`work/endor agent` → section "work");
   prefix-less names stay ungrouped. This one **is** app-rendered mechanics (the feeds group by
@@ -439,7 +451,12 @@ The **Ollie Mac app must be open** — it is the only store writer, so it is wha
 run queues and what keeps the corpus fresh. The runner checks three guards before doing anything:
 
 1. **No run already alive** — a pidfile (`~/Ollie/.agent-run.pid`) whose PID is still running means a
-   prior pass is in flight; the run **skips** (exit 0) so passes never overlap.
+   prior pass is in flight; the run **skips** (exit 0) so passes never overlap. Before skipping it
+   drops `~/Ollie/.rerun-requested` (M22): a **successful** pass consumes that flag at exit by
+   re-touching `~/Ollie/.runner-trigger`, so work arriving mid-run is picked up one run-length later
+   instead of waiting for the 4 h backstop (the M13 scan-start checkpoint supplies the *coverage*;
+   this flag supplies the *scheduling*). A failed pass leaves the flag; a stale flag costs one
+   harmless idempotent pass.
 2. **Mac app running** — detected by bundle id `com.mohammadshobaki.handheldnotes`. If it's closed the
    run **exits quietly** (exit 0) — the normal "not now" case; nothing to work on or apply against.
 3. **Corpus fresh** — `~/Ollie/.ollie.meta.json`'s `exportedAt` must be < 24 h old. A stale corpus
@@ -508,12 +525,17 @@ bootstraps it into your GUI launchd domain. Run once immediately to test:
 `launchctl kickstart -k gui/$(id -u)/com.mohammadshobaki.ollie.agent-runner`. Uninstall:
 `launchctl bootout gui/$(id -u)/com.mohammadshobaki.ollie.agent-runner ; rm ~/Library/LaunchAgents/com.mohammadshobaki.ollie.agent-runner.plist`.
 
-### Allowlist the write tools (required for headless)
+### Allowlist the tools (required for headless)
 
-The `ollie` MCP server + its tool allowlist live in `~/.claude/settings.local.json`. An interactive
-Claude session prompts before each write tool; a **headless run has no one to answer the prompt and
-would stall**, so the write tools must be allowlisted there before the runner (or the launchd job) can
-work. Add them to `permissions.allow`:
+A **headless run has no one to answer a permission prompt and would stall**, so every tool the
+runbook uses must be pre-allowed. Two layers:
+
+- **The runner's workspace** (`$OLLIE_WORKSPACE/.claude/settings.local.json`) is **self-written by
+  the runner on every pass** (M23 — it was write-if-missing before, which let an already-deployed
+  workspace silently miss newly granted tools). It allows the `ollie` MCP tools plus **`WebSearch`**
+  and **`WebFetch`** (`--allowedTools` grants the same set). Don't hand-edit it; it is overwritten.
+- **Interactive sessions** are unaffected: they prompt before each write tool unless you allowlist
+  in `~/.claude/settings.local.json`. Add them to `permissions.allow`:
 
 ```json
 {
@@ -533,3 +555,19 @@ work. Add them to `permissions.allow`:
 These are *your* notes on *your* machine and every op is attributed and reversible (untag, retire, or
 delete in the app), so broad approval is reasonable — but it's opt-in by design. The scripts do **not**
 edit `~/.claude/` for you; do this once by hand.
+
+**Web egress rules (M23 — normative).** The runner may **read** the public web (`WebSearch`,
+`WebFetch`) to serve the corpus; it still writes back only through the inbox. A query necessarily
+reaches a search provider — a third party outside the iCloud custody domain — so what crosses is
+chosen deliberately:
+
+- Queries are **distilled topics**, never verbatim note text.
+- No personal names or identifiers in a query unless the request is *about* them.
+- Fetch only URLs the user provided in a note or that your own search returned; **never construct a
+  URL from note content, and never place note content in URL parameters** (that shape is
+  exfiltration, not research).
+- Restricted notes cannot leak here — they never reach the agent at all (§5) — but the same
+  contagion instinct governs every query: minimal, deliberate, derived from what the user asked to
+  be answered.
+
+Behavioral guidance (when to research, how to cite) lives in the runbook's **Research** section.

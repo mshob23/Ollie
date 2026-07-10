@@ -704,3 +704,111 @@ Production deploy done before any release build (`SCHEMA_DEPLOYED=1` gate enforc
   already exist (`SaveNoteIntent`, `FindNotesIntent`, `StartRecordingIntent`).
 - **Request lifecycle beyond tags**, memory consolidation passes, tag-merge gardening: agent
   behaviors, not app features — evolve them in `Scripts/ollie-runbook.md`.
+
+---
+
+## 7. The Jul-10 wave — M22–M24 specs (latency, research, notifications)
+
+The third user-requested batch (2026-07-10). These sections are the committed spec
+implementers cite; the contract §7/§9, runbook, and VISION.md changes land alongside them.
+
+### M22 — event-loop latency: 15 s debounce + rerun-once
+
+*Problem:* note → view time is dominated by a 90 s debounce sized for pre-event-driven
+caution (M11), plus a timeliness hole: a note arriving while a run is in flight fires its
+trigger into the pidfile guard and dies — the M13 scan-start checkpoint guarantees the next
+run *covers* it, but nothing *schedules* that run before the 4 h backstop.
+
+*Change (two halves):*
+
+1. **`RunnerTrigger.defaultDebounce: 90 → 15`**
+   (`Sources/HandheldNotesCore/Agent/RunnerTrigger.swift`). 15 s still coalesces a spoken
+   burst; overlap pressure is handled by the flag below, not by a long quiet window. Update
+   the type's doc comments; fix any test that hardcodes 90. (The two stale "90 s" comments
+   in `AppModel.swift` are fixed by the M24a agent, which owns that file.)
+2. **Rerun-once flag** (`Scripts/ollie-agent-run.sh`): when Guard 1 skips because a prior
+   pass is alive, it first touches `$OLLIE_DIR/.rerun-requested` (best-effort empty file).
+   At the end of a **successful** run (rc==0, after `lastRunAt` is written), if the flag
+   exists: remove it, remove our pidfile explicitly, and touch `$OLLIE_DIR/.runner-trigger`
+   so launchd fires a fresh pass — which now passes Guard 1. A failed run leaves the flag
+   (the next trigger or the backstop consumes it). A stale flag costs one harmless pass:
+   tag idempotence + the no-op-republish rule make re-scans safe by design.
+
+*Acceptance:* `swift test` green; `bash -n`; stub-CLI dry-runs proving (a) a normal pass is
+unchanged, (b) a guard-1 skip writes the flag, (c) a successful pass consumes the flag and
+re-touches the trigger, (d) a failed pass leaves it. Expected end-to-end after: note → view
+**~1.5–3 min** typical (the run itself now dominates; `runs.jsonl` shows 78–433 s passes).
+
+*Deploy:* the constant ships inside the Mac app (release swap ritual, `docs/home-node.md`);
+the script ships via `install-agent-runner.sh` re-run. iOS/watch recompile of Core rides the
+next TestFlight build — the constant is inert off-Mac (no launchd, sandboxed `~/Ollie`).
+
+### M23 — the runner learns to research (WebSearch / WebFetch)
+
+*Problem:* the runner grants `--allowedTools "mcp__ollie,mcp__ollie__*"` — no web tools at
+all — so request-notes needing an outside fact silently degrade to corpus-only answers.
+
+*Change:*
+
+1. `--allowedTools "mcp__ollie,mcp__ollie__*,WebSearch,WebFetch"` in `ollie-agent-run.sh`.
+2. The workspace allowlist (`$WORKSPACE/.claude/settings.local.json`) is now **rewritten on
+   every pass** (it was write-if-missing, so an already-deployed workspace would never pick
+   up newly granted tools — the drift class this kills). Content stays fully
+   script-controlled; add `WebSearch` + `WebFetch`. Document the overwrite in the header.
+3. Behavior lives in the runbook's new **Research** section; the normative custody rules
+   live in contract §9 (**Web egress rules**: distilled queries, no verbatim note text, no
+   personal identifiers unless the request demands one, fetch only user-provided or
+   search-result URLs, never note content in URL parameters). VISION.md's trust model
+   carries the deliberate web-read bullet (its own commit, per that file's rule).
+
+*Acceptance:* `bash -n`; stub dry-run shows the new allowlist string and the rewritten
+settings file; post-deploy live probe (orchestrator): a headless workspace `claude -p` with
+`WebSearch` answers a current-events question.
+
+### M24 — notifications: reminders + arrival banners
+
+The push half of M19's mailbox: receipts and reminders should *announce themselves*, not
+wait to be found. Split: **M24a ships now** (no schema change, no push infra, no new
+entities — the inbox view text is the store, ticks are the dismissal channel); **M24b is a
+design spike only** this wave.
+
+**M24a — reminder grammar + local scheduling + Mac arrival banners**
+
+1. **Grammar** (contract §7): a reminder is an inbox checkbox line of the exact form
+   `- [ ] remind 2026-07-11 17:00: pick up the meds` — literal `remind `, then
+   `YYYY-MM-DD HH:MM` (24-hour, **device-local wall time**), then `: `, then the text.
+   Ticked = dismissed (as ever). Non-matching lines are ordinary receipts — tolerant,
+   like every fence.
+2. **`ReminderGrammar.swift`** (Core, new): pure parser, view body → `[Reminder]`
+   (`blockId` via the M7 derivation — stable across republish reorder, new on reword;
+   `fireDate` resolved in the device's calendar/timezone; `text`; ticked state). Golden
+   tests: grammar hits, pass-through of non-matching lines, reword → new blockId,
+   malformed dates rejected, `[x]` = dismissed.
+3. **`NotificationScheduler.swift`** (Core, new; macOS + iOS only — must NOT enter the
+   watch target's path-referenced file set): reconciles desired reminders against pending
+   `UNNotificationRequest`s — **identifier == blockId** (so reorders never
+   double-schedule, rewords reschedule, dismissals cancel); schedules future ones, cancels
+   vanished/dismissed ones, skips past-due; requests authorization lazily on first need.
+   Center behind a protocol; the diff logic tested pure.
+4. **Wiring** (`AppModel.swift`): on each agent-views snapshot change, reconcile from the
+   `inbox` view's latest revision. Both Mac and iPhone schedule (double banner is the
+   Apple-Reminders norm; the watch mirrors iPhone banners for free). Fix the two stale
+   "90 s" comments (M22 cross-ref).
+5. **Mac arrival banner** (Mac app layer): when the latest `inbox` revision contains
+   blockIds absent from the previous revision, post ONE banner — body = the first new
+   line's text (grammar-stripped for reminders). Silence when nothing is new (fade/dismiss
+   republishes stay quiet). **Discipline: only `inbox` raises banners** — every other
+   view's freshness belongs to the unread dots.
+6. **iOS**: notification delegate (banner + list in foreground), tap deep-links to the
+   Views tab → inbox detail; lazy authorization. No watch-target changes.
+
+**M24b — CloudKit push spike (docs only)**
+
+`docs/notifications-push-spike.md`: can a `CKQuerySubscription` against the mirrored
+`CD_ViewRevisionEntity` (private DB, Core Data zone) deliver a **visible** push on inbox
+publishes while the iPhone app is dead? Must cover: queryable-index requirements and the
+Production promote path (cktool cannot deploy Prod — Dashboard promote + verify-prod-schema),
+coexistence with `NSPersistentCloudKitContainer`'s own database subscription, static
+alertBody vs enrichment via a notification service extension, foreground suppression,
+dev-vs-prod test choreography (the Jul-8 split-brain landmine), and a go/no-go
+recommendation with a step plan. **No shipping code.**
