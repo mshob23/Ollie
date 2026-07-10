@@ -712,7 +712,7 @@ Production deploy done before any release build (`SCHEMA_DEPLOYED=1` gate enforc
 The third user-requested batch (2026-07-10). These sections are the committed spec
 implementers cite; the contract §7/§9, runbook, and VISION.md changes land alongside them.
 
-### M22 — event-loop latency: 15 s debounce + rerun-once
+### M22 — event-loop latency: 15 s debounce + rerun-once ✅ SHIPPED (2026-07-10, 860debd; runner redeployed + release Mac app swapped same day)
 
 *Problem:* note → view time is dominated by a 90 s debounce sized for pre-event-driven
 caution (M11), plus a timeliness hole: a note arriving while a run is in flight fires its
@@ -743,7 +743,7 @@ re-touches the trigger, (d) a failed pass leaves it. Expected end-to-end after: 
 the script ships via `install-agent-runner.sh` re-run. iOS/watch recompile of Core rides the
 next TestFlight build — the constant is inert off-Mac (no launchd, sandboxed `~/Ollie`).
 
-### M23 — the runner learns to research (WebSearch / WebFetch)
+### M23 — the runner learns to research (WebSearch / WebFetch) ✅ SHIPPED (2026-07-10, 860debd; live headless WebSearch probe green from the deployed workspace)
 
 *Problem:* the runner grants `--allowedTools "mcp__ollie,mcp__ollie__*"` — no web tools at
 all — so request-notes needing an outside fact silently degrade to corpus-only answers.
@@ -765,7 +765,7 @@ all — so request-notes needing an outside fact silently degrade to corpus-only
 settings file; post-deploy live probe (orchestrator): a headless workspace `claude -p` with
 `WebSearch` answers a current-events question.
 
-### M24 — notifications: reminders + arrival banners
+### M24 — notifications: reminders + arrival banners — M24a ✅ SHIPPED (2026-07-10, 588787a + b18b7f7 core/mac, 72fb6ae + c4d69a7 iOS, build 37); M24b memo'd (d20463c)
 
 The push half of M19's mailbox: receipts and reminders should *announce themselves*, not
 wait to be found. Split: **M24a ships now** (no schema change, no push infra, no new

@@ -92,20 +92,24 @@ on this setup — the native Charge Limit replaced it.)
 
 The agent runner has two cadences. The **4 h `StartInterval`** is the backstop — a
 guaranteed floor so a pass eventually happens even if nothing else fires. On top of it,
-`WatchPaths` makes runs **event-driven** so a note spoken into the watch is acted on in
-about two minutes instead of up to four hours:
+`WatchPaths` makes runs **event-driven** so a note spoken into the watch is picked up in
+well under a minute (the agent pass itself then takes ~1–3 min) instead of up to four hours:
 
 1. A note arrives on the Mac — a CloudKit import from the watch/phone, or a local Mac
    capture — and becomes a new `NoteEntity` in the store.
-2. The Mac app (`AppModel`, macOS-only) debounces: **90 s after the *last* new note**,
-   it atomically writes an ISO-8601 timestamp to `~/Ollie/.runner-trigger`. A burst of
-   arrivals (a sync catch-up, several watch transfers) coalesces into one write — the
-   window resets on each arrival and only fires once it goes quiet.
+2. The Mac app (`AppModel`, macOS-only) debounces: **15 s after the *last* new note**
+   (M22; was 90 s), it atomically writes an ISO-8601 timestamp to
+   `~/Ollie/.runner-trigger`. A burst of arrivals (a sync catch-up, several watch
+   transfers) coalesces into one write — the window resets on each arrival and only
+   fires once it goes quiet.
 3. `~/Ollie/.runner-trigger` is listed under the launchd job's `WatchPaths`
    (`Scripts/install-agent-runner.sh`), so launchd starts the runner when the file
    changes. The run's own guards (pidfile, app-running, corpus-fresh, trusted-workspace)
    still decide whether it does anything — a firing while the app is closed is a cheap
-   no-op, exactly like an interval firing.
+   no-op, exactly like an interval firing. A trigger that fires **while a pass is already
+   running** drops `~/Ollie/.rerun-requested` (M22): the running pass consumes it at a
+   successful exit by re-touching the trigger, so a mid-run arrival is handled one
+   run-length later instead of waiting for the 4 h backstop.
 
 **Manual test** — force a run without waiting for a note:
 

@@ -4,9 +4,9 @@ A living, prioritized list of what's next, ordered by **leverage, not size**.
 Product thesis: *"do little, expose flexibly"* (see the exposability ladder in the
 project notes). Rungs 0 (frictionless capture), 2 (App Intents + Spotlight), and the
 whole agent layer (Rungs 4–8 + M7–M9, below) are shipped — currently TestFlight
-build 36 (watch side panels + full views list; unread dots; Annotate; view sections;
-History disclosure; AI-memory page;
-save/discard undo) + the notarized Mac `.dmg`.
+build 37 (watch side panels + full views list; unread dots; Annotate; view sections;
+History disclosure; AI-memory page; save/discard undo; reminder notifications +
+inbox deep-links) + the notarized Mac `.dmg`.
 
 ## Now — cheap, high-leverage (from the July 2026 live agent-run evaluations)
 
@@ -36,6 +36,19 @@ save/discard undo) + the notarized Mac `.dmg`.
   `inbox` receipts view convention, tick = dismiss (M19, runbook/contract only).
   Adversarially reviewed (3 lenses; 1 MAJOR — Action-button press eaten during the undo
   window — found by probe and fixed) before shipping.
+- ~~**The Jul-10 latency + notifications wave (user-requested batch).**~~ ✅ **Shipped
+  (M22–M24a, build 37, 2026-07-10; specs in plan §7)** — trigger debounce 90 s → **15 s**
+  + a rerun-once flag so mid-run arrivals schedule one follow-up pass (M22); the runner
+  may **research the web** (`WebSearch`/`WebFetch`; contract §9 egress rules: distilled
+  queries, never note text in a query or URL; workspace allowlist now rewritten every
+  pass — live-probed headless same day) (M23); **inbox reminders + arrival banners**
+  (M24a): `- [ ] remind YYYY-MM-DD HH:MM: <text>` lines schedule blockId-keyed local
+  notifications on Mac + iPhone (tick = cancel; DST-gap times rejected; code-fence lines
+  never schedule), the Mac banners new inbox lines, iPhone taps deep-link to the inbox
+  view. Adversarially reviewed (3 lenses, 26 kill-shots; 1 MAJOR-class documented risk —
+  isolated-conformance trap on the iOS notification delegate — and 1 MINOR reconcile race,
+  both hardened same-day). Instant iPhone-dead push deliberately deferred to a sourced
+  spike memo (M24b, `docs/notifications-push-spike.md`).
 
 - **Finish the Find result.** `FindNotesIntent` returns a count ("Found 3 notes") but
   not the notes themselves. Show the matched notes (headline + preview) in the Siri /
@@ -62,7 +75,8 @@ unattended launchd pass verified end-to-end (72 tags, 8 views, 2 requests answer
 wishlist tick consumed, 0 rejected ops). Next, in order:
 
 - ~~**Event-driven runner.**~~ ✅ **Shipped (M11, 2026-07-07)** — note arrivals (CloudKit
-  imports or local captures) debounce 90 s in the Mac app, then touch
+  imports or local captures) debounce in the Mac app (90 s then; **15 s since M22** +
+  rerun-once flag, 2026-07-10), then touch
   `~/Ollie/.runner-trigger`; launchd `WatchPaths` fires the guarded runner (4 h interval
   kept as backstop). Loop-safe by construction: only `NoteEntity` inserts trigger, and
   no agent path inserts a note (adversarially re-verified, incl. a live launchd

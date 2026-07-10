@@ -29,7 +29,7 @@ as-built notes): tags/memory/views + restriction gate + MCP server + scheduled r
 interactive checkboxes (M7), watch views + revision restore + double-title fix (M8), the
 fence widgets `metric`/`chart`/`timeline`/`table` (M9, renderer-only) **+ `diagram` (M10)**,
 a watch-face complication (WidgetKit, tap → capture), the **event-driven runner (M11)**:
-note arrivals debounce 90 s → `~/Ollie/.runner-trigger` → launchd `WatchPaths` fires the
+note arrivals debounce (15 s since M22; 90 s at birth) → `~/Ollie/.runner-trigger` → launchd `WatchPaths` fires the
 runner (4 h interval as backstop; loop-safe — only `NoteEntity` inserts trigger),
 **fence widgets v2 (M12)**: chart `min:`/auto-baseline (labeled axis, never silent),
 metric `good`/`bad` sentiment hints, diagram wrap/label/self-loop polish, and
@@ -47,8 +47,17 @@ surface, seen rows NEVER exported (checkbox-only whitelist in exporter + MCP),
 (M18)**, the **`inbox` receipts convention (M19**, runbook/contract only), **revision
 history behind a History disclosure (M20)**, and the **AI-memory page (M21)** — plus the
 same-day live-testing fixes: the watch context now pushes on `agentViews` changes (not
-just note arrivals) and the Action button finalizes a pending discard before its guard.
-Shipped as iOS TestFlight **build 36** + a Developer-ID Mac app (33 validated deleting
+just note arrivals) and the Action button finalizes a pending discard before its guard —
+and the **Jul-10 wave (M22–M24a, plan §7)**: **M22** 15 s trigger debounce + a rerun-once
+flag (a mid-run arrival schedules one follow-up pass), **M23** runner web research
+(`WebSearch`/`WebFetch` allowed; normative egress rules in contract §9 — distilled queries,
+never note text in a query or URL), **M24a** inbox reminders + arrival banners
+(`- [ ] remind YYYY-MM-DD HH:MM: <text>` grammar, blockId-keyed LOCAL notifications on
+Mac + iPhone, Mac banners when the `inbox` view gains new lines — only `inbox` may banner;
+reminder reconciles are FIFO-serialized, and the iOS delegate is nonisolated with a
+main-actor hop — both review findings). Instant iPhone-dead push is designed, not built:
+`docs/notifications-push-spike.md` (M24b).
+Shipped as iOS TestFlight **build 37** + a Developer-ID Mac app (33 validated deleting
 `NSCameraUsageDescription` — C1 closed). **The installed Mac app must be the
 `HC_SIGN=release` build** — a plain build_app.sh build is Development-CloudKit and
 split-brains sync with the TestFlight phone (docs/home-node.md swap ritual, Jul 8
