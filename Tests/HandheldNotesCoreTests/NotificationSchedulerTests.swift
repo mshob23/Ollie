@@ -189,4 +189,139 @@ final class NotificationSchedulerTests: XCTestCase {
         XCTAssertEqual(center.authorizationRequests, 1, "authorization is requested at most once per process")
         XCTAssertEqual(Set(center.scheduled.map(\.blockId)), ["cl1:a:0", "cl1:b:0"])
     }
+
+    // MARK: - Serialized reconcile (M24a review MINOR) — FIFO, newest lands last
+
+    /// A ``NotificationScheduling`` whose *first* awaited call inside `reconcile`
+    /// (`pendingReminderIdentifiers()`) can be **gated** by the test: the first read parks on
+    /// a continuation the test resumes on demand, so a reconcile can be held mid-flight while
+    /// another is requested. Every other operation records into a shared pending map exactly
+    /// like `FakeCenter`, so the final pending set is observable.
+    private final class GatedCenter: NotificationScheduling, @unchecked Sendable {
+        var pending: [String: Reminder] = [:]
+        private(set) var scheduled: [Reminder] = []
+        private(set) var cancelled: [[String]] = []
+
+        /// How many times `pendingReminderIdentifiers()` has been entered — lets the test
+        /// prove reconcile A actually reached (and parked at) its first suspension point
+        /// before reconcile B was requested, rather than inferring it from timing.
+        private(set) var pendingReads = 0
+
+        /// When set, the *next* `pendingReminderIdentifiers()` call parks and hands its
+        /// continuation here; the test resumes it to let that reconcile proceed. One-shot:
+        /// consumed on use, so only the first read is gated.
+        private var gate: CheckedContinuation<Void, Never>?
+        private var armGate = false
+        /// Fulfilled when a gated read actually parks, so the test can await "A is now
+        /// suspended at its gate" deterministically (no sleeps).
+        private var parkedSignal: CheckedContinuation<Void, Never>?
+
+        /// Arm the gate so the next `pendingReminderIdentifiers()` parks instead of returning.
+        func armNextRead() { armGate = true }
+
+        /// Suspend until the armed gated read has actually parked (A is mid-flight).
+        func waitUntilParked() async {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                if gate != nil { c.resume(); return }   // already parked
+                parkedSignal = c
+            }
+        }
+
+        /// Release the currently-parked gated read so its reconcile continues.
+        func releaseGate() {
+            let g = gate
+            gate = nil
+            g?.resume()
+        }
+
+        func pendingReminderIdentifiers() async -> Set<String> {
+            pendingReads += 1
+            if armGate {
+                armGate = false
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    gate = c
+                    parkedSignal?.resume()
+                    parkedSignal = nil
+                }
+            }
+            return Set(pending.keys)
+        }
+
+        func scheduleReminder(_ reminder: Reminder) async {
+            scheduled.append(reminder)
+            pending[reminder.blockId] = reminder
+        }
+
+        func removePendingReminders(identifiers: [String]) {
+            cancelled.append(identifiers)
+            for id in identifiers { pending[id] = nil }
+        }
+
+        func requestAuthorization() async {}
+        func postArrivalBanner(body: String) async {}
+    }
+
+    /// The core race the fix closes: reconcile **A** (older desired state — schedule the
+    /// reminder) is held mid-flight; reconcile **B** (newer desired state — the user ticked
+    /// the reminder, so it must be cancelled) is requested while A is suspended. Serialized,
+    /// B runs strictly AFTER A, so B reads the pending set A produced, cancels the reminder,
+    /// and the final pending set reflects B (empty). Un-serialized, A and B would each read
+    /// an empty pending set concurrently: B would see nothing to cancel, A would then schedule
+    /// the reminder, and the dismissed reminder would survive (the bug). This pins the FIFO
+    /// order A-then-B and that **B's cancel wins**.
+    func testSerializedReconcileNewestLandsLast_BCancelWins() async {
+        let center = GatedCenter()
+        let scheduler = NotificationScheduler(center: center)
+
+        // A: schedule cl1:a:0 (future, not dismissed). Gate A at its pending read so it parks
+        // BEFORE it computes its plan / schedules.
+        center.armNextRead()
+        let a = scheduler.reconcileSerialized(reminders: [reminder("cl1:a:0", at: future(3600))], now: now)
+
+        // Deterministically wait until A is actually parked at its gate — proving A is
+        // in-flight (not merely "spawned") when B is requested.
+        await center.waitUntilParked()
+        XCTAssertEqual(center.pendingReads, 1, "A reached its pending read and parked")
+        XCTAssertTrue(center.scheduled.isEmpty, "A has not scheduled yet — it is suspended at the gate")
+
+        // B: newer state — the reminder was ticked (dismissed) → B must cancel cl1:a:0.
+        // Requested while A is still parked; the chain forces B to await A's completion.
+        let b = scheduler.reconcileSerialized(
+            reminders: [reminder("cl1:a:0", at: future(3600), dismissed: true)], now: now)
+
+        // Release A → A finishes (schedules cl1:a:0), THEN B runs (reads {cl1:a:0}, cancels it).
+        center.releaseGate()
+        await a.value
+        await b.value
+
+        // Final state reflects B: the reminder is not pending. A did schedule it (FIFO: A ran
+        // first), and B cancelled it (FIFO: B ran last and its cancel won).
+        XCTAssertEqual(center.scheduled.map(\.blockId), ["cl1:a:0"], "A scheduled first")
+        XCTAssertEqual(center.cancelled, [["cl1:a:0"]], "B cancelled the ticked reminder, and it ran last")
+        XCTAssertTrue(center.pending.isEmpty, "final pending reflects the NEWEST reconcile (B): reminder gone")
+    }
+
+    /// Ordering guarantee at the effect level: three serialized reconciles with distinct work
+    /// apply in request order (A schedules a, B schedules b, C cancels a) regardless of the
+    /// fact that each hops through the main actor across `await` boundaries. The chain means
+    /// C — the newest — lands last, so a is cancelled and only b remains.
+    func testSerializedReconcileChainsInRequestOrder() async {
+        let center = GatedCenter()
+        let scheduler = NotificationScheduler(center: center)
+
+        scheduler.reconcileSerialized(reminders: [reminder("cl1:a:0", at: future(10))], now: now)
+        scheduler.reconcileSerialized(reminders: [
+            reminder("cl1:a:0", at: future(10)),
+            reminder("cl1:b:0", at: future(20)),
+        ], now: now)
+        // Newest: a was ticked → cancel a, keep b.
+        let last = scheduler.reconcileSerialized(reminders: [
+            reminder("cl1:a:0", at: future(10), dismissed: true),
+            reminder("cl1:b:0", at: future(20)),
+        ], now: now)
+        await last.value
+
+        XCTAssertEqual(Set(center.pending.keys), ["cl1:b:0"],
+                       "the newest reconcile lands last: a (ticked) is cancelled, b remains")
+    }
 }

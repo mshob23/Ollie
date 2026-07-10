@@ -1114,8 +1114,17 @@ public final class AppModel: ObservableObject {
         // unit test. `reconcile` is async (it reads the center's pending set); hop off the
         // synchronous reload with a Task on the main actor. Capturing `notificationScheduler`
         // (not `self`) keeps this from extending the model's lifetime.
+        //
+        // Use `reconcileSerialized` (M24a review MINOR): rapid reloads (a tick, then a
+        // republish moments later) each fire a reconcile, and un-serialized they can
+        // interleave across their `await` boundaries on the main actor — a late-completing
+        // OLDER reconcile (older reminders array) could re-schedule a reminder the NEWER one
+        // just cancelled. `reconcileSerialized` chains each reconcile after the previous so
+        // the newest desired state always lands last (`reminders` is captured by value at call
+        // time, unchanged from before). The task is intentionally not awaited — the reload
+        // path stays fire-and-forget; the scheduler owns the FIFO chain internally.
         if let scheduler = notificationScheduler {
-            Task { await scheduler.reconcile(reminders: reminders) }
+            scheduler.reconcileSerialized(reminders: reminders)
         }
 
         #if os(macOS)

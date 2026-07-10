@@ -39,6 +39,18 @@ public final class NotificationScheduler {
     /// and the test assertion — "requested exactly once" — meaningful).
     private var didRequestAuthorization = false
 
+    /// The most recently *chained* reconcile task, so ``reconcileSerialized(reminders:now:)``
+    /// can run reconciles strictly FIFO — the newest always awaits the previous one and thus
+    /// lands last (M24a review MINOR). `reconcile` itself is read-modify-write across `await`
+    /// boundaries (it reads pending ids, then schedules/cancels); two un-serialized reconciles
+    /// spawned by rapid reloads could interleave on the main actor so that a LATE-completing
+    /// OLDER reconcile (holding the older reminders array) re-schedules a reminder the NEWER
+    /// one just cancelled (e.g. the user ticked it). Chaining removes that interleave without
+    /// cancellation (cancellation would add cooperative-cancel modes for no benefit — the win
+    /// is purely ordering). `nil` until the first serialized reconcile. Not observed by
+    /// SwiftUI (a plain stored property on this non-`@Observable` class).
+    private var previousReconcile: Task<Void, Never>?
+
     /// - Parameter center: the notification-center seam. Production wires a
     ///   ``UserNotificationCenterScheduling`` wrapping `UNUserNotificationCenter.current()`
     ///   (macOS/iOS app targets only); tests inject a recording fake so the diff logic
@@ -117,6 +129,36 @@ public final class NotificationScheduler {
         for reminder in plan.toSchedule {
             await center.scheduleReminder(reminder)
         }
+    }
+
+    /// Reconcile, but **serialized FIFO** against any prior serialized reconcile so the
+    /// newest desired state always lands last (M24a review MINOR). Spawns a task that first
+    /// awaits the previous serialized reconcile's completion and then runs
+    /// ``reconcile(reminders:now:)`` for `reminders`; records that task as the new
+    /// `previousReconcile`. Returns immediately with the spawned task (the caller does not
+    /// await it — the fire-and-forget shape of the reload path is preserved), so a caller
+    /// that spawns A then B is guaranteed the effective order A-then-B: B's read of the
+    /// center's pending set happens *after* A has fully applied, so B's cancel of a ticked
+    /// reminder can never be undone by a late A re-scheduling it.
+    ///
+    /// The `reminders` array is captured by value at call time (as `reconcile` already takes
+    /// it by value), so each chained reconcile carries the snapshot it was requested with.
+    /// This method must be called on the main actor (the class is `@MainActor`), which also
+    /// makes the read-then-write of `previousReconcile` atomic — the ordering is established
+    /// synchronously at spawn time, before either task's first `await`.
+    @discardableResult
+    public func reconcileSerialized(reminders: [Reminder], now: Date = Date()) -> Task<Void, Never> {
+        let prev = previousReconcile
+        let task = Task { [weak self] in
+            // Wait for the previous reconcile to fully finish before starting this one, so
+            // the chain applies in request order. `weak self` mirrors AppModel capturing the
+            // scheduler (not the model) — if the scheduler outlives nothing, the chain simply
+            // stops.
+            await prev?.value
+            await self?.reconcile(reminders: reminders, now: now)
+        }
+        previousReconcile = task
+        return task
     }
 
     /// Post an immediate **arrival banner** (Mac only, M24a item 5) through the same center
