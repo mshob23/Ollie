@@ -342,9 +342,10 @@ public final class AppModel: ObservableObject {
     // note — so a run can't manufacture the event that would re-trigger it.
 
     #if os(macOS)
-    /// The debounced trigger. Fires `RunnerTrigger.writeTriggerFile()` 90 s after the
-    /// last note arrival. macOS-only: iOS must never touch `~/Ollie` (the trigger is
-    /// a home-node concept). Created in `init` after the first projection is seeded.
+    /// The debounced trigger. Fires `RunnerTrigger.writeTriggerFile()` a short debounce
+    /// after the last note arrival (the window is `RunnerTrigger.defaultDebounce`). macOS-
+    /// only: iOS must never touch `~/Ollie` (the trigger is a home-node concept). Created in
+    /// `init` after the first projection is seeded.
     private var runnerTrigger: RunnerTrigger?
 
     /// The note ids seen on the previous `reloadNotes()` pass, so a reload can tell
@@ -364,6 +365,28 @@ public final class AppModel: ObservableObject {
     /// Nil in tests via `inMemoryStore`, same as `runnerTrigger`, so a test store never
     /// writes the real App Support file. Populated on the reload path (see `reloadNotes`).
     private var ingestIndex: IngestIndex?
+    #endif
+
+    // MARK: Reminders + arrival banners (M24a)
+
+    /// The local-notification reconciler (M24a). On every snapshot change it schedules /
+    /// cancels reminders parsed from the LATEST `inbox` revision, keyed by each line's M7
+    /// `blockId` (contract §7). Constructed on **both** macOS and iOS (a double banner is
+    /// the Apple-Reminders norm; the watch mirrors the iPhone's for free), but — exactly
+    /// like `runnerTrigger` — **nil in tests via `inMemoryStore`** so constructing an
+    /// `AppModel` in a unit test never touches the real `UNUserNotificationCenter` (which
+    /// needs an app bundle) nor prompts for authorization. Nil ⇒ reconcile is a no-op.
+    private var notificationScheduler: NotificationScheduler?
+
+    #if os(macOS)
+    /// The set of checklist `blockId`s present in the PREVIOUS latest `inbox` revision, so
+    /// an arrival banner (M24a item 5) fires only for genuinely NEW lines (blockIds absent
+    /// from the prior revision). Seeded once — WITHOUT banging a banner — on the first
+    /// snapshot after launch (mirrors `seenNoteIDs`), so a launch that imports an existing
+    /// inbox is not a flood of banners; only lines that appear on a LATER snapshot banner.
+    /// `nil` until that seed pass. Mac-only: iPhone arrival banners while the app is dead
+    /// need push (the M24b spike), so iOS gets scheduled reminders but no arrival banner.
+    private var lastInboxBlockIds: Set<String>?
     #endif
 
     // Persistence. `AppModel` owns the SwiftData container + context; the public
@@ -437,13 +460,27 @@ public final class AppModel: ObservableObject {
         // Arm the event-driven runner trigger AFTER the seed reload above: the
         // seed established the baseline `seenNoteIDs`, so from here on only genuinely
         // new NoteEntity arrivals (CloudKit imports from watch/phone, local Mac
-        // captures) reach `runnerTrigger.noteArrived()` and — 90 s after the last
-        // one — touch `~/Ollie/.runner-trigger`. Nil in tests via `inMemoryStore`
+        // captures) reach `runnerTrigger.noteArrived()` and — a short debounce after the
+        // last one — touch `~/Ollie/.runner-trigger`. Nil in tests via `inMemoryStore`
         // is intentional: a test store shouldn't write the real home-node path.
         if !inMemoryStore {
             runnerTrigger = RunnerTrigger { RunnerTrigger.writeTriggerFile() }
         }
         #endif
+
+        // Arm the reminder scheduler (M24a) on macOS AND iOS — both platforms schedule
+        // local notifications from the inbox body (contract §7). **Nil in tests via
+        // `inMemoryStore`**, exactly like `runnerTrigger`: a test store must never reach
+        // the real `UNUserNotificationCenter` (needs a bundle) or prompt for permission —
+        // constructing an `AppModel` in a unit test would otherwise fire real side effects.
+        // The first `reloadNotes()` above already ran with the scheduler nil, so it neither
+        // scheduled nor banged a banner for the corpus that existed at launch — it only
+        // seeded the baselines. Reconcile begins on the NEXT snapshot (a new revision).
+        if !inMemoryStore {
+            #if canImport(UserNotifications)
+            notificationScheduler = NotificationScheduler(center: UserNotificationCenterScheduling())
+            #endif
+        }
 
         // Pick up changes that arrive from iCloud (another device's edits) and
         // re-project them into the observable array.
@@ -1020,6 +1057,15 @@ public final class AppModel: ObservableObject {
                                         revisionsByView: revisionsByView,
                                         unreadViewNames: unreadViewNames)
 
+        // ── Reminders + arrival banners (M24a, contract §7). Driven from the SAME
+        //    snapshot-change path as everything else here (didSave, a CloudKit remote
+        //    change, an inbox apply, wake backoff) — NEVER from a view body or a computed
+        //    property, so it cannot mutate observed state during SwiftUI render (the
+        //    render-loop landmine). Only the view named EXACTLY "inbox" participates: it is
+        //    the delivery channel; every other view's freshness is the unread dots' job.
+        let latestInboxBody = latestRevisions.first { $0.viewName == "inbox" }?.body
+        reconcileReminders(inboxBody: latestInboxBody)
+
         #if os(macOS)
         // Rung 3 + agent layer: mirror the corpus AND the agent layer to ~/Ollie
         // (JSONL + Markdown) for external tools (Obsidian, the Ollie MCP server, any
@@ -1048,6 +1094,79 @@ public final class AppModel: ObservableObject {
         CorpusExporter.exportInBackground(notes, layer: layer, ingestedAt: ingestedAt)
         #endif
     }
+
+    /// Reconcile local reminder notifications — and, on macOS, raise ONE arrival banner
+    /// for genuinely new inbox lines — from the latest `inbox` revision body (M24a,
+    /// contract §7). Called from `reloadNotes` after the `agentViews` snapshot is built, so
+    /// it runs on the snapshot-change path and never during SwiftUI render.
+    ///
+    /// - Parameter inboxBody: the latest `inbox` revision's body, or nil when no `inbox`
+    ///   view exists yet. A nil body means "no reminders" — the scheduler then cancels
+    ///   everything it owns (an inbox that was emptied/deleted clears its pending
+    ///   notifications), and the Mac baseline resets to empty (no banner).
+    private func reconcileReminders(inboxBody: String?) {
+        // Parse the reminders once, in the device-local calendar (the grammar resolves
+        // wall time in `Calendar.current`, whose `timeZone` is the device's). Pure + total.
+        let reminders = inboxBody.map { ReminderGrammar.reminders(in: $0) } ?? []
+
+        // Schedule/cancel on both platforms. Nil scheduler (tests via `inMemoryStore`, or a
+        // platform without UserNotifications) ⇒ no-op — no real center is ever touched in a
+        // unit test. `reconcile` is async (it reads the center's pending set); hop off the
+        // synchronous reload with a Task on the main actor. Capturing `notificationScheduler`
+        // (not `self`) keeps this from extending the model's lifetime.
+        if let scheduler = notificationScheduler {
+            Task { await scheduler.reconcile(reminders: reminders) }
+        }
+
+        #if os(macOS)
+        // Arrival banner (Mac only): the set of checklist blockIds in the latest inbox
+        // revision, derived by the SAME M7 parser (so a banner line's identity matches its
+        // reminder's). Compare against the previous latest revision's set; a blockId present
+        // now but absent then is a NEW line.
+        let currentIds: Set<String> = inboxBody.map { MarkdownLite.checklistBlockIds(in: $0) } ?? []
+        defer { lastInboxBlockIds = currentIds }   // advance the baseline every pass
+
+        // FIRST snapshot after launch only seeds the baseline — never banners (mirrors the
+        // `seenNoteIDs` first-pass-seeds pattern), so importing an existing inbox at launch
+        // isn't a flood of banners.
+        guard let previous = lastInboxBlockIds else { return }
+
+        let newIds = currentIds.subtracting(previous)
+        guard !newIds.isEmpty else { return }   // nothing new (a fade/dismiss republish stays silent)
+
+        // Post ONE banner for the FIRST new line in document order — body = its text,
+        // grammar-stripped if it is a reminder line (else the whole receipt line). Uses the
+        // freshly-parsed blocks so the order + text match exactly what the renderer shows.
+        guard let scheduler = notificationScheduler,
+              let body = firstNewInboxLineText(inboxBody: inboxBody, newIds: newIds)
+        else { return }
+        Task { await scheduler.postArrivalBanner(body: body) }
+        #endif
+    }
+
+    #if os(macOS)
+    /// The banner body for the first NEW inbox line: walk the latest inbox body's checklist
+    /// items in document order, take the first whose `blockId` is in `newIds`, and return
+    /// its text — grammar-stripped when it parses as a reminder (`remind …: <text>` → just
+    /// `<text>`), otherwise the raw receipt text. Nil if no new line resolves to text.
+    private func firstNewInboxLineText(inboxBody: String?, newIds: Set<String>) -> String? {
+        guard let inboxBody else { return nil }
+        for block in MarkdownLite.blocks(from: inboxBody) {
+            guard case let .list(items) = block else { continue }
+            for item in items {
+                guard let id = item.blockId, newIds.contains(id) else { continue }
+                // Grammar-strip if it's a reminder line (`remind …: <text>` → `<text>`);
+                // else use the whole receipt text. `parseLine` works on the classifier-
+                // captured label directly, so no line reconstruction is needed.
+                if let parsed = ReminderGrammar.parseLine(item.text, calendar: .current) {
+                    return parsed.text
+                }
+                return item.text
+            }
+        }
+        return nil
+    }
+    #endif
 
     /// Save pending context changes and re-project. Used by every mutation.
     private func saveAndReload() {
