@@ -141,9 +141,10 @@ final class RunnerTriggerTests: XCTestCase {
         XCTAssertEqual(fires, 0, "a cancelled window must not fire")
     }
 
-    /// The default quiet window is the documented 90 s (guards against an accidental
-    /// change to the latency contract the WatchPaths design depends on).
-    func testDefaultDebounceIs90Seconds() {
-        XCTAssertEqual(RunnerTrigger.defaultDebounce, 90, accuracy: 0.0001)
+    /// The default quiet window is the documented 15 s (M22 — was 90 s; guards
+    /// against an accidental change to the latency contract, now that overlap is
+    /// handled by the runner's rerun-once flag rather than by a long quiet window).
+    func testDefaultDebounceIs15Seconds() {
+        XCTAssertEqual(RunnerTrigger.defaultDebounce, 15, accuracy: 0.0001)
     }
 }

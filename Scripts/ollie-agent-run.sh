@@ -17,6 +17,18 @@ set -uo pipefail
 # GUARDS (all three must pass, checked cheapest-and-most-decisive first)
 #   1. No run already alive  — a pidfile (~/Ollie/.agent-run.pid) whose PID is still
 #      running means a prior pass is in flight; exit quietly so passes never overlap.
+#      RERUN-ONCE FLAG (M22): before skipping, this guard first touches
+#      ~/Ollie/.rerun-requested (best-effort). A note that arrives mid-run fires its
+#      debounced trigger into this guard and would otherwise wait for the 4 h backstop
+#      (WatchPaths won't re-fire an unchanged trigger file). Instead, at the end of a
+#      SUCCESSFUL pass (rc==0, after lastRunAt is written) the flag is consumed: it is
+#      removed, our pidfile is removed explicitly, and ~/Ollie/.runner-trigger is
+#      re-touched so launchd fires ONE fresh pass — which now finds no live run and
+#      passes this guard, covering the mid-run arrival ~one run-length later instead of
+#      hours later. A FAILED pass LEAVES the flag (the next trigger or the backstop
+#      consumes it). A stale flag costs one harmless idempotent pass (tag ops are
+#      idempotent and the runbook forbids no-op republishes). The M13 scan-start
+#      checkpoint supplies the coverage; this flag supplies the scheduling.
 #   2. Mac app running       — the corpus only refreshes, and the inbox only drains,
 #      while the Ollie Mac app is open (it is the only store writer). If it's closed
 #      there is nothing fresh to work on and nothing to apply our writes, so we EXIT
@@ -45,7 +57,10 @@ set -uo pipefail
 # INVOCATION
 #   Runs from a FIXED workspace (Guard 4): cd "$OLLIE_WORKSPACE" (default
 #   ~/Ollie/agent-workspace), then
-#   "$CLAUDE_BIN" -p "<runbook>" --model "$CLAUDE_MODEL" --allowedTools "mcp__ollie,mcp__ollie__*"
+#   "$CLAUDE_BIN" -p "<runbook>" --model "$CLAUDE_MODEL" \
+#     --allowedTools "mcp__ollie,mcp__ollie__*,WebSearch,WebFetch"
+#   (M23 adds WebSearch + WebFetch so request-notes needing an outside fact aren't
+#   silently degraded to corpus-only — web egress custody rules in contract §9.)
 #   CLAUDE_BIN defaults to `claude` (override to shim/stub it — the tests point it at a
 #   script that just echoes its args). Output → ~/Ollie/agent-runs/<timestamp>.log;
 #   logs older than 30 days are pruned. The op writer stamps agentId from
@@ -58,7 +73,11 @@ set -uo pipefail
 #      workspace's permission allowlist when the cwd is untrusted, and -p mode
 #      cannot show the trust dialog. Guard 4 verifies and prints the exact remedy.
 #   The tool allowlist itself lives in $WORKSPACE/.claude/settings.local.json and
-#   is self-written by Guard 4 if missing. See docs/agent-contract.md §9 and
+#   is REWRITTEN by Guard 4 on EVERY pass (M23 — it was write-if-missing before, so an
+#   already-deployed workspace never picked up newly granted tools; overwriting kills
+#   that drift class). It is fully script-controlled — do NOT hand-edit it, your edits
+#   are clobbered next pass. It grants the ollie MCP tools plus WebSearch + WebFetch
+#   (the same set --allowedTools passes). See docs/agent-contract.md §9 and
 #   mcp-server/README.md.
 #
 # ENV KNOBS
@@ -97,6 +116,11 @@ META_FILE="$OLLIE_DIR/.ollie.meta.json"
 STATE_FILE="$OLLIE_DIR/.agent-state.json"
 PID_FILE="$OLLIE_DIR/.agent-run.pid"
 LOG_DIR="$OLLIE_DIR/agent-runs"
+# M22 rerun-once flag: Guard 1 touches this before skipping a mid-run trigger; a
+# successful pass consumes it (re-touches the trigger). See the GUARDS header block.
+RERUN_FLAG="$OLLIE_DIR/.rerun-requested"
+# The launchd WatchPaths file a successful pass re-touches to schedule the rerun.
+TRIGGER_FILE="$OLLIE_DIR/.runner-trigger"
 
 # The op writer attributes this run's ops to the launchd loop (contract §1).
 export OLLIE_AGENT_ID="claude-runner"
@@ -110,7 +134,13 @@ log() { printf '[ollie-agent-run %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; 
 if [[ -f "$PID_FILE" ]]; then
   OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
-    log "a previous run (pid $OLD_PID) is still alive — skipping this pass."
+    # A prior pass is in flight. Record that a rerun is wanted BEFORE skipping (M22):
+    # the live pass consumes this flag on success and re-touches the trigger, so work
+    # that arrived mid-run is picked up ~one run-length later instead of waiting for
+    # the 4 h backstop. Best-effort — a failure here just forfeits the fast rerun, not
+    # coverage (the M13 scan-start checkpoint still re-presents the window next pass).
+    touch "$RERUN_FLAG" 2>/dev/null || true
+    log "a previous run (pid $OLD_PID) is still alive — skipping this pass (rerun-requested)."
     exit 0
   fi
   log "clearing a stale pidfile (pid ${OLD_PID:-?} is gone)."
@@ -188,12 +218,16 @@ log "corpus is fresh (exportedAt=$EXPORTED_AT, age $(( AGE_SEC / 60 ))m)."
 # launchd provides no useful cwd, and claude IGNORES a workspace's permission
 # allowlist when the cwd is untrusted (-p cannot show the trust dialog) — the
 # run would proceed with its tools silently denied. So: always cd into one
-# dedicated workspace, self-heal its allowlist, and verify it is trusted in
+# dedicated workspace, (re)write its allowlist, and verify it is trusted in
 # ~/.claude.json, stopping with the exact remedy if not.
 WORKSPACE="${OLLIE_WORKSPACE:-$OLLIE_DIR/agent-workspace}"
 mkdir -p "$WORKSPACE/.claude"
-if [[ ! -f "$WORKSPACE/.claude/settings.local.json" ]]; then
-  cat > "$WORKSPACE/.claude/settings.local.json" <<'SETTINGS'
+# M23: REWRITE the allowlist on EVERY pass (was write-if-missing — an already-deployed
+# workspace then silently missed newly granted tools, e.g. WebSearch/WebFetch). Content
+# is fully script-controlled and MUST NOT be hand-edited; it is clobbered each pass. The
+# set here mirrors the --allowedTools string below (the ollie MCP tools + WebSearch +
+# WebFetch).
+cat > "$WORKSPACE/.claude/settings.local.json" <<'SETTINGS'
 {
   "permissions": {
     "allow": [
@@ -213,13 +247,14 @@ if [[ ! -f "$WORKSPACE/.claude/settings.local.json" ]]; then
       "mcp__ollie__untag_note",
       "mcp__ollie__append_memory",
       "mcp__ollie__retire_memory",
-      "mcp__ollie__publish_view"
+      "mcp__ollie__publish_view",
+      "WebSearch",
+      "WebFetch"
     ]
   }
 }
 SETTINGS
-  log "wrote workspace allowlist: $WORKSPACE/.claude/settings.local.json"
-fi
+log "wrote workspace allowlist (overwritten every pass): $WORKSPACE/.claude/settings.local.json"
 
 TRUSTED="unchecked"
 if command -v python3 >/dev/null 2>&1; then
@@ -310,7 +345,7 @@ RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 "$CLAUDE_BIN" -p "$PROMPT" \
   --model "$CLAUDE_MODEL" \
-  --allowedTools "mcp__ollie,mcp__ollie__*" \
+  --allowedTools "mcp__ollie,mcp__ollie__*,WebSearch,WebFetch" \
   ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
   >> "$LOG_FILE" 2>&1
 CLAUDE_RC=$?
@@ -361,4 +396,27 @@ NEW_STATE_TMP="$STATE_FILE.tmp.$$"
 printf '{\n  "lastRunAt": "%s"\n}\n' "$NEW_RUN_AT" > "$NEW_STATE_TMP"
 mv -f "$NEW_STATE_TMP" "$STATE_FILE"
 log "done. lastRunAt=$NEW_RUN_AT recorded. Log: $LOG_FILE"
+
+# ── Consume the rerun-once flag (M22, successful run only) ───────────────────
+# Only reached on rc==0, AFTER lastRunAt is written. If a trigger arrived while THIS
+# pass was in flight, Guard 1 of that skipped pass dropped ~/Ollie/.rerun-requested.
+# Consume it now: remove the flag, remove OUR pidfile explicitly, then re-touch the
+# launchd WatchPaths trigger so exactly ONE fresh pass fires — which finds no live run
+# and clears Guard 1, covering the mid-run arrival ~one run-length later instead of at
+# the 4 h backstop. The explicit pidfile rm makes the EXIT trap's ownership check
+# (file-still-exists AND still-ours) fall through to a no-op — no double-remove, and a
+# racing run that reclaimed the pidfile is not disturbed. A FAILED run never reaches
+# here, so the flag persists for the next trigger/backstop (idempotent, harmless).
+if [[ -f "$RERUN_FLAG" ]]; then
+  rm -f "$RERUN_FLAG"
+  # Explicitly drop our pidfile (only if it's still OURS — mirror the trap's guard so a
+  # racing run that took over the pidfile keeps it). After this the trap is a no-op.
+  if [[ -f "$PID_FILE" ]] && [[ "$(cat "$PID_FILE" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$PID_FILE"
+  fi
+  # Re-touch the trigger (atomic-ish: write a fresh ISO8601 stamp so the bytes differ,
+  # matching RunnerTrigger.writeTriggerFile so launchd WatchPaths reliably re-fires).
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TRIGGER_FILE" 2>/dev/null || true
+  log "rerun-requested consumed: removed flag + pidfile, re-touched $TRIGGER_FILE (one fresh pass will run)."
+fi
 exit 0

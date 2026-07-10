@@ -50,11 +50,15 @@ import Foundation
 @MainActor
 public final class RunnerTrigger {
 
-    /// The default quiet window: 90 s after the LAST arrival before the trigger
-    /// fires. Long enough that a multi-note sync catch-up or a burst of watch
-    /// transfers settles into one run; short enough to meet the "within ~2 minutes"
-    /// goal.
-    public static let defaultDebounce: TimeInterval = 90
+    /// The default quiet window: 15 s after the LAST arrival before the trigger
+    /// fires (M22 — was 90 s). 15 s still coalesces a spoken burst or a multi-note
+    /// sync catch-up into one run, but it no longer sizes the window to *also*
+    /// absorb work that lands mid-run: an arrival while a pass is in flight is
+    /// handled by the runner's rerun-once flag (`~/Ollie/.rerun-requested`), which
+    /// re-touches the trigger when the pass finishes, rather than by a long quiet
+    /// window. Shrinking 90 → 15 pulls the typical note → view latency down (the
+    /// run itself now dominates) while overlap is scheduled explicitly downstream.
+    public static let defaultDebounce: TimeInterval = 15
 
     private let debounce: TimeInterval
     private let scheduler: RunnerTriggerScheduler
@@ -66,7 +70,7 @@ public final class RunnerTrigger {
     private var pending: RunnerTriggerScheduledWork?
 
     /// - Parameters:
-    ///   - debounce: the quiet window after the last arrival (default 90 s).
+    ///   - debounce: the quiet window after the last arrival (default 15 s).
     ///   - scheduler: the scheduling seam — production uses ``DispatchRunnerTriggerScheduler``
     ///     (a real GCD timer on the main queue); tests inject a manual one.
     ///   - fire: called once when a window elapses quietly. Production: an atomic
