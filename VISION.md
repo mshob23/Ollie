@@ -33,7 +33,11 @@ lets the product stay a mailbox instead of becoming a terminal.
 
 - **Not a chat app, an agent runtime, or a Claude Code / OpenClaw replica.** The moment
   Ollie needs a live tunnel to an agent, we are building the wrong product. Information is
-  made available; a canvas is offered in return. That is the whole interface.
+  made available; a canvas is offered in return. That is the whole interface. The refusal
+  is about *dependence*, not guests: any runtime the user already trusts — a Claude CLI, an
+  OpenClaw-style daemon, Siri — is welcome to walk through the same door and speak the same
+  file contract (scene 4 below), and Ollie needs zero changes to admit it. What must never
+  happen is Ollie *needing* one of them to hold a session open.
 - **Not a service.** There is no vendor server, no account, no subscription to us, and no
   copy of the user's data in our custody — ever. The only store is the user's own private
   iCloud database.
@@ -68,6 +72,12 @@ Structural rules that keep the model honest:
 - **Notes are immutable ground truth; the agent layer is derived, attributed, and
   disposable.** The user can always burn the intelligence layer down and lose nothing
   they said.
+- **The web is read-only, and a query is egress.** The rented agent may *read* the public
+  web to serve the corpus; it still writes back only through the inbox. But a search query
+  crosses to a third party outside the custody domain, so it is distilled and minimal —
+  topic terms, never verbatim note text, never identifiers the request doesn't demand,
+  never note content in a URL. (Restricted notes never reach the agent at all, so they
+  cannot leak here.)
 
 ## The contract is the product
 
