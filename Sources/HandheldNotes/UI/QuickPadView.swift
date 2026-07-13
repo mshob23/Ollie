@@ -6,10 +6,10 @@ import SwiftUI
 /// any text field). Presented by the AppDelegate in an `NSPanel` when the quick-pad
 /// shortcut or menu-bar item fires.
 struct QuickPadView: View {
+    @Binding var text: String
     let onSave: (String) -> Void
     let onCancel: () -> Void
 
-    @State private var text = ""
     @FocusState private var focused: Bool
 
     var body: some View {

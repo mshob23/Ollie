@@ -22,14 +22,12 @@ struct SettingsView: View {
     /// plain `@State` toggled only in button actions, never mutated during render.
     @State private var showingMemory = false
 
-    /// The outcome to surface after a `resetSync()` attempt — either "relaunch
-    /// needed" (success) or an error message (nothing was deleted).
+    /// Error outcome to surface after a reset attempt. A successful reset exits
+    /// immediately because continuing with an unlinked open store is unsafe.
     private enum ResetResult: Identifiable {
-        case relaunchRequired
         case failed(String)
         var id: String {
             switch self {
-            case .relaunchRequired: return "relaunch"
             case .failed(let msg): return "failed-\(msg)"
             }
         }
@@ -57,15 +55,6 @@ struct SettingsView: View {
         }
         .alert(item: $resetResult) { result in
             switch result {
-            case .relaunchRequired:
-                return Alert(
-                    title: Text("Sync reset"),
-                    message: Text("Please quit and reopen Ollie."),
-                    primaryButton: .default(Text("Quit Ollie")) {
-                        NSApp.terminate(nil)
-                    },
-                    secondaryButton: .cancel(Text("Later"))
-                )
             case .failed(let message):
                 return Alert(
                     title: Text("Couldn't reset sync"),
@@ -645,12 +634,23 @@ struct SettingsView: View {
         do {
             switch try model.resetSync() {
             case .relaunchRequired:
-                resetResult = .relaunchRequired
+                // The open ModelContainer points at files that were just removed.
+                // Continuing could accept writes into an unlinked store that vanish
+                // on relaunch, so success is terminal: there is no "Later" path.
+                NSApp.terminate(nil)
             }
         } catch AppModel.ResetSyncError.backupFailed {
             resetResult = .failed("Couldn't back up before reset - aborted, nothing was deleted.")
         } catch AppModel.ResetSyncError.storeDirectoryUnavailable {
             resetResult = .failed("Couldn't locate the local store - nothing was deleted.")
+        } catch AppModel.ResetSyncError.storeDeletionFailed {
+            resetResult = .failed("Your backup is safe, but Ollie couldn't remove every local store file. The reset is incomplete; quit Ollie and do not capture new notes until recovery is retried.")
+        } catch AppModel.ResetSyncError.captureInProgress {
+            resetResult = .failed("Finish the current recording or transcription before resetting sync. Nothing was deleted.")
+        } catch AppModel.ResetSyncError.unsavedDraft {
+            resetResult = .failed("Save or clear the unfinished draft before resetting sync. Nothing was deleted.")
+        } catch AppModel.ResetSyncError.unsavedQuickPad {
+            resetResult = .failed("Save or discard the open Quick Pad note before resetting sync. Nothing was deleted.")
         } catch {
             resetResult = .failed("Reset failed - nothing was deleted. (\(error.localizedDescription))")
         }

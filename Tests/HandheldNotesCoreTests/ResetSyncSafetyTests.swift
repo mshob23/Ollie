@@ -37,11 +37,11 @@ final class ResetSyncSafetyTests: XCTestCase {
         tmp = nil
     }
 
-    /// Three fake store files in the temp dir, standing in for the real
-    /// `default.store` + `-wal` / `-shm`. Returns their URLs after writing them.
+    /// Three fake store files in the temp dir, standing in for Ollie's explicit
+    /// `HandheldNotes.store` + `-wal` / `-shm`. Returns their URLs after writing them.
     private func makeFakeStoreFiles() throws -> [URL] {
-        let names = ["default.store", "default.store-wal", "default.store-shm"]
-        let urls = names.map { tmp.appendingPathComponent($0) }
+        let storeURL = NotesDataStore.storeURL(baseDirectory: tmp)
+        let urls = NotesDataStore.storeFileURLs(storeURL: storeURL)
         for url in urls {
             try Data("fake-store".utf8).write(to: url)
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
@@ -63,6 +63,9 @@ final class ResetSyncSafetyTests: XCTestCase {
         model.composeNote(transcript: "A note worth backing up before reset.")
 
         let storeFiles = try makeFakeStoreFiles()
+        let foreignStore = tmp.appendingPathComponent("default.store")
+        let foreignBytes = Data("owned-by-another-app".utf8)
+        try foreignBytes.write(to: foreignStore)
         model.storeFileURLsForReset = storeFiles
 
         let outcome = try model.resetSync()
@@ -81,6 +84,8 @@ final class ResetSyncSafetyTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
                            "store file \(url.lastPathComponent) should be deleted after a verified backup")
         }
+        XCTAssertEqual(try Data(contentsOf: foreignStore), foreignBytes,
+                       "resetSync must preserve another app's generic store byte-for-byte")
     }
 
     /// Empty-corpus path: an EMPTY store produces a valid 0-byte (header-only)
@@ -97,6 +102,9 @@ final class ResetSyncSafetyTests: XCTestCase {
         XCTAssertTrue(model.notes.isEmpty, "precondition: corpus must be empty")
 
         let storeFiles = try makeFakeStoreFiles()
+        let foreignStore = tmp.appendingPathComponent("default.store")
+        let foreignBytes = Data("owned-by-another-app".utf8)
+        try foreignBytes.write(to: foreignStore)
         model.storeFileURLsForReset = storeFiles
 
         let outcome = try model.resetSync()
@@ -114,6 +122,8 @@ final class ResetSyncSafetyTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
                            "store file \(url.lastPathComponent) should be deleted after the empty-corpus reset")
         }
+        XCTAssertEqual(try Data(contentsOf: foreignStore), foreignBytes,
+                       "an empty-corpus reset must preserve another app's generic store")
     }
 
     /// Failure path: the export directory is UNWRITABLE, so the backup can't be
@@ -132,6 +142,9 @@ final class ResetSyncSafetyTests: XCTestCase {
         model.composeNote(transcript: "This must NOT be lost — the reset must abort.")
 
         let storeFiles = try makeFakeStoreFiles()
+        let foreignStore = tmp.appendingPathComponent("default.store")
+        let foreignBytes = Data("owned-by-another-app".utf8)
+        try foreignBytes.write(to: foreignStore)
         model.storeFileURLsForReset = storeFiles
 
         XCTAssertThrowsError(try model.resetSync()) { error in
@@ -144,5 +157,113 @@ final class ResetSyncSafetyTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
                           "store file \(url.lastPathComponent) MUST survive when the backup fails")
         }
+        XCTAssertEqual(try Data(contentsOf: foreignStore), foreignBytes,
+                       "a failed reset must not touch another app's generic store")
+    }
+
+    /// A partial filesystem failure must never be reported as a successful reset.
+    /// The pre-delete backup remains available and the surviving store is explicit.
+    func testResetSyncReportsIncompleteStoreDeletion() throws {
+        try makeTempDir()
+        defer { cleanUpTempDir() }
+        CorpusExporter.exportDirectoryOverride = tmp.appendingPathComponent("Ollie", isDirectory: true)
+
+        let model = AppModel(inMemoryStore: true)
+        model.composeNote(transcript: "Back this up before testing a partial reset.")
+        let storeFiles = try makeFakeStoreFiles()
+        model.storeFileURLsForReset = storeFiles
+        model.removeStoreFileForReset = { url in
+            if url == storeFiles[0] {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+
+        XCTAssertThrowsError(try model.resetSync()) { error in
+            XCTAssertEqual(error as? AppModel.ResetSyncError, .storeDeletionFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeFiles[0].path),
+                      "the simulated undeletable main store must still exist")
+        let backupsDir = CorpusExporter.exportDirectory
+            .appendingPathComponent("backups", isDirectory: true)
+        XCTAssertEqual((try? FileManager.default.contentsOfDirectory(
+            at: backupsDir, includingPropertiesForKeys: nil).count), 1,
+            "the verified backup must survive an incomplete deletion")
+    }
+
+    func testResetSyncRefusesActiveCaptureBeforeBackupOrDeletion() throws {
+        try makeTempDir()
+        defer { cleanUpTempDir() }
+        CorpusExporter.exportDirectoryOverride = tmp.appendingPathComponent("Ollie", isDirectory: true)
+
+        let model = AppModel(inMemoryStore: true)
+        model.recordingState = .recording
+        let storeFiles = try makeFakeStoreFiles()
+        model.storeFileURLsForReset = storeFiles
+
+        XCTAssertThrowsError(try model.resetSync()) { error in
+            XCTAssertEqual(error as? AppModel.ResetSyncError, .captureInProgress)
+        }
+        XCTAssertTrue(storeFiles.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.path)
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            CorpusExporter.exportDirectory.appendingPathComponent("backups").path))
+    }
+
+    func testResetSyncRefusesUnsavedDraftBeforeBackupOrDeletion() throws {
+        try makeTempDir()
+        defer { cleanUpTempDir() }
+        CorpusExporter.exportDirectoryOverride = tmp.appendingPathComponent("Ollie", isDirectory: true)
+
+        let model = AppModel(inMemoryStore: true)
+        model.draft.transcript = "This draft has not been concluded."
+        let storeFiles = try makeFakeStoreFiles()
+        model.storeFileURLsForReset = storeFiles
+
+        XCTAssertThrowsError(try model.resetSync()) { error in
+            XCTAssertEqual(error as? AppModel.ResetSyncError, .unsavedDraft)
+        }
+        XCTAssertTrue(storeFiles.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.path)
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            CorpusExporter.exportDirectory.appendingPathComponent("backups").path))
+    }
+
+    func testResetSyncRefusesCaptureStartupBeforeBackupOrDeletion() throws {
+        try makeTempDir()
+        defer { cleanUpTempDir() }
+        CorpusExporter.exportDirectoryOverride = tmp.appendingPathComponent("Ollie", isDirectory: true)
+
+        let model = AppModel(inMemoryStore: true)
+        model.captureStartInProgress = true
+        let storeFiles = try makeFakeStoreFiles()
+        model.storeFileURLsForReset = storeFiles
+
+        XCTAssertThrowsError(try model.resetSync()) { error in
+            XCTAssertEqual(error as? AppModel.ResetSyncError, .captureInProgress)
+        }
+        XCTAssertTrue(storeFiles.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.path)
+        })
+    }
+
+    func testResetSyncRefusesUnsavedQuickPadBeforeBackupOrDeletion() throws {
+        try makeTempDir()
+        defer { cleanUpTempDir() }
+        CorpusExporter.exportDirectoryOverride = tmp.appendingPathComponent("Ollie", isDirectory: true)
+
+        let model = AppModel(inMemoryStore: true)
+        model.quickPadDraftText = "This Quick Pad note is not saved yet."
+        let storeFiles = try makeFakeStoreFiles()
+        model.storeFileURLsForReset = storeFiles
+
+        XCTAssertThrowsError(try model.resetSync()) { error in
+            XCTAssertEqual(error as? AppModel.ResetSyncError, .unsavedQuickPad)
+        }
+        XCTAssertTrue(storeFiles.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.path)
+        })
     }
 }

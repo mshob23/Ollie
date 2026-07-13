@@ -81,6 +81,50 @@ final class NoteEntityStoreTests: XCTestCase {
     }
 }
 
+@MainActor
+final class StoreIsolationTests: XCTestCase {
+    func testExplicitOllieStoreNeverTouchesGenericDefaultStore() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OllieStoreIsolation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sentinel = root.appendingPathComponent("default.store")
+        let sentinelBytes = Data("owned-by-another-app".utf8)
+        try sentinelBytes.write(to: sentinel)
+        let before = try sentinel.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey])
+
+        let ollieURL = NotesDataStore.storeURL(baseDirectory: root)
+        XCTAssertEqual(ollieURL.lastPathComponent, "HandheldNotes.store")
+        let container = NotesDataStore.makeContainer(
+            cloudKit: false, storeURL: ollieURL)
+        let context = container.mainContext
+        context.insert(NoteEntity(note: Note(transcript: "isolated", source: .computer)))
+        try context.save()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ollieURL.path))
+        XCTAssertEqual(try Data(contentsOf: sentinel), sentinelBytes,
+                       "Ollie must leave generic default.store byte-for-byte untouched")
+        let after = try sentinel.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey])
+        XCTAssertEqual(after.fileSize, before.fileSize)
+        XCTAssertEqual(after.contentModificationDate, before.contentModificationDate)
+    }
+
+    func testResetFileListContainsOnlyOllieOwnedNames() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OllieResetFileList-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = NotesDataStore.storeURL(baseDirectory: root)
+        XCTAssertEqual(
+            NotesDataStore.storeFileURLs(storeURL: storeURL).map(\.lastPathComponent),
+            ["HandheldNotes.store", "HandheldNotes.store-wal", "HandheldNotes.store-shm"])
+        XCTAssertFalse(NotesDataStore.storeFileURLs(storeURL: storeURL).contains {
+            $0.lastPathComponent.hasPrefix("default.store")
+        })
+    }
+}
+
 // Test-only container factory (in-memory, no CloudKit). Lives here so the test
 // target doesn't need to reach into the @MainActor production factory.
 extension NotesDataStore {

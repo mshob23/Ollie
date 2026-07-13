@@ -18,7 +18,7 @@ CONTAINER_ID="iCloud.com.mohammadshobaki.handheldnotes"
 OLLIE_DIR="$HOME/Ollie"
 JSONL="$OLLIE_DIR/ollie.jsonl"
 META="$OLLIE_DIR/.ollie.meta.json"
-STORE_GLOB="$HOME/Library/Application Support/default.store"
+STORE_GLOB="$HOME/Library/Application Support/HandheldNotes/HandheldNotes.store"
 
 hr() { printf '\n=== %s ===\n' "$1"; }
 
@@ -86,9 +86,10 @@ else
 fi
 
 # ── 3. Local SwiftData store ────────────────────────────────────────────────
-# Mac app is non-sandboxed → store lives in ~/Library/Application Support/, not a
-# container. default.store(+ -wal/-shm) is the on-disk SQLite that CloudKit mirrors.
-hr "Local SwiftData store (~/Library/Application Support/default.store*)"
+# Mac app is non-sandboxed → Ollie's explicitly named store lives below
+# ~/Library/Application Support/HandheldNotes/, not a container. Never inspect a
+# generic default.store here; it may belong to another app.
+hr "Local SwiftData store (~/Library/Application Support/HandheldNotes/HandheldNotes.store*)"
 FOUND_STORE=0
 for f in "$STORE_GLOB" "$STORE_GLOB-wal" "$STORE_GLOB-shm"; do
   if [[ -e "$f" ]]; then
@@ -98,7 +99,7 @@ for f in "$STORE_GLOB" "$STORE_GLOB-wal" "$STORE_GLOB-shm"; do
     echo "$(basename "$f"): present  size=${SZ}B  mtime=$MT"
   fi
 done
-[[ "$FOUND_STORE" == 0 ]] && echo "default.store*: MISSING — store not created (or was deleted to force a fresh rebuild)."
+[[ "$FOUND_STORE" == 0 ]] && echo "HandheldNotes.store*: MISSING — store not created (or was deleted to force a fresh rebuild)."
 
 # ── 4. iCloud account + CloudKit container ──────────────────────────────────
 hr "iCloud account + CloudKit container"

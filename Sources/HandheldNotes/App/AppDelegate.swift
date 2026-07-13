@@ -252,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Show (or re-show) the floating quick-note pad. Fresh content each time.
     private func showQuickPad() {
         quickPadPanel?.close()
+        model.quickPadDraftText = ""
         // Remember who was frontmost (the app the user was typing in) so focus can
         // return there on close — unless that's already us.
         if quickPadPreviousApp == nil {
@@ -261,6 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         let content = QuickPadView(
+            text: Binding(
+                get: { [weak self] in self?.model.quickPadDraftText ?? "" },
+                set: { [weak self] in self?.model.quickPadDraftText = $0 }),
             onSave: { [weak self] text in
                 self?.model.saveQuickTextNote(text)
                 self?.quickPadPanel?.close()
@@ -291,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as AnyObject) === quickPadPanel else { return }
         quickPadPanel = nil
+        model.quickPadDraftText = ""
         if let previous = quickPadPreviousApp {
             quickPadPreviousApp = nil
             previous.activate()

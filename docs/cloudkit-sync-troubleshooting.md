@@ -9,14 +9,15 @@ June 2026 outage where Mac↔iPhone sync was dead in **both** directions. The le
 > the unified-log `HNDIAG` tail (`subsystem == "com.mohammadshobaki.handheldnotes"`,
 > now visible because diagnostics moved to `os.Logger`), the `~/Ollie/ollie.jsonl`
 > corpus + its `.ollie.meta.json` freshness sidecar (is the corpus stale vs
-> `exportedAt`?), the local `~/Library/Application Support/default.store*`, and the
+> `exportedAt`?), Ollie's local
+> `~/Library/Application Support/HandheldNotes/HandheldNotes.store*`, and the
 > iCloud account + container id. Start there, *then* trace the hops below.
 
 ## The full path a note travels (Mac → phone)
 
 | # | Stage | Where the data sits | How to SEE it | 
 |---|---|---|---|
-| ① | App saves the note | Mac `~/Library/Application Support/default.store` → table `ZNOTEENTITY` | `sqlite3 default.store 'SELECT count(*) FROM ZNOTEENTITY'` |
+| ① | App saves the note | Mac `~/Library/Application Support/HandheldNotes/HandheldNotes.store` → table `ZNOTEENTITY` | `sqlite3 ~/Library/Application\ Support/HandheldNotes/HandheldNotes.store 'SELECT count(*) FROM ZNOTEENTITY'` |
 | ② | `NSPersistentCloudKitContainer` builds a `CKRecord` from the change (export side) | persistent history + mirror tables `ANSCKEVENT`, `ANSCKMETADATAENTRY` | `log show --predicate 'subsystem=="com.apple.coredata"'`; `ANSCKEVENT` rows |
 | ③ | `cloudd` uploads to Apple | your **private** CloudKit DB, zone `com.apple.coredata.cloudkit.zone`, **Production** | `/usr/bin/log show --predicate 'process=="cloudd"'` → `CKDModifyRecords…err=F`; **CloudKit Dashboard** records |
 | ④ | CloudKit pushes a silent APNs notification to other devices | Apple → APNs → device | Dashboard → Subscriptions; (a cold launch skips push and fetches directly) |
@@ -59,8 +60,12 @@ bookkeeping still points at that now-dead zone (a stale change-token), so import
 `CKError 2` partial-failures forever — it can't self-heal. (Like a GPS routing to a demolished
 building.)
 
-**Recover an already-wedged device:** delete the local store so the container rebuilds fresh — Mac:
-`rm ~/Library/Application\ Support/default.store*`; iOS: delete + reinstall the app. **Back up first**
+**Recover an already-wedged device:** use Ollie's in-app **Back up & reset sync** action so it
+verifies a backup before deleting only its explicitly named local store. If manual recovery is
+unavoidable, quit Ollie and remove only
+`~/Library/Application Support/HandheldNotes/HandheldNotes.store`, `HandheldNotes.store-wal`, and
+`HandheldNotes.store-shm`; never delete a generic `default.store`. On iOS, delete + reinstall the
+app. **Back up first**
 (`sqlite3 … json_object(...)`).
 
 **Fixed (Jun 2026):** `AppModel.deleteAllNotes()` now deletes the *records*, not the zone — each

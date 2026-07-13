@@ -55,7 +55,11 @@ public enum NotesDataStore {
     /// Build (once) the shared container. Prefers private-CloudKit mirroring and
     /// degrades to a local-only store if that can't be constructed. `inMemory`
     /// is for tests.
-    @MainActor public static func makeContainer(inMemory: Bool = false) -> ModelContainer {
+    @MainActor public static func makeContainer(
+        inMemory: Bool = false,
+        cloudKit: Bool = true,
+        storeURL overrideURL: URL? = nil
+    ) -> ModelContainer {
         let schema = Schema(modelTypes)
 
         if inMemory {
@@ -63,6 +67,19 @@ public enum NotesDataStore {
             // A purely in-memory store can't realistically fail; if it somehow
             // does there is nothing to fall back to, so fail loudly in tests.
             return try! ModelContainer(for: schema, configurations: [mem])
+        }
+
+        // A generic SwiftData `default.store` is process-global enough that two
+        // sibling apps can open the same file when they share a hand-bundled
+        // runtime. Ollie therefore owns one explicit URL. Never inspect, migrate,
+        // rename, or delete a generic `default.store`; another app may own it.
+        let url = overrideURL ?? storeURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            Self.writeDiag("Store directory FAILED at \(url.deletingLastPathComponent().path): \(error)")
+            fatalError("Ollie cannot safely create its persistent store directory")
         }
 
         // 1) Preferred: the user's PRIVATE iCloud database. Inert (but harmless)
@@ -76,60 +93,65 @@ public enum NotesDataStore {
         //    flip (SwiftData's `ModelConfiguration` exposes no remote-change
         //    option; it's implied by CloudKit mirroring), so nothing extra is set
         //    here.
-        let cloud = ModelConfiguration(
-            schema: schema,
-            cloudKitDatabase: .private(cloudKitContainerID))
-        do {
-            let container = try ModelContainer(for: schema, configurations: [cloud])
-            isCloudKitActive = true
-            Self.writeDiag("CloudKit ACTIVE — \(cloudKitContainerID)")
-            return container
-        } catch {
-            // Don't swallow silently — record WHY CloudKit couldn't start so a
-            // signing/entitlement/account problem is diagnosable.
-            Self.writeDiag("CloudKit FAILED, using local fallback — \(String(describing: error))")
+        if cloudKit {
+            let cloud = ModelConfiguration(
+                "HandheldNotes", schema: schema, url: url,
+                cloudKitDatabase: .private(cloudKitContainerID))
+            do {
+                let container = try ModelContainer(for: schema, configurations: [cloud])
+                isCloudKitActive = true
+                Self.writeDiag("CloudKit ACTIVE — \(cloudKitContainerID)")
+                return container
+            } catch {
+                // Don't swallow silently — record WHY CloudKit couldn't start so a
+                // signing/entitlement/account problem is diagnosable.
+                Self.writeDiag("CloudKit FAILED, using local fallback — \(String(describing: error))")
+            }
         }
 
         // 2) Fallback: a normal on-disk store, no CloudKit. The app stays fully
         //    functional locally; this is what runs pre-portal and on the
         //    Simulator without an iCloud account.
-        let local = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
-        if let container = try? ModelContainer(for: schema, configurations: [local]) {
+        let local = ModelConfiguration(
+            "HandheldNotes", schema: schema, url: url, cloudKitDatabase: .none)
+        do {
+            let container = try ModelContainer(for: schema, configurations: [local])
             isCloudKitActive = false
             return container
+        } catch {
+            Self.writeDiag("Persistent local store FAILED at \(url.path): \(error)")
+            fatalError("Ollie cannot safely open its persistent local store")
         }
-
-        // 3) Last-ditch: in-memory, so the app can never be bricked by a storage
-        //    failure (notes won't persist, but it launches and runs).
-        isCloudKitActive = false
-        let mem = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: schema, configurations: [mem])
     }
 
-    /// The directory that holds the on-disk SwiftData store files (`default.store`
-    /// + its `-wal` / `-shm` companions). SwiftData, when handed a
-    /// `ModelConfiguration` with no explicit URL, writes them into the app's
-    /// Application Support directory under the default store name. `resetSync()`
-    /// needs this to delete the local store as part of the CLI-equivalent recovery.
-    ///
-    /// Derived from a throwaway `ModelConfiguration` so it tracks SwiftData's own
-    /// default-URL choice rather than hard-coding a path: `config.url` is the
-    /// `…/default.store` file URL; its parent directory is what we return. Returns
-    /// `nil` only if SwiftData yields no URL (it always does for an on-disk config).
+    /// Ollie's private on-disk store URL. This is deliberately explicit and
+    /// app-owned; no Ollie code may ever open SwiftData's generic `default.store`.
+    public static func storeURL(
+        baseDirectory: URL = defaultBaseDirectory()
+    ) -> URL {
+        baseDirectory.appendingPathComponent("HandheldNotes.store", isDirectory: false)
+    }
+
+    public static func defaultBaseDirectory() -> URL {
+        guard let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            Self.writeDiag("Application Support lookup FAILED; refusing nonpersistent fallback")
+            fatalError("Ollie cannot safely resolve Application Support")
+        }
+        return appSupport.appendingPathComponent("HandheldNotes", isDirectory: true)
+    }
+
+    /// Directory containing Ollie's explicit store and sidecars.
     public static func storeDirectory() -> URL? {
-        let schema = Schema(modelTypes)
-        let config = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
-        return config.url.deletingLastPathComponent()
+        storeURL().deletingLastPathComponent()
     }
 
-    /// The on-disk store files SwiftData maintains for the default store: the main
+    /// The on-disk store files SwiftData maintains for Ollie's explicit store: the main
     /// SQLite database plus its write-ahead-log and shared-memory companions.
     /// `resetSync()` deletes exactly these (and nothing else) to force SwiftData to
     /// rebuild a clean local store on the next launch.
-    public static func storeFileURLs() -> [URL] {
-        guard let dir = storeDirectory() else { return [] }
-        return ["default.store", "default.store-wal", "default.store-shm"]
-            .map { dir.appendingPathComponent($0) }
+    public static func storeFileURLs(storeURL url: URL = storeURL()) -> [URL] {
+        [url, URL(fileURLWithPath: url.path + "-wal"), URL(fileURLWithPath: url.path + "-shm")]
     }
 
     /// Record the CloudKit-vs-local outcome to the unified log (tagged `HNDIAG` so

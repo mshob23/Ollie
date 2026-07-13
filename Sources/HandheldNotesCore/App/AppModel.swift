@@ -1342,14 +1342,23 @@ public final class AppModel: ObservableObject {
         case relaunchRequired
     }
 
-    /// Errors `resetSync()` can throw BEFORE it touches anything destructive. If any
-    /// of these is thrown, NO store file was deleted — the store is exactly as it was.
+    /// Errors `resetSync()` can throw. Backup/location failures happen before any
+    /// deletion; `.storeDeletionFailed` means the verified backup exists but one or
+    /// more local store files could not be removed.
     public enum ResetSyncError: Error, Equatable {
         /// The pre-delete backup couldn't be written (or came back empty). We refuse
         /// to delete the store without a verified, non-empty backup on disk.
         case backupFailed
         /// The store directory couldn't be located, so there was nothing safe to delete.
         case storeDirectoryUnavailable
+        /// A verified backup exists, but the local store reset was only partial.
+        case storeDeletionFailed
+        /// Recording/transcription or a pending quick capture must finish first.
+        case captureInProgress
+        /// An unconcluded draft is not in the store backup and must be saved first.
+        case unsavedDraft
+        /// Typed Quick Pad text is not in the store backup and must be resolved first.
+        case unsavedQuickPad
     }
 
     /// Posted (main thread) when `resetSync()` succeeds, carrying
@@ -1363,6 +1372,10 @@ public final class AppModel: ObservableObject {
     /// the suite can exercise the delete path WITHOUT touching the real on-disk store.
     /// Internal (not public) so only the test target reaches it.
     internal var storeFileURLsForReset: [URL] = NotesDataStore.storeFileURLs()
+    internal var removeStoreFileForReset: (URL) throws -> Void = {
+        try FileManager.default.removeItem(at: $0)
+    }
+    internal var captureStartInProgress = false
 
     /// In-app equivalent of the CLI store-delete recovery: when sync is wedged, blow
     /// away the LOCAL SwiftData store so the next launch rebuilds a clean one and
@@ -1374,7 +1387,9 @@ public final class AppModel: ObservableObject {
     ///      non-empty. If it isn't, throw `.backupFailed` and delete NOTHING — the
     ///      store is left exactly as it was. (This is the verify-before-destroy
     ///      pattern `deleteAllNotes` only does best-effort; here it's mandatory.)
-    ///   2. Only then delete the local store files (`default.store` + `-wal` / `-shm`).
+    ///   2. Only then delete Ollie's explicit local store files
+    ///      (`HandheldNotes.store` + `-wal` / `-shm`). Generic `default.store`
+    ///      files are never opened or deleted; they may belong to another app.
     ///   3. Signal `.relaunchRequired` (and post `didRequireRelaunchNotification`) so
     ///      the UI tells the user to quit + reopen — the shared `ModelContainer` is a
     ///      one-shot static and can't be rebuilt in-process.
@@ -1384,10 +1399,24 @@ public final class AppModel: ObservableObject {
     /// server-side records are untouched and re-import on the clean relaunch.
     ///
     /// - Returns: `.relaunchRequired` on success.
-    /// - Throws: `ResetSyncError` if the backup can't be verified or the store
-    ///   directory can't be found — in either case nothing was deleted.
+    /// - Throws: `ResetSyncError` if the backup can't be verified, the store
+    ///   directory can't be found, or a verified reset is only partially deleted.
     @discardableResult
     public func resetSync() throws -> ResetSyncOutcome {
+        guard !captureStartInProgress, !isRecording, !isTranscribing, retranscribing.isEmpty,
+              pendingQuickCapture == nil else {
+            Diag.log("HNDIAG resetSync ABORTED: capture/transcription is active (nothing deleted)")
+            throw ResetSyncError.captureInProgress
+        }
+        guard draft.isEmpty else {
+            Diag.log("HNDIAG resetSync ABORTED: unconcluded draft exists (nothing deleted)")
+            throw ResetSyncError.unsavedDraft
+        }
+        guard quickPadDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Diag.log("HNDIAG resetSync ABORTED: unsaved Quick Pad text exists (nothing deleted)")
+            throw ResetSyncError.unsavedQuickPad
+        }
+
         // (a) Backup FIRST, and verify it landed non-empty BEFORE deleting anything.
         guard let backupURL = CorpusExporter.backup(notes) else {
             Diag.log("HNDIAG resetSync ABORTED: backup write failed (nothing deleted)")
@@ -1415,7 +1444,7 @@ public final class AppModel: ObservableObject {
         }
         for url in storeFiles where fm.fileExists(atPath: url.path) {
             do {
-                try fm.removeItem(at: url)
+                try removeStoreFileForReset(url)
                 Diag.log("HNDIAG resetSync deleted \(url.lastPathComponent)")
             } catch {
                 // A partial delete still requires a relaunch; log and continue so the
@@ -1423,6 +1452,11 @@ public final class AppModel: ObservableObject {
                 // what forces the rebuild.)
                 Diag.log("HNDIAG resetSync could not delete \(url.lastPathComponent): \(error)")
             }
+        }
+        let remaining = storeFiles.filter { fm.fileExists(atPath: $0.path) }
+        guard remaining.isEmpty else {
+            Diag.log("HNDIAG resetSync INCOMPLETE: retained \(remaining.map(\.lastPathComponent).joined(separator: ", ")); verified backup preserved")
+            throw ResetSyncError.storeDeletionFailed
         }
 
         // (c) Signal "relaunch required" — the shared container is a one-shot static.
@@ -1565,7 +1599,9 @@ public final class AppModel: ObservableObject {
     }
 
     public func startRecording() async {
-        guard !isRecording, !isTranscribing else { return }
+        guard !captureStartInProgress, !isRecording, !isTranscribing else { return }
+        captureStartInProgress = true
+        defer { captureStartInProgress = false }
         do {
             mic.preferredMicrophoneName = settings.microphoneName
             captureURL = try await mic.start()
@@ -1643,13 +1679,19 @@ public final class AppModel: ObservableObject {
     /// Incremented when the quick-pad shortcut fires; the Mac app observes it and
     /// pops the pad. A count (not a Bool) so back-to-back requests all signal.
     @Published public var quickPadRequestCount = 0
+    /// Typed Quick Pad content lives in the model so destructive reset preflight
+    /// can see it; the panel clears it on explicit save/discard/close.
+    @Published public var quickPadDraftText = ""
 
     /// Ignore accidental taps: a hold shorter than this saves nothing.
     private static let quickCaptureMinimumSeconds = 0.5
     private var quickCaptureStartedAt: Date?
 
     public func startQuickCapture() async {
-        guard !isRecording, !isTranscribing, pendingQuickCapture == nil else { return }
+        guard !captureStartInProgress, !isRecording, !isTranscribing,
+              pendingQuickCapture == nil else { return }
+        captureStartInProgress = true
+        defer { captureStartInProgress = false }
         do {
             mic.preferredMicrophoneName = settings.microphoneName
             captureURL = try await mic.start()
