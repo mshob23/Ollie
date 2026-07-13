@@ -25,14 +25,14 @@ import Foundation
                                       // the import (and the AVCaptureDevice symbol) never
                                       // reach the iOS/watch binary (ITMS-90683 fix, C1).
 @MainActor
-final class MicCaptureService {
-    enum CaptureError: LocalizedError {
+public final class MicCaptureService {
+    public enum CaptureError: LocalizedError {
         case permissionDenied
         case noInputDevice
         case engineFailed(String)
         case nothingCaptured
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .permissionDenied:
                 return "Microphone access is off. Enable it in System Settings ▸ Privacy & Security ▸ Microphone, then try again."
@@ -48,19 +48,22 @@ final class MicCaptureService {
 
     /// The device name to record from — `nil` follows the current system default.
     /// Set by `AppModel` from `settings.microphoneName` before each `start()`.
-    var preferredMicrophoneName: String?
+    public var preferredMicrophoneName: String?
 
     private var session: AVCaptureSession?
     private var sink: RecordingSink?
     private var currentURL: URL?
-    private(set) var isRecording = false
+    public private(set) var isRecording = false
     private let captureQueue = DispatchQueue(label: "com.mohammadshobaki.ollie.AudioCapture")
 
     /// Live input level 0…1 for the UI meter. The capture queue publishes into the
     /// sink; the UI reads this via `level` on the main thread.
-    var level: Float { sink?.level ?? 0 }
+    public var level: Float { sink?.level ?? 0 }
 
-    static func requestPermission() async -> Bool {
+    /// Configure `preferredMicrophoneName` before `start()`.
+    public init() {}
+
+    public static func requestPermission() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return true
         case .notDetermined:
@@ -73,7 +76,7 @@ final class MicCaptureService {
     }
 
     /// All selectable input devices, by display name (for the Settings picker).
-    nonisolated static func availableInputDevices() -> [String] {
+    public nonisolated static func availableInputDevices() -> [String] {
         AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone], mediaType: .audio, position: .unspecified
         ).devices.map(\.localizedName)
@@ -91,7 +94,7 @@ final class MicCaptureService {
     }
 
     /// Start recording into a fresh temp WAV from the preferred (or default) mic.
-    func start() async throws -> URL {
+    public func start() async throws -> URL {
         guard !isRecording else { throw CaptureError.engineFailed("already recording") }
         guard await Self.requestPermission() else { throw CaptureError.permissionDenied }
 
@@ -147,7 +150,7 @@ final class MicCaptureService {
     }
 
     /// Stop recording and return the finished WAV. Throws if nothing was captured.
-    func stop() throws -> URL {
+    public func stop() throws -> URL {
         guard isRecording, let url = currentURL, let sink else {
             throw CaptureError.nothingCaptured
         }
@@ -163,7 +166,7 @@ final class MicCaptureService {
         return url
     }
 
-    func cancel() {
+    public func cancel() {
         guard isRecording else { return }
         teardown()
         sink?.close()
@@ -303,18 +306,19 @@ private final class UncheckedSendableBox<T>: @unchecked Sendable {
         // dictation goes through the system audio route (NotesPipeline); the watch
         // has its own recorder. The stub keeps the API surface so AppModel compiles.
 @MainActor
-final class MicCaptureService {
-    enum CaptureError: LocalizedError {
+public final class MicCaptureService {
+    public enum CaptureError: LocalizedError {
         case permissionDenied, noInputDevice, engineFailed(String), nothingCaptured
-        var errorDescription: String? { "Microphone capture isn't available here." }
+        public var errorDescription: String? { "Microphone capture isn't available here." }
     }
-    var preferredMicrophoneName: String?
-    private(set) var isRecording = false
-    var level: Float { 0 }
-    static func requestPermission() async -> Bool { false }
-    nonisolated static func availableInputDevices() -> [String] { [] }
-    func start() async throws -> URL { throw CaptureError.noInputDevice }
-    func stop() throws -> URL { throw CaptureError.nothingCaptured }
-    func cancel() {}
+    public var preferredMicrophoneName: String?
+    public private(set) var isRecording = false
+    public var level: Float { 0 }
+    public init() {}
+    public static func requestPermission() async -> Bool { false }
+    public nonisolated static func availableInputDevices() -> [String] { [] }
+    public func start() async throws -> URL { throw CaptureError.noInputDevice }
+    public func stop() throws -> URL { throw CaptureError.nothingCaptured }
+    public func cancel() {}
 }
 #endif
