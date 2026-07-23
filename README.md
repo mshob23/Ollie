@@ -178,6 +178,7 @@ Program membership — CloudKit + push are member-only entitlements):
 | [`RELEASE.md`](RELEASE.md) | Ship discipline both platforms — the schema-deploy gate and "upload ≠ shipped" traps |
 | [`docs/home-node.md`](docs/home-node.md) | Running the Mac as the always-on hub |
 | [`mcp-server/README.md`](mcp-server/README.md) | MCP tools + setup for interactive Claude |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Guardrails, the three-app verify loop, and the landmines that already cost real hours |
 
 **Status (July 2026):** agent-layer milestones **M0–M24a shipped** (tags · memory · views · gate
 · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets ·
