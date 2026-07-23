@@ -48,6 +48,13 @@ an iCloud-vs-SwiftPM `.build` corruption bug when the repo lives in a cloud-sync
 The Mac app is the only store writer and the corpus **only refreshes while it is running**,
 so keep it open for everything below.
 
+> **No Apple Developer account?** That command still works: with no signing identity
+> installed the script falls back to **ad-hoc signing** — the app builds, launches, and
+> everything runs locally on this Mac. What you don't get is CloudKit: no cross-device
+> sync (and macOS permission grants won't persist across rebuilds). For the full
+> Mac ⇄ iPhone ⇄ watch loop, see
+> [Bring your own Apple identity](#bring-your-own-apple-identity-forks--contributors).
+
 ### 2. The iPhone + watch app
 
 For real devices, install via **TestFlight** (currently build 37 — the watch is three
@@ -70,12 +77,13 @@ every agent reads.
 
 Point a Claude Code session at the corpus so you can ask *"what did I need to do last week?"*
 and let it tag, remember, and publish views. From `mcp-server/` set up the venv first
-(`python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt`), then:
+(`python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt`), then
+register it from the repo root (`claude mcp` needs absolute paths — `$PWD` supplies them):
 
 ```bash
 claude mcp add ollie -- \
-  /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/.venv/bin/python \
-  /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/ollie_mcp.py
+  "$PWD/mcp-server/.venv/bin/python" \
+  "$PWD/mcp-server/ollie_mcp.py"
 ```
 
 Read tools are safe to auto-approve; the **write** tools queue changes and prompt unless
@@ -116,6 +124,49 @@ Each firing guards itself and no-ops unless all pass: no run already in flight, 
 is running**, the **corpus is fresh** (< 24 h), and the **workspace is trusted**. The agent's
 prompt is [`Scripts/ollie-runbook.md`](Scripts/ollie-runbook.md) (editing it changes agent
 behavior). Model defaults to `opus`; logs land in `~/Ollie/agent-runs/`.
+
+## Bring your own Apple identity (forks & contributors)
+
+The repo ships **no signing artifacts** — the entitlements files carry the maintainer's
+team/bundle/container values as a worked example, and `build_app.sh` takes yours through
+environment variables. Ad-hoc local builds need none of this (see the note in step 1).
+To run the full CloudKit sync loop under your own team (requires a paid Apple Developer
+Program membership — CloudKit + push are member-only entitlements):
+
+1. **Pick your identifiers.** A bundle id (e.g. `com.you.ollie`) and an iCloud container
+   (`iCloud.com.you.ollie`). Register the App ID with iCloud + Push Notifications enabled
+   and create the container (developer.apple.com → Certificates, Identifiers & Profiles).
+2. **Make your entitlements.** Copy `HandheldNotes.entitlements` and replace the
+   `application-identifier` (`TEAMID.bundleid`), `team-identifier`, and container values
+   with yours — each key's role is documented inline in the file. Set the same bundle id
+   as `CFBundleIdentifier` in `Info.plist`, and point the one code constant at your
+   container: `cloudKitContainerID` in
+   `Sources/HandheldNotesCore/Store/NotesDataStore.swift` (Core is compiled into all
+   three apps, so this one edit covers Mac, iPhone, and watch). (Same drill for
+   `HandheldNotes-release.entitlements` when you get to Developer-ID builds.)
+3. **Make a provisioning profile** for that App ID (macOS *Development* to iterate;
+   *Developer ID* for release) and download it. The build embeds it in the bundle —
+   macOS refuses to launch an app with iCloud/aps entitlements without a matching
+   embedded profile (AMFI error 163), which is also why profile and entitlements must
+   agree on the CloudKit environment.
+4. **Point the build at your artifacts:**
+
+   ```bash
+   ENTITLEMENTS=path/to/your.entitlements \
+   PROVISION_PROFILE=path/to/your.provisionprofile \
+   CODE_SIGN_IDENTITY="Apple Development: Your Name (YOURTEAMID)" \
+   ./Scripts/build_app.sh
+   ```
+
+5. **Schema.** The CloudKit **Development** schema self-creates — sign into iCloud, save
+   a note, done. **Production never self-creates**: before any release build you must
+   deploy the schema in the CloudKit Dashboard, and the release path in `build_app.sh`
+   refuses to proceed until that's verified (the full procedure and the outage that
+   motivated the gate are in [`RELEASE.md`](RELEASE.md)).
+6. **iOS + watch.** Set the same team and container in the sibling repo
+   ([`../HandheldNotesiOS/README.md`](../HandheldNotesiOS/README.md) → *Building with
+   your own Apple identity*). All three apps must share **one** container — mismatched
+   environments sync "successfully" into different universes and nothing crosses.
 
 ## Going deeper — the docs map
 

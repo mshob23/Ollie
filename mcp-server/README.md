@@ -80,7 +80,7 @@ variable (default `claude-mac`; the launchd runner sets `claude-runner`).
 ## Setup
 
 ```bash
-cd /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server
+cd mcp-server            # from the repo root
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 # to run the tests too:
@@ -90,22 +90,26 @@ pytest tests/
 
 ## Add to Claude
 
-**Claude Code:**
+Registration needs **absolute** paths (the MCP client launches the server from an
+arbitrary working directory).
+
+**Claude Code** — from the repo root:
 
 ```bash
 claude mcp add ollie -- \
-  /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/.venv/bin/python \
-  /Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/ollie_mcp.py
+  "$PWD/mcp-server/.venv/bin/python" \
+  "$PWD/mcp-server/ollie_mcp.py"
 ```
 
-**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`,
+replacing `/ABSOLUTE/PATH/TO/HandheldNotes` with where you cloned this repo:
 
 ```json
 {
   "mcpServers": {
     "ollie": {
-      "command": "/Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/.venv/bin/python",
-      "args": ["/Users/mohammadshobaki/Desktop/Projects/Agents/HandheldNotes/mcp-server/ollie_mcp.py"]
+      "command": "/ABSOLUTE/PATH/TO/HandheldNotes/mcp-server/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/TO/HandheldNotes/mcp-server/ollie_mcp.py"]
     }
   }
 }
