@@ -6,3 +6,10 @@ dist/
 *.xcworkspace
 .swiftpm/
 .claude/
+
+# Apple signing artifacts — personal to each developer's team, never committed.
+# Bring your own: see the signing section of build_app.sh (PROVISION_PROFILE env var).
+*.provisionprofile
+*.mobileprovision
+*.p12
+*.cer
