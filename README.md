@@ -44,7 +44,7 @@ open .build/debug/Ollie.app     # launch it
 ```
 
 `swift test --scratch-path /private/tmp/hn_scratch` runs the suite (the scratch path avoids
-an iCloud-vs-SwiftPM `.build` corruption bug on the Desktop — see [`CLAUDE.md`](CLAUDE.md)).
+an iCloud-vs-SwiftPM `.build` corruption bug when the repo lives in a cloud-synced folder).
 The Mac app is the only store writer and the corpus **only refreshes while it is running**,
 so keep it open for everything below.
 
@@ -124,12 +124,9 @@ behavior). Model defaults to `opus`; logs land in `~/Ollie/agent-runs/`.
 | [`VISION.md`](VISION.md) | **The soul** — what Ollie is / refuses to be, the trust + cost model, north-star scenes |
 | [`docs/agent-contract.md`](docs/agent-contract.md) | **The canonical contract** — entities, export layout, inbox ops, fence grammar, reserved names. On mechanics, this wins |
 | [`ECOSYSTEM.md`](ECOSYSTEM.md) | Component map + data flow + current status across all three apps |
-| [`CLAUDE.md`](CLAUDE.md) | Agent-facing operating notes — repo map, invariants, landmines, build gotchas |
-| [`AGENT_LAYER_PLAN.md`](AGENT_LAYER_PLAN.md) | Milestone specs M0–M9 with as-built notes |
 | [`RELEASE.md`](RELEASE.md) | Ship discipline both platforms — the schema-deploy gate and "upload ≠ shipped" traps |
 | [`docs/home-node.md`](docs/home-node.md) | Running the Mac as the always-on hub |
 | [`mcp-server/README.md`](mcp-server/README.md) | MCP tools + setup for interactive Claude |
-| [`BACKLOG.md`](BACKLOG.md) | What's next |
 
 **Status (July 2026):** agent-layer milestones **M0–M24a shipped** (tags · memory · views · gate
 · MCP server · scheduled runner · checkboxes · watch views · restore · fence widgets ·

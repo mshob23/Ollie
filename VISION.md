@@ -1,6 +1,6 @@
 # VISION — what Ollie is
 
-This is the soul document. CLAUDE.md and the contract say how to build; this file says
+This is the soul document. The contract says how to build; this file says
 what we are building and — just as binding — what we are refusing to build. When a
 proposed change is *product-shaped*, check it here first. If it violates a non-goal, either
 the proposal is wrong or the vision has genuinely changed; in the second case, change this

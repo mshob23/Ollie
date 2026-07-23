@@ -8,7 +8,7 @@
 > The acceptance demo below is the manual hardware pass to run.
 
 *The orchestration-facing plan for the next implementation push. Milestone mechanics live in
-[`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) (§M8, §M9) — this doc is the feature inventory,
+`AGENT_LAYER_PLAN.md` (§M8, §M9) — this doc is the feature inventory,
 sequencing, and verification map an implementing agent (or agent fleet) should work from.*
 
 ## Where we are

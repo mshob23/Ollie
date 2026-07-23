@@ -13,3 +13,9 @@ dist/
 *.mobileprovision
 *.p12
 *.cer
+
+# Internal working docs — agent notes and planning logs, kept local only.
+CLAUDE.md
+BACKLOG.md
+AGENT_LAYER_PLAN.md
+NOTES_APP_PLAN.md

@@ -102,9 +102,7 @@ render as real cards, bars, timelines, grids on every device); **checkboxes are 
 propose — and the user approve — the next capability. The launchd runner closes the loop: speak a
 question into the watch on the sidewalk, and a designed answer is on your wrist by the time you're home.
 
-The canonical data contract every door conforms to is **[`docs/agent-contract.md`](docs/agent-contract.md)**;
-milestone specs + as-built notes are [`AGENT_LAYER_PLAN.md`](AGENT_LAYER_PLAN.md); agent-facing
-operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACKLOG.md).
+The canonical data contract every door conforms to is **[`docs/agent-contract.md`](docs/agent-contract.md)**.
 
 ---
 
@@ -114,7 +112,7 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
    diagram fence (+v2 polish), chart baseline, metric sentiment, capture-bar `createdAt` fix,
    feed-preview fix, event-driven runner (~2 min latency, 4 h backstop), arrival-time coverage
    (`ingestedAt` + scan-start checkpoint), `runs.jsonl`/`recent_runs()`, runbook recency/fade
-   guidance. See BACKLOG.md for the per-item records.
+   guidance.
 1. ~~The Jul-10 latency + notifications wave~~ — **shipped (M22–M24a, build 37)**: 15 s
    event loop + rerun-once flag (note → view in ~1.5–3 min), runner **WebSearch/WebFetch**
    under contract §9 egress rules, inbox **reminder grammar** → blockId-keyed local
@@ -125,6 +123,6 @@ operating notes are [`CLAUDE.md`](CLAUDE.md); what's next is [`BACKLOG.md`](BACK
    annotation-notes (`re: view "<name>"` grammar → agent corrects + learns), `/`-prefix view
    directory sections, and the `inbox` receipts convention (mailbox half of the vision —
    tick = dismiss, ~7-day fade).
-2. **Polish next** (BACKLOG §Polish) — Find-result display, forgiving search, Spotlight
+2. **Polish next** — Find-result display, forgiving search, Spotlight
    deep-link, Rung 3's human-facing Markdown mirror.
 3. **Polish** — platform-aware transcription placeholder; more iOS / watch UI depth.

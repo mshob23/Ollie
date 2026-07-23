@@ -4,7 +4,7 @@
 in [`views-v2-interaction-spec.md`](views-v2-interaction-spec.md), which was implemented and verified
 end-to-end on hardware (iOS build 31 + Mac). This brief is kept as the problem-statement / rationale
 record — read the spec for the as-built reference. Originally deferred from Views v1 (see
-[`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6 and [`agent-contract.md`](agent-contract.md) §7).*
+`AGENT_LAYER_PLAN.md` §6 and [`agent-contract.md`](agent-contract.md) §7).*
 
 ## The problem
 

@@ -2,7 +2,7 @@
 
 *The canonical data contract for the agent layer. Every door — the inbox, the MCP server,
 future App Intents, a future on-device agent — conforms to **this** document. Extracted from
-[`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §3 (+ the §0 invariants) so agents and future
+`AGENT_LAYER_PLAN.md` §3 (+ the §0 invariants) so agents and future
 surfaces cite one stable file instead of the plan. If this and the plan ever disagree, the plan
 §3 is the source of truth and this doc is the bug.*
 
@@ -410,7 +410,7 @@ on `media`, colliding a reserved id) is a regression.
 
 ## 8. Deferred surfaces (context — where this is headed)
 
-For the full deferred list see [`AGENT_LAYER_PLAN.md`](../AGENT_LAYER_PLAN.md) §6. In brief:
+For the full deferred list see `AGENT_LAYER_PLAN.md` §6. In brief:
 
 - **Views v2 fence widgets** — ✅ shipped in M9 (Jul 2026): `metric` / `chart` / `timeline` /
   `table` render as real widgets (§6.1); the checkbox interaction layer shipped in M7. Still

@@ -1,6 +1,6 @@
 # CloudKit push spike — a visible iPhone banner when the app is dead (M24b, design only)
 
-*Design spike, 2026-07-10. Companion to [AGENT_LAYER_PLAN.md](../AGENT_LAYER_PLAN.md) §M24
+*Design spike, 2026-07-10. Companion to `AGENT_LAYER_PLAN.md` §M24
 and [docs/agent-contract.md](agent-contract.md) §7 "Reminder lines + arrival banners".
 **Docs only** — no shipping code, no schema change, no Xcode. This memo decides go/no-go and
 hands the implementing wave a shape and a step plan.*
