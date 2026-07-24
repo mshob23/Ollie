@@ -5,14 +5,14 @@ import AppKit
 // then a brief "Saved to Ollie" flash. Ported from HandheldCompanionMac's
 // RecordingOverlay (the WaveformView motion constants are owner-tuned via that
 // repo's Tools/WaveTuner — retune there and transplant; do not tweak here).
-// Palette adapted to Ollie's warm coral/cream theme.
+// Palette adapted to Ollie's Seal Night (seal/cream/eye-blue) theme.
 
 // MARK: - Palette (NSColor mirrors of Ollie's SwiftUI Theme)
 
 private enum OverlayColor {
-    static let accent = NSColor(red: 0.851, green: 0.467, blue: 0.341, alpha: 1)      // hcAccent coral
-    static let accentWarm = NSColor(red: 0.882, green: 0.541, blue: 0.408, alpha: 1)  // hcAccentHover peach
-    static let ok = NSColor(red: 0.498, green: 0.694, blue: 0.510, alpha: 1)          // hcOk sage
+    static let accent = NSColor(red: 0.357, green: 0.561, blue: 0.788, alpha: 1)      // hcAccent Siamese-eye blue #5B8FC9
+    static let accentWarm = NSColor(red: 0.471, green: 0.651, blue: 0.839, alpha: 1)  // hcAccentHover #78A6D6
+    static let ok = NSColor(red: 0.482, green: 0.659, blue: 0.459, alpha: 1)          // hcOk quiet fern #7BA875
     static let card = NSColor(red: 0.145, green: 0.138, blue: 0.130, alpha: 0.97)     // hcPanelRaised
     static let primaryText = NSColor(red: 0.925, green: 0.914, blue: 0.890, alpha: 1) // cream
     static let secondaryText = NSColor(red: 0.659, green: 0.635, blue: 0.604, alpha: 1)

@@ -2,20 +2,22 @@ import SwiftUI
 
 // MARK: - Theme
 //
-// The Claude-warm design system, ported to SwiftUI from the old AppKit app's
-// Theme.swift + NSColor token set. Candlelit-paper background, cream text, a
-// confident coral accent, soft rounded panels, and a New York serif for display
-// headings. Same exact hex values as the old app so the family resemblance is
-// real, not approximate.
+// The "Seal Night" design system — Oliver's colorway. Same structure as the
+// original candlelit theme (soft rounded panels, cream text, New York serif
+// display headings), re-inked from the cat the app is named for: the ground
+// pulled a hair sealward (a seal-point's dark coat), and the accent is
+// Siamese-eye blue — the only saturated color, spent where the app looks back
+// at you. Ok is a quiet fern; danger a muted madder that can never be read as
+// the accent.
 //
 // Cross-platform by construction: built on SwiftUI `Color` / `Font` only (no
-// NSColor / AppKit), so this same theme drives the future iOS app unchanged.
+// NSColor / AppKit), so this same theme drives the iOS + watch apps unchanged.
 
 extension Color {
-    // Backgrounds (warm near-black "paper").
-    public static let hcBackground       = Color(red: 0.122, green: 0.118, blue: 0.114) // #1F1E1D
-    public static let hcBackgroundTop    = Color(red: 0.149, green: 0.137, blue: 0.125) // #262320
-    public static let hcBackgroundBottom = Color(red: 0.106, green: 0.100, blue: 0.094) // #1B1918
+    // Backgrounds (seal near-black "coat").
+    public static let hcBackground       = Color(red: 0.129, green: 0.102, blue: 0.082) // #211A15
+    public static let hcBackgroundTop    = Color(red: 0.157, green: 0.122, blue: 0.094) // #281F18
+    public static let hcBackgroundBottom = Color(red: 0.114, green: 0.082, blue: 0.063) // #1D1510
 
     // Recessed surfaces / panels.
     public static let hcPanel       = Color(red: 0.102, green: 0.098, blue: 0.094)      // #1A1918
@@ -27,16 +29,16 @@ extension Color {
     public static let hcSecondaryText = Color(red: 0.659, green: 0.635, blue: 0.604)    // #A8A29A
     public static let hcMutedText     = Color(red: 0.435, green: 0.416, blue: 0.388)    // #6F6A63
 
-    // Accent (coral).
-    public static let hcAccent        = Color(red: 0.851, green: 0.467, blue: 0.341)    // #D97757
-    public static let hcAccentHover   = Color(red: 0.882, green: 0.541, blue: 0.408)    // #E18A68
-    public static let hcAccentPressed = Color(red: 0.761, green: 0.376, blue: 0.244)    // #C2603E
-    public static let hcOnAccent      = Color(red: 0.984, green: 0.965, blue: 0.933)    // #FBF6EE cream-on-coral
+    // Accent (Siamese-eye blue).
+    public static let hcAccent        = Color(red: 0.357, green: 0.561, blue: 0.788)    // #5B8FC9
+    public static let hcAccentHover   = Color(red: 0.471, green: 0.651, blue: 0.839)    // #78A6D6
+    public static let hcAccentPressed = Color(red: 0.290, green: 0.475, blue: 0.690)    // #4A79B0
+    public static let hcOnAccent      = Color(red: 0.984, green: 0.965, blue: 0.933)    // #FBF6EE cream-on-blue
 
     // Soft accent tint for chips / selection.
-    public static let hcAccentSoft    = Color(red: 0.851, green: 0.467, blue: 0.341).opacity(0.16)
-    public static let hcOk            = Color(red: 0.498, green: 0.694, blue: 0.510)    // calm green
-    public static let syncDanger      = Color(red: 0.851, green: 0.388, blue: 0.353)   // muted warm red for failures
+    public static let hcAccentSoft    = Color(red: 0.357, green: 0.561, blue: 0.788).opacity(0.16)
+    public static let hcOk            = Color(red: 0.482, green: 0.659, blue: 0.459)    // #7BA875 quiet fern, cooled to sit beside blue
+    public static let syncDanger      = Color(red: 0.659, green: 0.271, blue: 0.235)   // #A8453C muted madder for failures — never reads as accent
 }
 
 extension Font {
