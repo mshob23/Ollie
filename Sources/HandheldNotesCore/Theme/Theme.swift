@@ -14,10 +14,14 @@ import SwiftUI
 // NSColor / AppKit), so this same theme drives the iOS + watch apps unchanged.
 
 extension Color {
-    // Backgrounds (seal near-black "coat").
-    public static let hcBackground       = Color(red: 0.129, green: 0.102, blue: 0.082) // #211A15
-    public static let hcBackgroundTop    = Color(red: 0.157, green: 0.122, blue: 0.094) // #281F18
-    public static let hcBackgroundBottom = Color(red: 0.114, green: 0.082, blue: 0.063) // #1D1510
+    // Backgrounds (seal near-black "coat"). Warm in HUE, restrained in CHROMA (~18%
+    // saturation): the eye-blue accent sits nearly opposite these on the wheel, so a
+    // saturated brown ground would compete with it and — since the panels below are
+    // 8-15% — read as a brown halo around neutral cards. Keep the warmth as a
+    // temperature, not a color; blue stays the only saturated thing on screen.
+    public static let hcBackground       = Color(red: 0.129, green: 0.118, blue: 0.106) // #211E1B
+    public static let hcBackgroundTop    = Color(red: 0.157, green: 0.141, blue: 0.129) // #282421
+    public static let hcBackgroundBottom = Color(red: 0.114, green: 0.102, blue: 0.094) // #1D1A18
 
     // Recessed surfaces / panels.
     public static let hcPanel       = Color(red: 0.102, green: 0.098, blue: 0.094)      // #1A1918
